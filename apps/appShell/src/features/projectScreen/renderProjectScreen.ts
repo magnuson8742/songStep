@@ -1,6 +1,7 @@
 import type { SongStepProject } from "../../domain/project/projectModel";
 
 export interface ProjectScreenActions {
+  statusMessage: string | null;
   onBackToHome: () => void;
   onSaveProject: () => Promise<void>;
   onPlay: () => void;
@@ -12,6 +13,10 @@ export function renderProjectScreen(
   project: SongStepProject,
   actions: ProjectScreenActions,
 ): void {
+  const statusBanner = actions.statusMessage
+    ? `<p class="statusBanner" role="status">${actions.statusMessage}</p>`
+    : "";
+
   container.innerHTML = `
     <main class="appShell">
       <header class="appHeader projectHeader">
@@ -24,6 +29,8 @@ export function renderProjectScreen(
           <button class="primaryButton" type="button" data-action="save-project">Save Project</button>
         </div>
       </header>
+
+      ${statusBanner}
 
       <section class="homeCard">
         <h2 class="sectionTitle">Tab area</h2>

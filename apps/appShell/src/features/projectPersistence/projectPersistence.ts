@@ -5,11 +5,21 @@ import type {
 } from "../../domain/project/projectModel";
 
 const PROJECT_FORMAT = "songStepProject";
-const PROJECT_FILE_EXTENSION = ".songstep.json";
+const PROJECT_VERSION = 1;
+const PROJECT_FILE_EXTENSION = ".songstep";
+const PROJECT_FILE_MIME = "application/x-songstep-project";
 
 export interface SelectedSourceFile {
   fileName: string;
   content: Uint8Array;
+}
+
+export type SaveMethod = "system-dialog" | "download-fallback";
+
+export interface SaveProjectResult {
+  saved: boolean;
+  method: SaveMethod | "cancelled";
+  fileName?: string;
 }
 
 interface PickerAcceptType {
@@ -54,11 +64,28 @@ function sanitizeFileName(name: string): string {
   return name.replace(/[^a-z0-9_-]+/gi, "-").replace(/-+/g, "-").toLowerCase();
 }
 
+function getDefaultProjectFileName(projectTitle: string): string {
+  const normalizedName = sanitizeFileName(projectTitle) || "songstep-project";
+  return `${normalizedName}${PROJECT_FILE_EXTENSION}`;
+}
+
 function getWindowWithPickers(): Window & {
   showOpenFilePicker?: (options: OpenFilePickerOptions) => Promise<FilePickerHandle[]>;
   showSaveFilePicker?: (options: SaveFilePickerOptions) => Promise<SaveFilePickerHandle>;
 } {
   return window;
+}
+
+function buildProjectPickerTypes(): PickerAcceptType[] {
+  return [
+    {
+      description: "songStep Project",
+      accept: {
+        [PROJECT_FILE_MIME]: [PROJECT_FILE_EXTENSION],
+        "application/json": [PROJECT_FILE_EXTENSION],
+      },
+    },
+  ];
 }
 
 function pickFileWithInput(accept: string): Promise<File | null> {
@@ -140,8 +167,21 @@ export async function createProjectFromSource(
   };
 }
 
-function downloadProjectJson(serializedProject: string, fileName: string): void {
-  const projectBlob = new Blob([serializedProject], { type: "application/json" });
+function serializeProject(project: SongStepProject): string {
+  const storedProject: StoredProjectFile = {
+    format: PROJECT_FORMAT,
+    version: PROJECT_VERSION,
+    project: {
+      ...project,
+      updatedAtIso: new Date().toISOString(),
+    },
+  };
+
+  return JSON.stringify(storedProject, null, 2);
+}
+
+function downloadProjectFile(serializedProject: string, fileName: string): void {
+  const projectBlob = new Blob([serializedProject], { type: PROJECT_FILE_MIME });
   const downloadUrl = URL.createObjectURL(projectBlob);
 
   const downloadLink = document.createElement("a");
@@ -152,58 +192,84 @@ function downloadProjectJson(serializedProject: string, fileName: string): void 
   URL.revokeObjectURL(downloadUrl);
 }
 
-export async function saveProjectToDisk(project: SongStepProject): Promise<boolean> {
-  const defaultFileName = `${sanitizeFileName(project.title) || "songstep-project"}${PROJECT_FILE_EXTENSION}`;
-
-  const storedProject: StoredProjectFile = {
-    format: PROJECT_FORMAT,
-    version: 1,
-    project: {
-      ...project,
-      updatedAtIso: new Date().toISOString(),
-    },
-  };
-
-  const serializedProject = JSON.stringify(storedProject, null, 2);
+export async function saveProjectToDisk(project: SongStepProject): Promise<SaveProjectResult> {
+  const defaultFileName = getDefaultProjectFileName(project.title);
+  const serializedProject = serializeProject(project);
   const pickerWindow = getWindowWithPickers();
 
   if (pickerWindow.showSaveFilePicker) {
-    const handle = await pickerWindow.showSaveFilePicker({
-      suggestedName: defaultFileName,
-      types: [
-        {
-          description: "songStep Project",
-          accept: {
-            "application/json": [".json"],
-          },
-        },
-      ],
-    });
+    try {
+      const handle = await pickerWindow.showSaveFilePicker({
+        suggestedName: defaultFileName,
+        types: buildProjectPickerTypes(),
+      });
 
-    const writable = await handle.createWritable();
-    await writable.write(serializedProject);
-    await writable.close();
-    return true;
+      const writable = await handle.createWritable();
+      await writable.write(serializedProject);
+      await writable.close();
+
+      return {
+        saved: true,
+        method: "system-dialog",
+        fileName: defaultFileName,
+      };
+    } catch {
+      return {
+        saved: false,
+        method: "cancelled",
+      };
+    }
   }
 
-  downloadProjectJson(serializedProject, defaultFileName);
-  return true;
+  downloadProjectFile(serializedProject, defaultFileName);
+  return {
+    saved: true,
+    method: "download-fallback",
+    fileName: defaultFileName,
+  };
+}
+
+function parseStoredProject(serializedProject: string): SongStepProject {
+  let parsedProject: StoredProjectFile;
+
+  try {
+    parsedProject = JSON.parse(serializedProject) as StoredProjectFile;
+  } catch {
+    throw new Error("Could not read this project file. The file is not valid JSON.");
+  }
+
+  if (parsedProject.format !== PROJECT_FORMAT) {
+    throw new Error("Unsupported file type. Please open a valid songStep project file.");
+  }
+
+  if (parsedProject.version !== PROJECT_VERSION) {
+    throw new Error(
+      `Unsupported project version (${String(parsedProject.version)}). Expected version ${PROJECT_VERSION}.`,
+    );
+  }
+
+  if (!parsedProject.project?.title) {
+    throw new Error("Project file is missing the project title.");
+  }
+
+  if (!parsedProject.project?.sourceFile?.fileName) {
+    throw new Error("Project file is missing source file information.");
+  }
+
+  if (!parsedProject.project?.sourceFile?.contentBase64) {
+    throw new Error("Project file is missing embedded GP source data.");
+  }
+
+  return parsedProject.project;
 }
 
 export async function pickAndLoadProjectFromDisk(): Promise<SongStepProject | null> {
   const selectedFile = await pickFileWithDialog(
     {
       multiple: false,
-      types: [
-        {
-          description: "songStep Project",
-          accept: {
-            "application/json": [".json"],
-          },
-        },
-      ],
+      types: buildProjectPickerTypes(),
     },
-    ".json",
+    `${PROJECT_FILE_EXTENSION},application/json`,
   );
 
   if (!selectedFile) {
@@ -211,21 +277,5 @@ export async function pickAndLoadProjectFromDisk(): Promise<SongStepProject | nu
   }
 
   const serializedProject = await selectedFile.text();
-
-  let parsedProject: StoredProjectFile;
-  try {
-    parsedProject = JSON.parse(serializedProject) as StoredProjectFile;
-  } catch {
-    throw new Error("The selected file is not a valid songStep project JSON file.");
-  }
-
-  if (parsedProject.format !== PROJECT_FORMAT || parsedProject.version !== 1) {
-    throw new Error("Unsupported project format. Please choose a songStep MVP project file.");
-  }
-
-  if (!parsedProject.project?.title || !parsedProject.project?.sourceFile?.fileName) {
-    throw new Error("Project file is missing required data.");
-  }
-
-  return parsedProject.project;
+  return parseStoredProject(serializedProject);
 }

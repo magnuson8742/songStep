@@ -18,16 +18,14 @@ type AppView = "home" | "newProject" | "openProject" | "project";
 interface AppState {
   currentView: AppView;
   currentProject: SongStepProject | null;
-}
-
-function sourceNameFromProject(project: SongStepProject): string {
-  return project.sourceFile.fileName;
+  projectStatusMessage: string | null;
 }
 
 export function startApp(rootElement: HTMLElement): void {
   const state: AppState = {
     currentView: "home",
     currentProject: null,
+    projectStatusMessage: null,
   };
 
   const render = (): void => {
@@ -56,6 +54,7 @@ export function startApp(rootElement: HTMLElement): void {
           const project = await createProjectFromSource(payload.sourceFile, payload.projectTitle);
           state.currentProject = project;
           state.currentView = "project";
+          state.projectStatusMessage = "New project created. Use Save Project to write a .songstep file.";
           render();
         },
       });
@@ -77,8 +76,9 @@ export function startApp(rootElement: HTMLElement): void {
 
             state.currentProject = project;
             state.currentView = "project";
+            state.projectStatusMessage = `Opened project from ${project.sourceFile.fileName}.`;
             render();
-            return sourceNameFromProject(project);
+            return project.sourceFile.fileName;
           } catch (error) {
             alert(error instanceof Error ? error.message : "Could not open project.");
             return null;
@@ -90,6 +90,7 @@ export function startApp(rootElement: HTMLElement): void {
 
     if (state.currentView === "project" && state.currentProject) {
       renderProjectScreen(rootElement, state.currentProject, {
+        statusMessage: state.projectStatusMessage,
         onBackToHome: () => {
           state.currentView = "home";
           render();
@@ -99,16 +100,22 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
 
-          try {
-            const wasSaved = await saveProjectToDisk(state.currentProject);
-            if (!wasSaved) {
-              return;
-            }
+          const result = await saveProjectToDisk(state.currentProject);
 
-            alert("Project saved.");
-          } catch (error) {
-            alert(error instanceof Error ? error.message : "Project save failed.");
+          if (!result.saved) {
+            state.projectStatusMessage = "Save cancelled.";
+            render();
+            return;
           }
+
+          if (result.method === "system-dialog") {
+            state.projectStatusMessage = `Project saved as ${result.fileName}.`;
+          } else {
+            state.projectStatusMessage =
+              "Project exported with browser download fallback (system save dialog unavailable).";
+          }
+
+          render();
         },
         onPlay: () => {
           alert("Playback engine is not connected yet. This is a placeholder.");

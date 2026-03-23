@@ -11,13 +11,13 @@ export function renderOpenProjectScreen(
     <main class="appShell">
       <header class="appHeader">
         <h1 class="appTitle">Open Project</h1>
-        <p class="appSubtitle">Select a saved songStep project file to continue.</p>
+        <p class="appSubtitle">Select a saved .songstep project file to continue.</p>
       </header>
 
       <section class="homeCard formBlock">
         <label class="fieldLabel">Project file</label>
         <button class="secondaryButton" type="button" data-action="open-project-file">
-          Choose Project File
+          Choose .songstep File
         </button>
         <p class="helperText" id="selectedProjectFile">No project selected</p>
       </section>
