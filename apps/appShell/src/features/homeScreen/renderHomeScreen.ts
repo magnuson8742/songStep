@@ -1,4 +1,9 @@
-export function renderHomeScreen(container: HTMLElement): void {
+export interface HomeScreenActions {
+  onNewProject: () => void;
+  onOpenProject: () => void;
+}
+
+export function renderHomeScreen(container: HTMLElement, actions: HomeScreenActions): void {
   container.innerHTML = `
     <main class="appShell">
       <header class="appHeader">
@@ -7,18 +12,13 @@ export function renderHomeScreen(container: HTMLElement): void {
       </header>
 
       <section class="homeCard">
-        <h2 class="sectionTitle">MVP 0.1</h2>
-        <ul class="featureList">
-          <li>Import GP files</li>
-          <li>Manual key selection during import</li>
-          <li>Playback</li>
-          <li>Save and open self-contained project</li>
-        </ul>
+        <h2 class="sectionTitle">Main menu</h2>
+        <p class="sectionText">Start a new project from a GP source file or open an existing project.</p>
       </section>
 
-      <section class="homeActions" aria-label="Home actions">
-        <button class="primaryButton" data-home-action="import-gp" type="button">
-          Import GP
+      <section class="homeActions" aria-label="Main menu actions">
+        <button class="primaryButton" data-home-action="new-project" type="button">
+          New Project
         </button>
         <button class="primaryButton" data-home-action="open-project" type="button">
           Open Project
@@ -27,18 +27,13 @@ export function renderHomeScreen(container: HTMLElement): void {
     </main>
   `;
 
-  const importButton = container.querySelector<HTMLButtonElement>(
-    '[data-home-action="import-gp"]',
+  const newProjectButton = container.querySelector<HTMLButtonElement>(
+    '[data-home-action="new-project"]',
   );
   const openProjectButton = container.querySelector<HTMLButtonElement>(
     '[data-home-action="open-project"]',
   );
 
-  importButton?.addEventListener("click", () => {
-    alert("Import GP flow will be added in the next step.");
-  });
-
-  openProjectButton?.addEventListener("click", () => {
-    alert("Open Project flow will be added in the next step.");
-  });
+  newProjectButton?.addEventListener("click", actions.onNewProject);
+  openProjectButton?.addEventListener("click", actions.onOpenProject);
 }
