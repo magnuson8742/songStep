@@ -2,7 +2,7 @@ import type { SongStepProject } from "../../domain/project/projectModel";
 
 export interface ProjectScreenActions {
   onBackToHome: () => void;
-  onSaveProject: () => void;
+  onSaveProject: () => Promise<void>;
   onPlay: () => void;
   onPause: () => void;
 }

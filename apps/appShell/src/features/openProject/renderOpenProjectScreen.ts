@@ -1,6 +1,6 @@
 export interface OpenProjectScreenActions {
   onBack: () => void;
-  onProjectFileSelected: (projectFile: File) => void;
+  onOpenProjectFile: () => Promise<string | null>;
 }
 
 export function renderOpenProjectScreen(
@@ -15,8 +15,10 @@ export function renderOpenProjectScreen(
       </header>
 
       <section class="homeCard formBlock">
-        <label class="fieldLabel" for="projectFile">Project file</label>
-        <input id="projectFile" class="fieldInput" type="file" accept=".songstep.json,application/json" />
+        <label class="fieldLabel">Project file</label>
+        <button class="secondaryButton" type="button" data-action="open-project-file">
+          Choose Project File
+        </button>
         <p class="helperText" id="selectedProjectFile">No project selected</p>
       </section>
 
@@ -26,19 +28,17 @@ export function renderOpenProjectScreen(
     </main>
   `;
 
-  const projectFileInput = container.querySelector<HTMLInputElement>("#projectFile");
   const selectedProjectFile = container.querySelector<HTMLElement>("#selectedProjectFile");
+  const openProjectFileButton = container.querySelector<HTMLButtonElement>(
+    '[data-action="open-project-file"]',
+  );
   const backButton = container.querySelector<HTMLButtonElement>('[data-action="back"]');
 
-  projectFileInput?.addEventListener("change", () => {
-    const file = projectFileInput.files?.[0] ?? null;
+  openProjectFileButton?.addEventListener("click", async () => {
+    const openedProjectName = await actions.onOpenProjectFile();
 
-    if (selectedProjectFile) {
-      selectedProjectFile.textContent = file ? `Selected: ${file.name}` : "No project selected";
-    }
-
-    if (file) {
-      actions.onProjectFileSelected(file);
+    if (selectedProjectFile && openedProjectName) {
+      selectedProjectFile.textContent = `Opened: ${openedProjectName}`;
     }
   });
 

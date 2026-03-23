@@ -1,11 +1,14 @@
+import type { SelectedSourceFile } from "../projectPersistence/projectPersistence";
+
 export interface NewProjectSubmitPayload {
-  sourceFile: File;
+  sourceFile: SelectedSourceFile;
   projectTitle: string;
 }
 
 export interface NewProjectScreenActions {
   onBack: () => void;
-  onCreateProject: (payload: NewProjectSubmitPayload) => void;
+  onPickGpFile: () => Promise<SelectedSourceFile | null>;
+  onCreateProject: (payload: NewProjectSubmitPayload) => Promise<void>;
 }
 
 function removeGpExtension(fileName: string): string {
@@ -24,8 +27,8 @@ export function renderNewProjectScreen(
       </header>
 
       <section class="homeCard formBlock">
-        <label class="fieldLabel" for="gpSourceFile">GP file</label>
-        <input id="gpSourceFile" class="fieldInput" type="file" accept=".gp,.gp3,.gp4,.gp5,.gpx" />
+        <label class="fieldLabel">GP file</label>
+        <button class="secondaryButton" type="button" data-action="pick-gp-file">Choose GP File</button>
         <p class="helperText" id="selectedFileName">No file selected</p>
 
         <label class="fieldLabel" for="projectTitle">Project name</label>
@@ -39,7 +42,7 @@ export function renderNewProjectScreen(
     </main>
   `;
 
-  const gpSourceFileInput = container.querySelector<HTMLInputElement>("#gpSourceFile");
+  const pickGpFileButton = container.querySelector<HTMLButtonElement>('[data-action="pick-gp-file"]');
   const projectTitleInput = container.querySelector<HTMLInputElement>("#projectTitle");
   const selectedFileName = container.querySelector<HTMLElement>("#selectedFileName");
   const createProjectButton = container.querySelector<HTMLButtonElement>(
@@ -47,7 +50,7 @@ export function renderNewProjectScreen(
   );
   const backButton = container.querySelector<HTMLButtonElement>('[data-action="back"]');
 
-  let selectedSourceFile: File | null = null;
+  let selectedSourceFile: SelectedSourceFile | null = null;
 
   const updateCreateButtonState = (): void => {
     const hasFile = Boolean(selectedSourceFile);
@@ -58,16 +61,20 @@ export function renderNewProjectScreen(
     }
   };
 
-  gpSourceFileInput?.addEventListener("change", () => {
-    const file = gpSourceFileInput.files?.[0] ?? null;
-    selectedSourceFile = file;
-
-    if (selectedFileName) {
-      selectedFileName.textContent = file ? `Selected: ${file.name}` : "No file selected";
+  pickGpFileButton?.addEventListener("click", async () => {
+    const sourceFile = await actions.onPickGpFile();
+    if (!sourceFile) {
+      return;
     }
 
-    if (file && projectTitleInput && !projectTitleInput.value.trim()) {
-      projectTitleInput.value = removeGpExtension(file.name) || file.name;
+    selectedSourceFile = sourceFile;
+
+    if (selectedFileName) {
+      selectedFileName.textContent = `Selected: ${sourceFile.fileName}`;
+    }
+
+    if (projectTitleInput && !projectTitleInput.value.trim()) {
+      projectTitleInput.value = removeGpExtension(sourceFile.fileName) || sourceFile.fileName;
     }
 
     updateCreateButtonState();
@@ -75,12 +82,12 @@ export function renderNewProjectScreen(
 
   projectTitleInput?.addEventListener("input", updateCreateButtonState);
 
-  createProjectButton?.addEventListener("click", () => {
+  createProjectButton?.addEventListener("click", async () => {
     if (!selectedSourceFile || !projectTitleInput) {
       return;
     }
 
-    actions.onCreateProject({
+    await actions.onCreateProject({
       sourceFile: selectedSourceFile,
       projectTitle: projectTitleInput.value,
     });

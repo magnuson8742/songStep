@@ -7,7 +7,8 @@ import {
 import { renderOpenProjectScreen } from "../features/openProject/renderOpenProjectScreen";
 import {
   createProjectFromSource,
-  loadProjectFromDisk,
+  pickAndLoadProjectFromDisk,
+  pickGpSourceFile,
   saveProjectToDisk,
 } from "../features/projectPersistence/projectPersistence";
 import { renderProjectScreen } from "../features/projectScreen/renderProjectScreen";
@@ -17,6 +18,10 @@ type AppView = "home" | "newProject" | "openProject" | "project";
 interface AppState {
   currentView: AppView;
   currentProject: SongStepProject | null;
+}
+
+function sourceNameFromProject(project: SongStepProject): string {
+  return project.sourceFile.fileName;
 }
 
 export function startApp(rootElement: HTMLElement): void {
@@ -46,6 +51,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentView = "home";
           render();
         },
+        onPickGpFile: () => pickGpSourceFile(),
         onCreateProject: async (payload: NewProjectSubmitPayload) => {
           const project = await createProjectFromSource(payload.sourceFile, payload.projectTitle);
           state.currentProject = project;
@@ -62,14 +68,20 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentView = "home";
           render();
         },
-        onProjectFileSelected: async (projectFile: File) => {
+        onOpenProjectFile: async () => {
           try {
-            const project = await loadProjectFromDisk(projectFile);
+            const project = await pickAndLoadProjectFromDisk();
+            if (!project) {
+              return null;
+            }
+
             state.currentProject = project;
             state.currentView = "project";
             render();
+            return sourceNameFromProject(project);
           } catch (error) {
             alert(error instanceof Error ? error.message : "Could not open project.");
+            return null;
           }
         },
       });
@@ -82,12 +94,21 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentView = "home";
           render();
         },
-        onSaveProject: () => {
+        onSaveProject: async () => {
           if (!state.currentProject) {
             return;
           }
 
-          saveProjectToDisk(state.currentProject);
+          try {
+            const wasSaved = await saveProjectToDisk(state.currentProject);
+            if (!wasSaved) {
+              return;
+            }
+
+            alert("Project saved.");
+          } catch (error) {
+            alert(error instanceof Error ? error.message : "Project save failed.");
+          }
         },
         onPlay: () => {
           alert("Playback engine is not connected yet. This is a placeholder.");
