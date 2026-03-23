@@ -196,7 +196,8 @@ select {
   min-height: 420px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
-  background: rgba(8, 11, 16, 0.66);
+  background: #f7f3ea;
+  color: #111;
   overflow: auto;
   padding: 8px;
 }
