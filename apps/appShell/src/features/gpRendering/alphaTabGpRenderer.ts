@@ -1,12 +1,6 @@
+import * as alphaTab from "@coderline/alphatab";
+
 import type { SourceFileData } from "../../domain/project/projectModel";
-
-const ALPHATAB_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/@coderline/alphatab@1.5.0/dist/alphaTab.js";
-
-let alphaTabLoadPromise: Promise<AlphaTabGlobal> | null = null;
-
-interface AlphaTabGlobal {
-  AlphaTabApi: new (element: HTMLElement, settings: unknown) => AlphaTabApi;
-}
 
 interface AlphaTabApi {
   load: (scoreData: unknown, trackIndexes?: number[]) => boolean;
@@ -55,54 +49,15 @@ function base64ToBytes(base64: string): Uint8Array {
   return bytes;
 }
 
-function getAlphaTabFromWindow(): AlphaTabGlobal | null {
-  const candidate = (window as Window & { alphaTab?: AlphaTabGlobal }).alphaTab;
-
-  if (!candidate?.AlphaTabApi) {
-    return null;
-  }
-
-  return candidate;
-}
-
-async function loadAlphaTab(): Promise<AlphaTabGlobal> {
-  const existing = getAlphaTabFromWindow();
-  if (existing) {
-    return existing;
-  }
-
-  if (!alphaTabLoadPromise) {
-    alphaTabLoadPromise = new Promise<AlphaTabGlobal>((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = ALPHATAB_SCRIPT_URL;
-      script.async = true;
-
-      script.onload = () => {
-        const loaded = getAlphaTabFromWindow();
-        if (!loaded) {
-          reject(new Error("alphaTab script loaded but API is unavailable."));
-          return;
-        }
-
-        resolve(loaded);
-      };
-
-      script.onerror = () => {
-        reject(new Error("Could not load alphaTab renderer script."));
-      };
-
-      document.head.appendChild(script);
-    });
-  }
-
-  return alphaTabLoadPromise;
-}
-
 function toTrackInfoList(tracks: AlphaTabTrack[]): GpTrackInfo[] {
   return tracks.map((track) => ({
     index: track.index,
     name: track.name || `Track ${track.index + 1}`,
   }));
+}
+
+function createAlphaTabApi(container: HTMLElement): AlphaTabApi {
+  return new alphaTab.AlphaTabApi(container, {}) as unknown as AlphaTabApi;
 }
 
 export async function createGpRenderer(
@@ -111,8 +66,7 @@ export async function createGpRenderer(
   selectedTrackIndex: number,
   hooks: GpRendererHooks,
 ): Promise<GpRendererController> {
-  const alphaTab = await loadAlphaTab();
-  const api = new alphaTab.AlphaTabApi(container, {});
+  const api = createAlphaTabApi(container);
   let loadedTracks: AlphaTabTrack[] = [];
 
   api.scoreLoaded.on((score) => {
