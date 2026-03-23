@@ -5,12 +5,17 @@ export interface SourceFileData {
   contentBase64: string;
 }
 
+export interface ProjectViewState {
+  selectedTrackIndex: number;
+}
+
 export interface SongStepProject {
   id: string;
   title: string;
   createdAtIso: string;
   updatedAtIso: string;
   sourceFile: SourceFileData;
+  viewState: ProjectViewState;
 }
 
 export interface StoredProjectFile {

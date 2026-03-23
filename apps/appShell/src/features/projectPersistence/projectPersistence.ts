@@ -164,6 +164,9 @@ export async function createProjectFromSource(
     createdAtIso: nowIso,
     updatedAtIso: nowIso,
     sourceFile: sourceData,
+    viewState: {
+      selectedTrackIndex: 0,
+    },
   };
 }
 
@@ -229,6 +232,19 @@ export async function saveProjectToDisk(project: SongStepProject): Promise<SaveP
   };
 }
 
+
+
+function normalizeViewState(project: SongStepProject): SongStepProject {
+  return {
+    ...project,
+    viewState: {
+      selectedTrackIndex: Number.isInteger(project.viewState?.selectedTrackIndex)
+        ? project.viewState.selectedTrackIndex
+        : 0,
+    },
+  };
+}
+
 function parseStoredProject(serializedProject: string): SongStepProject {
   let parsedProject: StoredProjectFile;
 
@@ -260,7 +276,7 @@ function parseStoredProject(serializedProject: string): SongStepProject {
     throw new Error("Project file is missing embedded GP source data.");
   }
 
-  return parsedProject.project;
+  return normalizeViewState(parsedProject.project);
 }
 
 export async function pickAndLoadProjectFromDisk(): Promise<SongStepProject | null> {

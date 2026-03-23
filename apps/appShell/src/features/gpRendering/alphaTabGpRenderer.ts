@@ -1,6 +1,6 @@
 import type { SourceFileData } from "../../domain/project/projectModel";
 
-const ALPHATAB_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/@coderline/alphatab@latest/dist/alphaTab.js";
+const ALPHATAB_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/@coderline/alphatab@1.5.0/dist/alphaTab.js";
 
 let alphaTabLoadPromise: Promise<AlphaTabGlobal> | null = null;
 

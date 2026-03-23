@@ -91,7 +91,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentView = "project";
           state.projectStatusMessage = "New project created. Loading GP tracks...";
           state.gpTracks = [];
-          state.selectedTrackIndex = 0;
+          state.selectedTrackIndex = project.viewState.selectedTrackIndex;
           render();
         },
       });
@@ -115,7 +115,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.currentView = "project";
             state.projectStatusMessage = "Project opened. Loading GP tracks...";
             state.gpTracks = [];
-            state.selectedTrackIndex = 0;
+            state.selectedTrackIndex = project.viewState.selectedTrackIndex;
             render();
             return project.sourceFile.fileName;
           } catch (error) {
@@ -136,6 +136,10 @@ export function startApp(rootElement: HTMLElement): void {
         selectedTrackIndex: state.selectedTrackIndex,
         onTrackSelectionChange: (trackIndex: number) => {
           state.selectedTrackIndex = trackIndex;
+          if (state.currentProject) {
+            state.currentProject.viewState.selectedTrackIndex = trackIndex;
+          }
+
           state.gpRenderer?.selectTrack(trackIndex);
         },
         onBackToHome: () => {
@@ -190,6 +194,10 @@ export function startApp(rootElement: HTMLElement): void {
           const hasSelectedTrack = tracks.some((track) => track.index === state.selectedTrackIndex);
           if (!hasSelectedTrack) {
             state.selectedTrackIndex = tracks[0]?.index ?? 0;
+          }
+
+          if (state.currentProject) {
+            state.currentProject.viewState.selectedTrackIndex = state.selectedTrackIndex;
           }
 
           state.projectStatusMessage = `Loaded ${tracks.length} track${tracks.length === 1 ? "" : "s"}.`;
