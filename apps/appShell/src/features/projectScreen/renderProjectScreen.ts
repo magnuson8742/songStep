@@ -1,11 +1,28 @@
 import type { SongStepProject } from "../../domain/project/projectModel";
+import type { GpTrackInfo } from "../gpRendering/alphaTabGpRenderer";
 
 export interface ProjectScreenActions {
   statusMessage: string | null;
+  tracks: GpTrackInfo[];
+  selectedTrackIndex: number;
+  onTrackSelectionChange: (trackIndex: number) => void;
   onBackToHome: () => void;
   onSaveProject: () => Promise<void>;
   onPlay: () => void;
   onPause: () => void;
+}
+
+function renderTrackOptions(tracks: GpTrackInfo[], selectedTrackIndex: number): string {
+  if (tracks.length === 0) {
+    return '<option value="0">Loading tracks...</option>';
+  }
+
+  return tracks
+    .map((track) => {
+      const selectedAttribute = track.index === selectedTrackIndex ? "selected" : "";
+      return `<option value="${track.index}" ${selectedAttribute}>${track.name}</option>`;
+    })
+    .join("");
 }
 
 export function renderProjectScreen(
@@ -33,8 +50,16 @@ export function renderProjectScreen(
       ${statusBanner}
 
       <section class="homeCard">
-        <h2 class="sectionTitle">Tab area</h2>
-        <p class="sectionText">Tab rendering will be connected in the next step.</p>
+        <div class="projectSectionHeader">
+          <h2 class="sectionTitle">Tab area</h2>
+          <label class="trackSelectorLabel">
+            Track
+            <select class="fieldInput trackSelector" data-action="track-select">
+              ${renderTrackOptions(actions.tracks, actions.selectedTrackIndex)}
+            </select>
+          </label>
+        </div>
+        <div id="gpRenderHost" class="gpRenderHost" aria-label="GP tablature render area"></div>
       </section>
 
       <section class="homeCard">
@@ -48,10 +73,20 @@ export function renderProjectScreen(
     </main>
   `;
 
+  const trackSelect = container.querySelector<HTMLSelectElement>('[data-action="track-select"]');
   const saveProjectButton = container.querySelector<HTMLButtonElement>('[data-action="save-project"]');
   const playButton = container.querySelector<HTMLButtonElement>('[data-action="play"]');
   const pauseButton = container.querySelector<HTMLButtonElement>('[data-action="pause"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
+
+  trackSelect?.addEventListener("change", () => {
+    const nextTrackIndex = Number(trackSelect.value);
+    if (Number.isNaN(nextTrackIndex)) {
+      return;
+    }
+
+    actions.onTrackSelectionChange(nextTrackIndex);
+  });
 
   saveProjectButton?.addEventListener("click", actions.onSaveProject);
   playButton?.addEventListener("click", actions.onPlay);

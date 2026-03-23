@@ -169,3 +169,34 @@ select {
   color: #d6e7ff;
   font-size: 14px;
 }
+
+
+.projectSectionHeader {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.trackSelectorLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #cfd8e6;
+  font-weight: 600;
+}
+
+.trackSelector {
+  min-width: 220px;
+}
+
+.gpRenderHost {
+  min-height: 420px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(8, 11, 16, 0.66);
+  overflow: auto;
+  padding: 8px;
+}

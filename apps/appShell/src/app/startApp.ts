@@ -6,6 +6,11 @@ import {
 } from "../features/newProject/renderNewProjectScreen";
 import { renderOpenProjectScreen } from "../features/openProject/renderOpenProjectScreen";
 import {
+  createGpRenderer,
+  type GpRendererController,
+  type GpTrackInfo,
+} from "../features/gpRendering/alphaTabGpRenderer";
+import {
   createProjectFromSource,
   pickAndLoadProjectFromDisk,
   pickGpSourceFile,
@@ -19,6 +24,20 @@ interface AppState {
   currentView: AppView;
   currentProject: SongStepProject | null;
   projectStatusMessage: string | null;
+  gpTracks: GpTrackInfo[];
+  selectedTrackIndex: number;
+  gpRenderer: GpRendererController | null;
+}
+
+function isSameTrackList(current: GpTrackInfo[], next: GpTrackInfo[]): boolean {
+  if (current.length !== next.length) {
+    return false;
+  }
+
+  return current.every((track, index) => {
+    const nextTrack = next[index];
+    return nextTrack && track.index === nextTrack.index && track.name === nextTrack.name;
+  });
 }
 
 export function startApp(rootElement: HTMLElement): void {
@@ -26,9 +45,25 @@ export function startApp(rootElement: HTMLElement): void {
     currentView: "home",
     currentProject: null,
     projectStatusMessage: null,
+    gpTracks: [],
+    selectedTrackIndex: 0,
+    gpRenderer: null,
+  };
+
+  const cleanupRenderer = (): void => {
+    if (!state.gpRenderer) {
+      return;
+    }
+
+    state.gpRenderer.destroy();
+    state.gpRenderer = null;
   };
 
   const render = (): void => {
+    if (state.currentView !== "project") {
+      cleanupRenderer();
+    }
+
     if (state.currentView === "home") {
       renderHomeScreen(rootElement, {
         onNewProject: () => {
@@ -54,7 +89,9 @@ export function startApp(rootElement: HTMLElement): void {
           const project = await createProjectFromSource(payload.sourceFile, payload.projectTitle);
           state.currentProject = project;
           state.currentView = "project";
-          state.projectStatusMessage = "New project created. Use Save Project to write a .songstep file.";
+          state.projectStatusMessage = "New project created. Loading GP tracks...";
+          state.gpTracks = [];
+          state.selectedTrackIndex = 0;
           render();
         },
       });
@@ -76,7 +113,9 @@ export function startApp(rootElement: HTMLElement): void {
 
             state.currentProject = project;
             state.currentView = "project";
-            state.projectStatusMessage = `Opened project from ${project.sourceFile.fileName}.`;
+            state.projectStatusMessage = "Project opened. Loading GP tracks...";
+            state.gpTracks = [];
+            state.selectedTrackIndex = 0;
             render();
             return project.sourceFile.fileName;
           } catch (error) {
@@ -89,8 +128,16 @@ export function startApp(rootElement: HTMLElement): void {
     }
 
     if (state.currentView === "project" && state.currentProject) {
+      cleanupRenderer();
+
       renderProjectScreen(rootElement, state.currentProject, {
         statusMessage: state.projectStatusMessage,
+        tracks: state.gpTracks,
+        selectedTrackIndex: state.selectedTrackIndex,
+        onTrackSelectionChange: (trackIndex: number) => {
+          state.selectedTrackIndex = trackIndex;
+          state.gpRenderer?.selectTrack(trackIndex);
+        },
         onBackToHome: () => {
           state.currentView = "home";
           render();
@@ -124,6 +171,43 @@ export function startApp(rootElement: HTMLElement): void {
           alert("Playback engine is not connected yet. This is a placeholder.");
         },
       });
+
+      const gpRenderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+      if (!gpRenderHost) {
+        state.projectStatusMessage = "GP render area is unavailable.";
+        return;
+      }
+
+      const project = state.currentProject;
+      createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
+        onTracksLoaded: (tracks) => {
+          const trackListChanged = !isSameTrackList(state.gpTracks, tracks);
+          if (!trackListChanged) {
+            return;
+          }
+
+          state.gpTracks = tracks;
+          const hasSelectedTrack = tracks.some((track) => track.index === state.selectedTrackIndex);
+          if (!hasSelectedTrack) {
+            state.selectedTrackIndex = tracks[0]?.index ?? 0;
+          }
+
+          state.projectStatusMessage = `Loaded ${tracks.length} track${tracks.length === 1 ? "" : "s"}.`;
+          render();
+        },
+        onRenderError: (message) => {
+          state.projectStatusMessage = message;
+          render();
+        },
+      })
+        .then((renderer) => {
+          state.gpRenderer = renderer;
+        })
+        .catch((error: unknown) => {
+          state.projectStatusMessage =
+            error instanceof Error ? error.message : "Could not initialize GP renderer.";
+          render();
+        });
       return;
     }
 
