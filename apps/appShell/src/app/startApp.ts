@@ -48,7 +48,7 @@ function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"]): st
   }
 
   return debugRows
-    .map((row) => `pos=${row.position} | track.index=${row.trackIndex} | name=${row.trackName || "(unnamed)"}`)
+    .map((row) => `pos=${row.position} | track.index=${row.trackIndex} | name=${row.trackName || "(unnamed)"} | totalBars=${row.totalBars} | totalNotes=${row.totalNotes} | firstNonEmptyBarIndex=${row.firstNonEmptyBarIndex ?? "-"}`)
     .join("\n");
 }
 
