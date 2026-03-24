@@ -28,6 +28,10 @@ interface AppState {
   gpTracks: GpTrackInfo[];
   selectedTrackIndex: number;
   requestedTrackIndex: number | null;
+  lastClickedTrackIndex: number | null;
+  clickCounter: number;
+  lastClickTimestampIso: string | null;
+  selectionFired: boolean;
   gpRenderer: GpRendererController | null;
   gpRenderDebugInfo: GpRenderDebugInfo | null;
 }
@@ -54,6 +58,10 @@ function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"]): st
 function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRenderDebugInfo | null): void {
   updateDebugField(rootElement, "selected-track-index", String(debugInfo?.selectedTrackIndex ?? "-"));
   updateDebugField(rootElement, "requested-track-index", "-");
+  updateDebugField(rootElement, "last-clicked-track-index", "-");
+  updateDebugField(rootElement, "click-counter", "0");
+  updateDebugField(rootElement, "last-click-timestamp", "-");
+  updateDebugField(rootElement, "selection-fired", "no");
   updateDebugField(rootElement, "confirmed-active-track-name", debugInfo?.confirmedActiveTrackName ?? "-");
   updateDebugField(rootElement, "confirmed-active-track-index", String(debugInfo?.confirmedActiveTrackIndex ?? "-"));
   updateDebugField(rootElement, "confirmed-active-track-position", String(debugInfo?.confirmedActiveTrackPosition ?? "-"));
@@ -94,6 +102,10 @@ export function startApp(rootElement: HTMLElement): void {
     gpTracks: [],
     selectedTrackIndex: 0,
     requestedTrackIndex: null,
+    lastClickedTrackIndex: null,
+    clickCounter: 0,
+    lastClickTimestampIso: null,
+    selectionFired: false,
     gpRenderer: null,
     gpRenderDebugInfo: null,
   };
@@ -142,6 +154,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.selectedTrackIndex = project.viewState.selectedTrackIndex;
           state.requestedTrackIndex = null;
           state.gpRenderDebugInfo = null;
+          state.lastClickedTrackIndex = null;
+          state.clickCounter = 0;
+          state.lastClickTimestampIso = null;
+          state.selectionFired = false;
           render();
         },
       });
@@ -168,6 +184,10 @@ export function startApp(rootElement: HTMLElement): void {
             state.selectedTrackIndex = project.viewState.selectedTrackIndex;
             state.requestedTrackIndex = null;
             state.gpRenderDebugInfo = null;
+            state.lastClickedTrackIndex = null;
+            state.clickCounter = 0;
+            state.lastClickTimestampIso = null;
+            state.selectionFired = false;
             render();
             return project.sourceFile.fileName;
           } catch (error) {
@@ -187,11 +207,24 @@ export function startApp(rootElement: HTMLElement): void {
         tracks: state.gpTracks,
         selectedTrackIndex: state.selectedTrackIndex,
         requestedTrackIndex: state.requestedTrackIndex,
+        lastClickedTrackIndex: state.lastClickedTrackIndex,
+        clickCounter: state.clickCounter,
+        lastClickTimestampIso: state.lastClickTimestampIso,
+        selectionFired: state.selectionFired,
         confirmedActiveTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
         debugInfo: state.gpRenderDebugInfo,
         onTrackSelectionChange: (trackIndex: number) => {
           state.requestedTrackIndex = trackIndex;
+          state.lastClickedTrackIndex = trackIndex;
+          state.clickCounter += 1;
+          state.lastClickTimestampIso = new Date().toISOString();
+          state.selectionFired = true;
+
           updateDebugField(rootElement, "requested-track-index", String(trackIndex));
+          updateDebugField(rootElement, "last-clicked-track-index", String(trackIndex));
+          updateDebugField(rootElement, "click-counter", String(state.clickCounter));
+          updateDebugField(rootElement, "last-click-timestamp", state.lastClickTimestampIso);
+          updateDebugField(rootElement, "selection-fired", "yes");
           state.gpRenderer?.selectTrack(trackIndex);
         },
         onBackToHome: () => {
@@ -259,11 +292,16 @@ export function startApp(rootElement: HTMLElement): void {
           state.gpRenderDebugInfo = debugInfo;
           updateProjectDebugInfoPanel(rootElement, debugInfo);
           updateDebugField(rootElement, "requested-track-index", String(state.requestedTrackIndex ?? "-"));
+          updateDebugField(rootElement, "last-clicked-track-index", String(state.lastClickedTrackIndex ?? "-"));
+          updateDebugField(rootElement, "click-counter", String(state.clickCounter));
+          updateDebugField(rootElement, "last-click-timestamp", state.lastClickTimestampIso ?? "-");
+          updateDebugField(rootElement, "selection-fired", state.selectionFired ? "yes" : "no");
           updateTrackStripActive(rootElement, debugInfo.confirmedActiveTrackIndex);
         },
         onActiveTrackConfirmed: (trackIndex) => {
           state.selectedTrackIndex = trackIndex;
           state.requestedTrackIndex = null;
+          state.selectionFired = false;
           if (state.currentProject) {
             state.currentProject.viewState.selectedTrackIndex = trackIndex;
           }
@@ -271,6 +309,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateTrackStripActive(rootElement, trackIndex);
           updateDebugField(rootElement, "selected-track-index", String(trackIndex));
           updateDebugField(rootElement, "requested-track-index", "-");
+          updateDebugField(rootElement, "selection-fired", "no");
         },
         onRenderError: (message) => {
           state.projectStatusMessage = message;

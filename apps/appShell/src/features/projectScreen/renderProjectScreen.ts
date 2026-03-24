@@ -6,6 +6,10 @@ export interface ProjectScreenActions {
   tracks: GpTrackInfo[];
   selectedTrackIndex: number;
   requestedTrackIndex: number | null;
+  lastClickedTrackIndex: number | null;
+  clickCounter: number;
+  lastClickTimestampIso: string | null;
+  selectionFired: boolean;
   confirmedActiveTrackIndex: number | null;
   debugInfo: GpRenderDebugInfo | null;
   onTrackSelectionChange: (trackIndex: number) => void;
@@ -47,21 +51,21 @@ function renderTrackStrip(tracks: GpTrackInfo[], confirmedActiveTrackIndex: numb
       const activeClass = isActive ? "trackStripItem isActiveTrack" : "trackStripItem";
 
       return `
-        <article class="${activeClass}" data-track-item-index="${track.index}" data-action="track-card" role="button" tabindex="0" aria-label="Select track ${track.name}">
+        <article class="${activeClass}" data-track-item-index="${track.index}" role="button" tabindex="0" aria-label="Select track ${track.name}">
           <div class="trackTitleRow">
             <h3 class="trackTitle">${track.name}</h3>
             <span class="trackStateBadge">${isActive ? "Active" : "Idle"}</span>
           </div>
           <div class="trackControlRow" aria-label="Track controls for ${track.name}">
-            <button class="secondaryButton trackControlButton" type="button" data-action="placeholder-solo" data-stop-track-select="true">S</button>
-            <button class="secondaryButton trackControlButton" type="button" data-action="placeholder-mute" data-stop-track-select="true">M</button>
+            <button class="secondaryButton trackControlButton" type="button" data-stop-track-select="true">S</button>
+            <button class="secondaryButton trackControlButton" type="button" data-stop-track-select="true">M</button>
             <label class="trackControlLabel">
               Vol
-              <input class="trackControlRange" type="range" min="0" max="100" value="80" data-action="placeholder-volume" data-stop-track-select="true" />
+              <input class="trackControlRange" type="range" min="0" max="100" value="80" data-stop-track-select="true" />
             </label>
             <label class="trackControlLabel">
               Bal
-              <input class="trackControlRange" type="range" min="-50" max="50" value="0" data-action="placeholder-balance" data-stop-track-select="true" />
+              <input class="trackControlRange" type="range" min="-50" max="50" value="0" data-stop-track-select="true" />
             </label>
           </div>
         </article>
@@ -109,20 +113,20 @@ export function renderProjectScreen(
             <dd data-debug-field="selected-track-index">${renderDebugValue(actions.selectedTrackIndex)}</dd>
             <dt>Requested track index</dt>
             <dd data-debug-field="requested-track-index">${renderDebugValue(actions.requestedTrackIndex)}</dd>
+            <dt>Last clicked track index</dt>
+            <dd data-debug-field="last-clicked-track-index">${renderDebugValue(actions.lastClickedTrackIndex)}</dd>
+            <dt>Click counter</dt>
+            <dd data-debug-field="click-counter">${renderDebugValue(actions.clickCounter)}</dd>
+            <dt>Last click timestamp</dt>
+            <dd data-debug-field="last-click-timestamp">${renderDebugValue(actions.lastClickTimestampIso)}</dd>
+            <dt>onTrackSelectionChange fired</dt>
+            <dd data-debug-field="selection-fired">${actions.selectionFired ? "yes" : "no"}</dd>
             <dt>Confirmed active track name</dt>
             <dd data-debug-field="confirmed-active-track-name">${renderDebugValue(debugInfo?.confirmedActiveTrackName ?? null)}</dd>
             <dt>Confirmed active track index</dt>
             <dd data-debug-field="confirmed-active-track-index">${renderDebugValue(debugInfo?.confirmedActiveTrackIndex ?? null)}</dd>
             <dt>Confirmed active track position</dt>
             <dd data-debug-field="confirmed-active-track-position">${renderDebugValue(debugInfo?.confirmedActiveTrackPosition ?? null)}</dd>
-            <dt>Resolved track name</dt>
-            <dd data-debug-field="resolved-track-name">${renderDebugValue(debugInfo?.resolvedTrackName ?? null)}</dd>
-            <dt>Resolved track index</dt>
-            <dd data-debug-field="resolved-track-index">${renderDebugValue(debugInfo?.resolvedTrackIndex ?? null)}</dd>
-            <dt>Resolved track position</dt>
-            <dd data-debug-field="resolved-track-position">${renderDebugValue(debugInfo?.resolvedTrackPosition ?? null)}</dd>
-            <dt>Renderer reload happened</dt>
-            <dd data-debug-field="renderer-reloaded">${debugInfo ? (debugInfo.rendererReloaded ? "yes" : "no") : "-"}</dd>
             <dt>api.score?.tracks.length</dt>
             <dd data-debug-field="score-track-count">${renderDebugValue(debugInfo?.scoreTrackCount ?? null)}</dd>
           </dl>
@@ -141,7 +145,7 @@ export function renderProjectScreen(
 
         <div id="gpRenderHost" class="gpRenderHost" aria-label="GP tablature render area"></div>
 
-        <div class="trackStrip" aria-label="Track strip">
+        <div class="trackStrip" aria-label="Track strip" data-action="track-strip">
           ${renderTrackStrip(actions.tracks, actions.confirmedActiveTrackIndex)}
         </div>
       </section>
@@ -161,11 +165,16 @@ export function renderProjectScreen(
   const playButton = container.querySelector<HTMLButtonElement>('[data-action="play"]');
   const pauseButton = container.querySelector<HTMLButtonElement>('[data-action="pause"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
-  const trackCards = container.querySelectorAll<HTMLElement>('[data-action="track-card"]');
+  const trackStrip = container.querySelector<HTMLElement>('[data-action="track-strip"]');
 
-  const handleTrackCardSelection = (trackCard: HTMLElement, eventTarget: EventTarget | null): void => {
+  const handleTrackSelection = (eventTarget: EventTarget | null): void => {
     const targetElement = eventTarget instanceof Element ? eventTarget : null;
     if (targetElement?.closest("[data-stop-track-select='true']")) {
+      return;
+    }
+
+    const trackCard = targetElement?.closest<HTMLElement>("[data-track-item-index]");
+    if (!trackCard) {
       return;
     }
 
@@ -177,19 +186,22 @@ export function renderProjectScreen(
     actions.onTrackSelectionChange(trackIndex);
   };
 
-  trackCards.forEach((trackCard) => {
-    trackCard.addEventListener("click", (event) => {
-      handleTrackCardSelection(trackCard, event.target);
-    });
+  trackStrip?.addEventListener("click", (event) => {
+    handleTrackSelection(event.target);
+  });
 
-    trackCard.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") {
-        return;
-      }
+  trackStrip?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
 
-      event.preventDefault();
-      handleTrackCardSelection(trackCard, event.target);
-    });
+    const targetElement = event.target instanceof Element ? event.target : null;
+    if (!targetElement?.closest("[data-track-item-index]")) {
+      return;
+    }
+
+    event.preventDefault();
+    handleTrackSelection(event.target);
   });
 
   saveProjectButton?.addEventListener("click", actions.onSaveProject);
