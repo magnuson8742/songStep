@@ -54,6 +54,9 @@ function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"]): st
 
 function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRenderDebugInfo | null): void {
   updateDebugField(rootElement, "selected-track-index", String(debugInfo?.selectedTrackIndex ?? "-"));
+  updateDebugField(rootElement, "confirmed-active-track-name", debugInfo?.confirmedActiveTrackName ?? "-");
+  updateDebugField(rootElement, "confirmed-active-track-index", String(debugInfo?.confirmedActiveTrackIndex ?? "-"));
+  updateDebugField(rootElement, "confirmed-active-track-position", String(debugInfo?.confirmedActiveTrackPosition ?? "-"));
   updateDebugField(rootElement, "resolved-track-name", debugInfo?.resolvedTrackName ?? "-");
   updateDebugField(rootElement, "resolved-track-index", String(debugInfo?.resolvedTrackIndex ?? "-"));
   updateDebugField(rootElement, "resolved-track-position", String(debugInfo?.resolvedTrackPosition ?? "-"));
@@ -61,6 +64,16 @@ function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRend
   updateDebugField(rootElement, "score-track-count", String(debugInfo?.scoreTrackCount ?? "-"));
   updateDebugField(rootElement, "score-tracks", formatRuntimeTrackList(debugInfo?.scoreTracks ?? []));
   updateDebugField(rootElement, "rendered-tracks", formatRuntimeTrackList(debugInfo?.renderedTracks ?? []));
+}
+
+
+function updateTrackStripActive(rootElement: HTMLElement, activeTrackIndex: number | null): void {
+  const trackItems = rootElement.querySelectorAll<HTMLElement>("[data-track-item-index]");
+  trackItems.forEach((item) => {
+    const itemTrackIndex = Number(item.dataset.trackItemIndex);
+    const isActive = activeTrackIndex !== null && itemTrackIndex === activeTrackIndex;
+    item.classList.toggle("isActiveTrack", isActive);
+  });
 }
 
 function isSameTrackList(current: GpTrackInfo[], next: GpTrackInfo[]): boolean {
@@ -171,24 +184,9 @@ export function startApp(rootElement: HTMLElement): void {
         statusMessage: state.projectStatusMessage,
         tracks: state.gpTracks,
         selectedTrackIndex: state.selectedTrackIndex,
+        confirmedActiveTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
         debugInfo: state.gpRenderDebugInfo,
         onTrackSelectionChange: (trackIndex: number) => {
-          state.selectedTrackIndex = trackIndex;
-          if (state.currentProject) {
-            state.currentProject.viewState.selectedTrackIndex = trackIndex;
-          }
-
-          state.gpRenderDebugInfo = {
-            selectedTrackIndex: trackIndex,
-            resolvedTrackName: state.gpRenderDebugInfo?.resolvedTrackName ?? "",
-            resolvedTrackIndex: state.gpRenderDebugInfo?.resolvedTrackIndex ?? trackIndex,
-            resolvedTrackPosition: state.gpRenderDebugInfo?.resolvedTrackPosition ?? 0,
-            rendererReloaded: false,
-            scoreTrackCount: state.gpRenderDebugInfo?.scoreTrackCount ?? 0,
-            scoreTracks: state.gpRenderDebugInfo?.scoreTracks ?? [],
-            renderedTracks: state.gpRenderDebugInfo?.renderedTracks ?? [],
-          };
-          updateProjectDebugInfoPanel(rootElement, state.gpRenderDebugInfo);
           state.gpRenderer?.selectTrack(trackIndex);
         },
         onBackToHome: () => {
@@ -255,6 +253,16 @@ export function startApp(rootElement: HTMLElement): void {
         onDebugInfo: (debugInfo) => {
           state.gpRenderDebugInfo = debugInfo;
           updateProjectDebugInfoPanel(rootElement, debugInfo);
+          updateTrackStripActive(rootElement, debugInfo.confirmedActiveTrackIndex);
+        },
+        onActiveTrackConfirmed: (trackIndex) => {
+          state.selectedTrackIndex = trackIndex;
+          if (state.currentProject) {
+            state.currentProject.viewState.selectedTrackIndex = trackIndex;
+          }
+
+          updateTrackStripActive(rootElement, trackIndex);
+          updateDebugField(rootElement, "selected-track-index", String(trackIndex));
         },
         onRenderError: (message) => {
           state.projectStatusMessage = message;

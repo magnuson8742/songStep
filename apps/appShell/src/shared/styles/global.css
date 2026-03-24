@@ -260,3 +260,57 @@ select {
   font-size: 12px;
   color: #f0f4fa;
 }
+
+.trackStrip {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.trackStripItem {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(10, 14, 20, 0.65);
+}
+
+.trackStripItem.isActiveTrack {
+  border-color: rgba(120, 176, 255, 0.8);
+  box-shadow: 0 0 0 1px rgba(120, 176, 255, 0.3) inset;
+}
+
+.trackSelectButton {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: #e6eef9;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 0 8px;
+}
+
+.trackControlRow {
+  display: grid;
+  grid-template-columns: auto auto 1fr 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.trackControlButton {
+  min-width: 36px;
+  padding: 6px 10px;
+}
+
+.trackControlLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #c3d1e6;
+  font-size: 12px;
+}
+
+.trackControlRange {
+  width: 100%;
+}

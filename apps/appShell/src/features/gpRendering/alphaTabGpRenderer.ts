@@ -11,7 +11,7 @@ interface AlphaTabApi {
   scoreLoaded: {
     on: (handler: (score: AlphaTabScore) => void) => void;
   };
-  renderFinished?: {
+  renderStarted?: {
     on: (handler: () => void) => void;
   };
   error?: {
@@ -85,6 +85,9 @@ export interface GpRenderDebugInfo {
   resolvedTrackName: string;
   resolvedTrackIndex: number;
   resolvedTrackPosition: number;
+  confirmedActiveTrackName: string;
+  confirmedActiveTrackIndex: number;
+  confirmedActiveTrackPosition: number;
   rendererReloaded: boolean;
   scoreTrackCount: number;
   scoreTracks: GpTrackRuntimeInfo[];
@@ -94,6 +97,7 @@ export interface GpRenderDebugInfo {
 export interface GpRendererHooks {
   onTracksLoaded: (tracks: GpTrackInfo[]) => void;
   onDebugInfo: (debugInfo: GpRenderDebugInfo) => void;
+  onActiveTrackConfirmed: (trackIndex: number) => void;
   onRenderError: (message: string) => void;
 }
 
@@ -256,11 +260,11 @@ export async function createGpRenderer(
   hooks: GpRendererHooks,
 ): Promise<GpRendererController> {
   const api = createAlphaTabApi(container);
-  let loadedScoreTracks: AlphaTabTrack[] = [];
+  let liveScoreTracks: AlphaTabTrack[] = [];
   let currentSelectedTrackIndex = selectedTrackIndex;
 
   const emitDebugInfo = (): void => {
-    const scoreTracks = getScoreTracks(api, loadedScoreTracks);
+    const scoreTracks = getScoreTracks(api, liveScoreTracks);
     const renderedTracks = api.tracks ?? [];
     const selection = resolveTrackSelection(scoreTracks, currentSelectedTrackIndex);
 
@@ -269,11 +273,18 @@ export async function createGpRenderer(
       return;
     }
 
+    const confirmedSelection = resolveTrackSelection(renderedTracks, currentSelectedTrackIndex) ??
+      resolveTrackSelection(scoreTracks, currentSelectedTrackIndex) ??
+      selection;
+
     hooks.onDebugInfo({
       selectedTrackIndex: currentSelectedTrackIndex,
       resolvedTrackName: selection.track.name || `Track ${selection.track.index + 1}`,
       resolvedTrackIndex: selection.track.index,
       resolvedTrackPosition: selection.trackPosition,
+      confirmedActiveTrackName: confirmedSelection.track.name || `Track ${confirmedSelection.track.index + 1}`,
+      confirmedActiveTrackIndex: confirmedSelection.track.index,
+      confirmedActiveTrackPosition: confirmedSelection.trackPosition,
       rendererReloaded: false,
       scoreTrackCount: scoreTracks.length,
       scoreTracks: toTrackRuntimeInfoList(scoreTracks, api.score),
@@ -282,27 +293,31 @@ export async function createGpRenderer(
   };
 
   const renderSelectedTrack = (): void => {
-    const scoreTracks = getScoreTracks(api, loadedScoreTracks);
+    const scoreTracks = getScoreTracks(api, liveScoreTracks);
     const selection = resolveTrackSelection(scoreTracks, currentSelectedTrackIndex);
     if (!selection) {
       hooks.onRenderError("No tracks were found in this GP file.");
       return;
     }
 
-    api.renderTracks([]);
     api.renderTracks([selection.track]);
     container.scrollTo({ top: 0, left: 0, behavior: "auto" });
   };
 
   api.scoreLoaded.on((score) => {
     applyTrackNamePolicies(score);
-    loadedScoreTracks = score.tracks ?? [];
-    hooks.onTracksLoaded(toTrackInfoList(loadedScoreTracks));
+    liveScoreTracks = score.tracks ?? [];
+    hooks.onTracksLoaded(toTrackInfoList(liveScoreTracks));
 
     renderSelectedTrack();
   });
 
-  api.renderFinished?.on(() => {
+  api.renderStarted?.on(() => {
+    const renderedTrack = api.tracks?.[0];
+    if (renderedTrack) {
+      hooks.onActiveTrackConfirmed(renderedTrack.index);
+    }
+
     emitDebugInfo();
   });
 

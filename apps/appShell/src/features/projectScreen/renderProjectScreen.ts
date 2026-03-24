@@ -5,25 +5,13 @@ export interface ProjectScreenActions {
   statusMessage: string | null;
   tracks: GpTrackInfo[];
   selectedTrackIndex: number;
+  confirmedActiveTrackIndex: number | null;
   debugInfo: GpRenderDebugInfo | null;
   onTrackSelectionChange: (trackIndex: number) => void;
   onBackToHome: () => void;
   onSaveProject: () => Promise<void>;
   onPlay: () => void;
   onPause: () => void;
-}
-
-function renderTrackOptions(tracks: GpTrackInfo[], selectedTrackIndex: number): string {
-  if (tracks.length === 0) {
-    return '<option value="0">Loading tracks...</option>';
-  }
-
-  return tracks
-    .map((track) => {
-      const selectedAttribute = track.index === selectedTrackIndex ? "selected" : "";
-      return `<option value="${track.index}" ${selectedAttribute}>${track.name}</option>`;
-    })
-    .join("");
 }
 
 function renderDebugValue(value: string | number | null): string {
@@ -45,6 +33,38 @@ function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"] | un
         `pos=${row.position} | track.index=${row.trackIndex} | name=${row.trackName || "(unnamed)"} | totalBars=${row.totalBars} | totalNotes=${row.totalNotes} | firstNonEmptyBarIndex=${row.firstNonEmptyBarIndex ?? "-"}`,
     )
     .join("\n");
+}
+
+function renderTrackStrip(tracks: GpTrackInfo[], confirmedActiveTrackIndex: number | null): string {
+  if (tracks.length === 0) {
+    return '<p class="helperText">Loading tracks...</p>';
+  }
+
+  return tracks
+    .map((track) => {
+      const isActive = confirmedActiveTrackIndex === track.index;
+      const activeClass = isActive ? "trackStripItem isActiveTrack" : "trackStripItem";
+      return `
+        <article class="${activeClass}" data-track-item-index="${track.index}">
+          <button class="trackSelectButton" type="button" data-action="track-select-item" data-track-index="${track.index}">
+            ${track.name}
+          </button>
+          <div class="trackControlRow" aria-label="Track controls for ${track.name}">
+            <button class="secondaryButton trackControlButton" type="button" data-action="placeholder-solo">S</button>
+            <button class="secondaryButton trackControlButton" type="button" data-action="placeholder-mute">M</button>
+            <label class="trackControlLabel">
+              Vol
+              <input class="trackControlRange" type="range" min="0" max="100" value="80" data-action="placeholder-volume" />
+            </label>
+            <label class="trackControlLabel">
+              Bal
+              <input class="trackControlRange" type="range" min="-50" max="50" value="0" data-action="placeholder-balance" />
+            </label>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
 }
 
 export function renderProjectScreen(
@@ -76,12 +96,7 @@ export function renderProjectScreen(
       <section class="homeCard">
         <div class="projectSectionHeader">
           <h2 class="sectionTitle">Tab area</h2>
-          <label class="trackSelectorLabel">
-            Track
-            <select class="fieldInput trackSelector" data-action="track-select">
-              ${renderTrackOptions(actions.tracks, actions.selectedTrackIndex)}
-            </select>
-          </label>
+          <p class="helperText">Active track follows renderer-confirmed runtime state.</p>
         </div>
 
         <div class="trackDebugCard" aria-label="Track switch debug info">
@@ -89,6 +104,12 @@ export function renderProjectScreen(
           <dl class="trackDebugGrid">
             <dt>Selected track index (state)</dt>
             <dd data-debug-field="selected-track-index">${renderDebugValue(actions.selectedTrackIndex)}</dd>
+            <dt>Confirmed active track name</dt>
+            <dd data-debug-field="confirmed-active-track-name">${renderDebugValue(debugInfo?.confirmedActiveTrackName ?? null)}</dd>
+            <dt>Confirmed active track index</dt>
+            <dd data-debug-field="confirmed-active-track-index">${renderDebugValue(debugInfo?.confirmedActiveTrackIndex ?? null)}</dd>
+            <dt>Confirmed active track position</dt>
+            <dd data-debug-field="confirmed-active-track-position">${renderDebugValue(debugInfo?.confirmedActiveTrackPosition ?? null)}</dd>
             <dt>Resolved track name</dt>
             <dd data-debug-field="resolved-track-name">${renderDebugValue(debugInfo?.resolvedTrackName ?? null)}</dd>
             <dt>Resolved track index</dt>
@@ -114,6 +135,10 @@ export function renderProjectScreen(
         </div>
 
         <div id="gpRenderHost" class="gpRenderHost" aria-label="GP tablature render area"></div>
+
+        <div class="trackStrip" aria-label="Track strip">
+          ${renderTrackStrip(actions.tracks, actions.confirmedActiveTrackIndex)}
+        </div>
       </section>
 
       <section class="homeCard">
@@ -127,19 +152,21 @@ export function renderProjectScreen(
     </main>
   `;
 
-  const trackSelect = container.querySelector<HTMLSelectElement>('[data-action="track-select"]');
   const saveProjectButton = container.querySelector<HTMLButtonElement>('[data-action="save-project"]');
   const playButton = container.querySelector<HTMLButtonElement>('[data-action="play"]');
   const pauseButton = container.querySelector<HTMLButtonElement>('[data-action="pause"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
+  const trackButtons = container.querySelectorAll<HTMLButtonElement>('[data-action="track-select-item"]');
 
-  trackSelect?.addEventListener("change", () => {
-    const nextTrackIndex = Number(trackSelect.value);
-    if (Number.isNaN(nextTrackIndex)) {
-      return;
-    }
+  trackButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const trackIndex = Number(button.dataset.trackIndex);
+      if (Number.isNaN(trackIndex)) {
+        return;
+      }
 
-    actions.onTrackSelectionChange(nextTrackIndex);
+      actions.onTrackSelectionChange(trackIndex);
+    });
   });
 
   saveProjectButton?.addEventListener("click", actions.onSaveProject);
