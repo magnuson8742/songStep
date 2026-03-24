@@ -54,7 +54,7 @@ function renderTrackStrip(tracks: GpTrackInfo[], confirmedActiveTrackIndex: numb
         <article class="${activeClass}" data-track-item-index="${track.index}" role="button" tabindex="0" aria-label="Select track ${track.name}">
           <div class="trackTitleRow">
             <h3 class="trackTitle">${track.name}</h3>
-            <span class="trackStateBadge">${isActive ? "Active" : "Idle"}</span>
+            <span class="trackStateBadge" data-track-state-badge="true">${isActive ? "Active" : "Idle"}</span>
           </div>
           <div class="trackControlRow" aria-label="Track controls for ${track.name}">
             <button class="secondaryButton trackControlButton" type="button" data-stop-track-select="true">S</button>
@@ -137,6 +137,14 @@ export function renderProjectScreen(
             <dd data-debug-field="last-render-started-at">${renderDebugValue(debugInfo?.lastRenderStartedAtIso ?? null)}</dd>
             <dt>Last render finished</dt>
             <dd data-debug-field="last-render-finished-at">${renderDebugValue(debugInfo?.lastRenderFinishedAtIso ?? null)}</dd>
+            <dt>Last failed requested track index</dt>
+            <dd data-debug-field="last-failed-requested-track-index">${renderDebugValue(debugInfo?.lastFailedRequestedTrackIndex ?? null)}</dd>
+            <dt>Last renderer error stage</dt>
+            <dd data-debug-field="last-renderer-error-stage">${renderDebugValue(debugInfo?.lastRendererErrorStage ?? null)}</dd>
+            <dt>Render timeout hit</dt>
+            <dd data-debug-field="render-timeout-hit">${debugInfo ? (debugInfo.renderTimeoutHit ? "yes" : "no") : "-"}</dd>
+            <dt>Last successful confirmed track index</dt>
+            <dd data-debug-field="last-successful-confirmed-track-index">${renderDebugValue(debugInfo?.lastSuccessfulConfirmedTrackIndex ?? null)}</dd>
             <dt>api.score?.tracks.length</dt>
             <dd data-debug-field="score-track-count">${renderDebugValue(debugInfo?.scoreTrackCount ?? null)}</dd>
           </dl>

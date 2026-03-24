@@ -97,6 +97,10 @@ export interface GpRenderDebugInfo {
   renderCycleCounter: number;
   lastRenderStartedAtIso: string | null;
   lastRenderFinishedAtIso: string | null;
+  lastFailedRequestedTrackIndex: number | null;
+  lastRendererErrorStage: string | null;
+  renderTimeoutHit: boolean;
+  lastSuccessfulConfirmedTrackIndex: number | null;
   scoreTrackCount: number;
   scoreTracks: GpTrackRuntimeInfo[];
   renderedTracks: GpTrackRuntimeInfo[];
@@ -119,6 +123,7 @@ const SONIVOX_SOUND_FONT_PATH = "/soundfont/sonivox.sf2";
 const TAB_ONLY_STAVE_PROFILE = "Tab";
 const ENABLE_LAZY_LOADING = false;
 const USE_WORKERS = false;
+const RENDER_TIMEOUT_MS = 5000;
 
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -281,13 +286,18 @@ export async function createGpRenderer(
   let lastLoadedScoreTracks: AlphaTabTrack[] = [];
   let requestedTrackIndex = selectedTrackIndex;
   let confirmedActiveTrackIndex = selectedTrackIndex;
+  let lastSuccessfulConfirmedTrackIndex: number | null = selectedTrackIndex;
 
   let rendererBusy = false;
   let pendingRequestedTrackIndex: number | null = null;
   let renderCycleCounter = 0;
   let lastRenderStartedAtIso: string | null = null;
   let lastRenderFinishedAtIso: string | null = null;
+  let lastFailedRequestedTrackIndex: number | null = null;
+  let lastRendererErrorStage: string | null = null;
+  let renderTimeoutHit = false;
   let activeSessionToken = 0;
+  let activeRenderTimeoutId: number | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -320,6 +330,10 @@ export async function createGpRenderer(
       renderCycleCounter,
       lastRenderStartedAtIso,
       lastRenderFinishedAtIso,
+      lastFailedRequestedTrackIndex,
+      lastRendererErrorStage,
+      renderTimeoutHit,
+      lastSuccessfulConfirmedTrackIndex,
       scoreTrackCount: scoreTracks.length,
       scoreTracks: toTrackRuntimeInfoList(scoreTracks, activeApi?.score),
       renderedTracks: toTrackRuntimeInfoList(renderedTracks, activeApi?.score),
@@ -329,6 +343,40 @@ export async function createGpRenderer(
   const destroyActiveRenderer = (): void => {
     activeApi?.destroy?.();
     activeApi = null;
+  };
+
+  const clearRenderTimeout = (): void => {
+    if (activeRenderTimeoutId === null) {
+      return;
+    }
+
+    window.clearTimeout(activeRenderTimeoutId);
+    activeRenderTimeoutId = null;
+  };
+
+  const scheduleRenderTimeout = (sessionToken: number, timedOutTrackIndex: number): void => {
+    clearRenderTimeout();
+    activeRenderTimeoutId = window.setTimeout(() => {
+      if (sessionToken !== activeSessionToken || !rendererBusy) {
+        return;
+      }
+
+      renderTimeoutHit = true;
+      lastRendererErrorStage = "renderFinished-timeout";
+      lastFailedRequestedTrackIndex = timedOutTrackIndex;
+      rendererBusy = false;
+      lastRenderFinishedAtIso = new Date().toISOString();
+      destroyActiveRenderer();
+      clearRenderHost(container);
+      emitDebugInfo();
+      hooks.onRenderError(`Track ${timedOutTrackIndex + 1} timed out while rendering.`);
+
+      const queuedTrackIndex = pendingRequestedTrackIndex;
+      pendingRequestedTrackIndex = null;
+      if (queuedTrackIndex !== null) {
+        void switchTrackByReload(queuedTrackIndex);
+      }
+    }, RENDER_TIMEOUT_MS);
   };
 
   const switchTrackByReload = async (nextTrackIndex: number): Promise<void> => {
@@ -345,6 +393,8 @@ export async function createGpRenderer(
     renderCycleCounter += 1;
     lastRenderStartedAtIso = new Date().toISOString();
     lastRenderFinishedAtIso = null;
+    renderTimeoutHit = false;
+    lastRendererErrorStage = "renderer-rebuild-start";
     emitDebugInfo();
 
     const sessionToken = activeSessionToken + 1;
@@ -356,6 +406,7 @@ export async function createGpRenderer(
 
     if (sessionToken !== activeSessionToken) {
       rendererBusy = false;
+      clearRenderTimeout();
       emitDebugInfo();
       return;
     }
@@ -370,6 +421,7 @@ export async function createGpRenderer(
 
       applyTrackNamePolicies(score);
       lastLoadedScoreTracks = score.tracks ?? [];
+      lastRendererErrorStage = "load";
       hooks.onTracksLoaded(toTrackInfoList(lastLoadedScoreTracks));
       emitDebugInfo();
     });
@@ -382,9 +434,11 @@ export async function createGpRenderer(
       const renderedTrack = api.tracks?.[0];
       if (renderedTrack) {
         confirmedActiveTrackIndex = renderedTrack.index;
+        lastSuccessfulConfirmedTrackIndex = renderedTrack.index;
         hooks.onActiveTrackConfirmed(renderedTrack.index);
       }
 
+      lastRendererErrorStage = "renderStarted";
       emitDebugInfo();
     });
 
@@ -393,13 +447,15 @@ export async function createGpRenderer(
         return;
       }
 
+      clearRenderTimeout();
       rendererBusy = false;
       lastRenderFinishedAtIso = new Date().toISOString();
+      lastRendererErrorStage = "renderFinished";
       emitDebugInfo();
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
       pendingRequestedTrackIndex = null;
-      if (queuedTrackIndex !== null && queuedTrackIndex !== requestedTrackIndex) {
+      if (queuedTrackIndex !== null) {
         void switchTrackByReload(queuedTrackIndex);
       }
     });
@@ -409,18 +465,44 @@ export async function createGpRenderer(
         return;
       }
 
+      clearRenderTimeout();
+      lastRendererErrorStage = "error-event";
+      lastFailedRequestedTrackIndex = nextTrackIndex;
       rendererBusy = false;
       lastRenderFinishedAtIso = new Date().toISOString();
+      destroyActiveRenderer();
+      clearRenderHost(container);
       hooks.onRenderError("alphaTab failed to render this GP file.");
       emitDebugInfo();
+
+      const queuedTrackIndex = pendingRequestedTrackIndex;
+      pendingRequestedTrackIndex = null;
+      if (queuedTrackIndex !== null) {
+        void switchTrackByReload(queuedTrackIndex);
+      }
     });
 
+    lastRendererErrorStage = "load-start";
     const loadWasStarted = api.load(sourceBytes, [nextTrackIndex]);
     if (!loadWasStarted) {
+      clearRenderTimeout();
+      lastRendererErrorStage = "load";
+      lastFailedRequestedTrackIndex = nextTrackIndex;
       rendererBusy = false;
       lastRenderFinishedAtIso = new Date().toISOString();
+      destroyActiveRenderer();
+      clearRenderHost(container);
+      emitDebugInfo();
+      const queuedTrackIndex = pendingRequestedTrackIndex;
+      pendingRequestedTrackIndex = null;
+      if (queuedTrackIndex !== null) {
+        void switchTrackByReload(queuedTrackIndex);
+      }
       throw new Error("GP renderer rejected the source data.");
     }
+
+    scheduleRenderTimeout(sessionToken, nextTrackIndex);
+    emitDebugInfo();
   };
 
   await switchTrackByReload(selectedTrackIndex);
@@ -434,6 +516,9 @@ export async function createGpRenderer(
     },
     destroy: () => {
       activeSessionToken += 1;
+      clearRenderTimeout();
+      rendererBusy = false;
+      pendingRequestedTrackIndex = null;
       destroyActiveRenderer();
       clearRenderHost(container);
     },

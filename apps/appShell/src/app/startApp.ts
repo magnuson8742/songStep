@@ -74,6 +74,14 @@ function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRend
   updateDebugField(rootElement, "render-cycle-counter", String(debugInfo?.renderCycleCounter ?? "0"));
   updateDebugField(rootElement, "last-render-started-at", debugInfo?.lastRenderStartedAtIso ?? "-");
   updateDebugField(rootElement, "last-render-finished-at", debugInfo?.lastRenderFinishedAtIso ?? "-");
+  updateDebugField(rootElement, "last-failed-requested-track-index", String(debugInfo?.lastFailedRequestedTrackIndex ?? "-"));
+  updateDebugField(rootElement, "last-renderer-error-stage", debugInfo?.lastRendererErrorStage ?? "-");
+  updateDebugField(rootElement, "render-timeout-hit", debugInfo ? (debugInfo.renderTimeoutHit ? "yes" : "no") : "-");
+  updateDebugField(
+    rootElement,
+    "last-successful-confirmed-track-index",
+    String(debugInfo?.lastSuccessfulConfirmedTrackIndex ?? "-"),
+  );
   updateDebugField(rootElement, "score-track-count", String(debugInfo?.scoreTrackCount ?? "-"));
   updateDebugField(rootElement, "score-tracks", formatRuntimeTrackList(debugInfo?.scoreTracks ?? []));
   updateDebugField(rootElement, "rendered-tracks", formatRuntimeTrackList(debugInfo?.renderedTracks ?? []));
@@ -85,6 +93,10 @@ function updateTrackStripActive(rootElement: HTMLElement, activeTrackIndex: numb
     const itemTrackIndex = Number(item.dataset.trackItemIndex);
     const isActive = activeTrackIndex !== null && itemTrackIndex === activeTrackIndex;
     item.classList.toggle("isActiveTrack", isActive);
+    const badge = item.querySelector<HTMLElement>("[data-track-state-badge]");
+    if (badge) {
+      badge.textContent = isActive ? "Active" : "Idle";
+    }
   });
 }
 
