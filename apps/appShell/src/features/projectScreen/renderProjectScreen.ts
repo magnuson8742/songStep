@@ -1,10 +1,11 @@
 import type { SongStepProject } from "../../domain/project/projectModel";
-import type { GpTrackInfo } from "../gpRendering/alphaTabGpRenderer";
+import type { GpRenderDebugInfo, GpTrackInfo } from "../gpRendering/alphaTabGpRenderer";
 
 export interface ProjectScreenActions {
   statusMessage: string | null;
   tracks: GpTrackInfo[];
   selectedTrackIndex: number;
+  debugInfo: GpRenderDebugInfo | null;
   onTrackSelectionChange: (trackIndex: number) => void;
   onBackToHome: () => void;
   onSaveProject: () => Promise<void>;
@@ -25,6 +26,14 @@ function renderTrackOptions(tracks: GpTrackInfo[], selectedTrackIndex: number): 
     .join("");
 }
 
+function renderDebugValue(value: string | number | null): string {
+  if (value === null || value === "") {
+    return "-";
+  }
+
+  return String(value);
+}
+
 export function renderProjectScreen(
   container: HTMLElement,
   project: SongStepProject,
@@ -33,6 +42,8 @@ export function renderProjectScreen(
   const statusBanner = actions.statusMessage
     ? `<p class="statusBanner" role="status">${actions.statusMessage}</p>`
     : "";
+
+  const debugInfo = actions.debugInfo;
 
   container.innerHTML = `
     <main class="appShell">
@@ -59,6 +70,23 @@ export function renderProjectScreen(
             </select>
           </label>
         </div>
+
+        <div class="trackDebugCard" aria-label="Track switch debug info">
+          <h3 class="trackDebugTitle">Track switch debug</h3>
+          <dl class="trackDebugGrid">
+            <dt>Selected track index (state)</dt>
+            <dd data-debug-field="selected-track-index">${renderDebugValue(actions.selectedTrackIndex)}</dd>
+            <dt>Resolved track name</dt>
+            <dd data-debug-field="resolved-track-name">${renderDebugValue(debugInfo?.resolvedTrackName ?? null)}</dd>
+            <dt>Resolved track index</dt>
+            <dd data-debug-field="resolved-track-index">${renderDebugValue(debugInfo?.resolvedTrackIndex ?? null)}</dd>
+            <dt>Resolved track position</dt>
+            <dd data-debug-field="resolved-track-position">${renderDebugValue(debugInfo?.resolvedTrackPosition ?? null)}</dd>
+            <dt>Renderer reload happened</dt>
+            <dd data-debug-field="renderer-reloaded">${debugInfo ? (debugInfo.rendererReloaded ? "yes" : "no") : "-"}</dd>
+          </dl>
+        </div>
+
         <div id="gpRenderHost" class="gpRenderHost" aria-label="GP tablature render area"></div>
       </section>
 

@@ -7,6 +7,7 @@ import {
 import { renderOpenProjectScreen } from "../features/openProject/renderOpenProjectScreen";
 import {
   createGpRenderer,
+  type GpRenderDebugInfo,
   type GpRendererController,
   type GpTrackInfo,
 } from "../features/gpRendering/alphaTabGpRenderer";
@@ -27,6 +28,25 @@ interface AppState {
   gpTracks: GpTrackInfo[];
   selectedTrackIndex: number;
   gpRenderer: GpRendererController | null;
+  gpRenderDebugInfo: GpRenderDebugInfo | null;
+}
+
+
+function updateDebugField(rootElement: HTMLElement, fieldName: string, value: string): void {
+  const field = rootElement.querySelector<HTMLElement>(`[data-debug-field="${fieldName}"]`);
+  if (!field) {
+    return;
+  }
+
+  field.textContent = value;
+}
+
+function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRenderDebugInfo | null): void {
+  updateDebugField(rootElement, "selected-track-index", String(debugInfo?.selectedTrackIndex ?? "-"));
+  updateDebugField(rootElement, "resolved-track-name", debugInfo?.resolvedTrackName ?? "-");
+  updateDebugField(rootElement, "resolved-track-index", String(debugInfo?.resolvedTrackIndex ?? "-"));
+  updateDebugField(rootElement, "resolved-track-position", String(debugInfo?.resolvedTrackPosition ?? "-"));
+  updateDebugField(rootElement, "renderer-reloaded", debugInfo ? (debugInfo.rendererReloaded ? "yes" : "no") : "-");
 }
 
 function isSameTrackList(current: GpTrackInfo[], next: GpTrackInfo[]): boolean {
@@ -48,6 +68,7 @@ export function startApp(rootElement: HTMLElement): void {
     gpTracks: [],
     selectedTrackIndex: 0,
     gpRenderer: null,
+    gpRenderDebugInfo: null,
   };
 
   const cleanupRenderer = (): void => {
@@ -92,6 +113,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.projectStatusMessage = "New project created. Loading GP tracks...";
           state.gpTracks = [];
           state.selectedTrackIndex = project.viewState.selectedTrackIndex;
+          state.gpRenderDebugInfo = null;
           render();
         },
       });
@@ -116,6 +138,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.projectStatusMessage = "Project opened. Loading GP tracks...";
             state.gpTracks = [];
             state.selectedTrackIndex = project.viewState.selectedTrackIndex;
+            state.gpRenderDebugInfo = null;
             render();
             return project.sourceFile.fileName;
           } catch (error) {
@@ -134,12 +157,21 @@ export function startApp(rootElement: HTMLElement): void {
         statusMessage: state.projectStatusMessage,
         tracks: state.gpTracks,
         selectedTrackIndex: state.selectedTrackIndex,
+        debugInfo: state.gpRenderDebugInfo,
         onTrackSelectionChange: (trackIndex: number) => {
           state.selectedTrackIndex = trackIndex;
           if (state.currentProject) {
             state.currentProject.viewState.selectedTrackIndex = trackIndex;
           }
 
+          state.gpRenderDebugInfo = {
+            selectedTrackIndex: trackIndex,
+            resolvedTrackName: state.gpRenderDebugInfo?.resolvedTrackName ?? "",
+            resolvedTrackIndex: state.gpRenderDebugInfo?.resolvedTrackIndex ?? trackIndex,
+            resolvedTrackPosition: state.gpRenderDebugInfo?.resolvedTrackPosition ?? 0,
+            rendererReloaded: true,
+          };
+          updateProjectDebugInfoPanel(rootElement, state.gpRenderDebugInfo);
           state.gpRenderer?.selectTrack(trackIndex);
         },
         onBackToHome: () => {
@@ -202,6 +234,10 @@ export function startApp(rootElement: HTMLElement): void {
 
           state.projectStatusMessage = `Loaded ${tracks.length} track${tracks.length === 1 ? "" : "s"}.`;
           render();
+        },
+        onDebugInfo: (debugInfo) => {
+          state.gpRenderDebugInfo = debugInfo;
+          updateProjectDebugInfoPanel(rootElement, debugInfo);
         },
         onRenderError: (message) => {
           state.projectStatusMessage = message;

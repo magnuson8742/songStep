@@ -34,8 +34,17 @@ export interface GpTrackInfo {
   name: string;
 }
 
+export interface GpRenderDebugInfo {
+  selectedTrackIndex: number;
+  resolvedTrackName: string;
+  resolvedTrackIndex: number;
+  resolvedTrackPosition: number;
+  rendererReloaded: boolean;
+}
+
 export interface GpRendererHooks {
   onTracksLoaded: (tracks: GpTrackInfo[]) => void;
+  onDebugInfo: (debugInfo: GpRenderDebugInfo) => void;
   onRenderError: (message: string) => void;
 }
 
@@ -118,11 +127,7 @@ function resolveTrackSelection(loadedTracks: AlphaTabTrack[], selectedTrackIndex
   };
 }
 
-function renderSelectedTrack(
-  api: AlphaTabApi,
-  loadedScore: AlphaTabScore,
-  selection: TrackSelection,
-): void {
+function renderSelectedTrack(api: AlphaTabApi, loadedScore: AlphaTabScore, selection: TrackSelection): void {
   if (api.renderScore) {
     api.renderScore(loadedScore, [selection.trackPosition]);
     return;
@@ -137,59 +142,75 @@ export async function createGpRenderer(
   selectedTrackIndex: number,
   hooks: GpRendererHooks,
 ): Promise<GpRendererController> {
-  const api = createAlphaTabApi(container);
-  let loadedScore: AlphaTabScore | null = null;
-  let loadedTracks: AlphaTabTrack[] = [];
-  let hasAppliedInitialTrackSelection = false;
-  let isRerenderInProgress = false;
+  let activeApi: AlphaTabApi | null = null;
+  let activeSessionId = 0;
+  const sourceBytes = base64ToBytes(sourceFile.contentBase64);
 
-  const applyTrackSelection = (trackIndex: number): void => {
-    if (!loadedScore) {
-      return;
+  const startRendererSession = (targetTrackIndex: number, rendererReloaded: boolean): void => {
+    activeSessionId += 1;
+    const sessionId = activeSessionId;
+
+    activeApi?.destroy?.();
+    const api = createAlphaTabApi(container);
+    activeApi = api;
+
+    let hasRenderedForSession = false;
+
+    api.scoreLoaded.on((score) => {
+      if (sessionId !== activeSessionId || hasRenderedForSession) {
+        return;
+      }
+
+      const loadedTracks = score.tracks ?? [];
+      hooks.onTracksLoaded(toTrackInfoList(loadedTracks));
+
+      const selection = resolveTrackSelection(loadedTracks, targetTrackIndex);
+      if (!selection) {
+        hooks.onRenderError("No tracks were found in this GP file.");
+        return;
+      }
+
+      hooks.onDebugInfo({
+        selectedTrackIndex: targetTrackIndex,
+        resolvedTrackName: selection.track.name || `Track ${selection.track.index + 1}`,
+        resolvedTrackIndex: selection.track.index,
+        resolvedTrackPosition: selection.trackPosition,
+        rendererReloaded,
+      });
+
+      hasRenderedForSession = true;
+      renderSelectedTrack(api, score, selection);
+    });
+
+    api.error?.on(() => {
+      if (sessionId !== activeSessionId) {
+        return;
+      }
+
+      hooks.onRenderError("alphaTab failed to render this GP file.");
+    });
+
+    const loadWasStarted = api.load(sourceBytes);
+    if (!loadWasStarted) {
+      throw new Error("GP renderer rejected the source data.");
     }
-
-    const selection = resolveTrackSelection(loadedTracks, trackIndex);
-    if (!selection) {
-      return;
-    }
-
-    isRerenderInProgress = true;
-    renderSelectedTrack(api, loadedScore, selection);
   };
 
-  api.scoreLoaded.on((score) => {
-    loadedScore = score;
-    loadedTracks = score.tracks ?? [];
-
-    hooks.onTracksLoaded(toTrackInfoList(loadedTracks));
-
-    if (isRerenderInProgress) {
-      isRerenderInProgress = false;
-      return;
-    }
-
-    if (!hasAppliedInitialTrackSelection) {
-      hasAppliedInitialTrackSelection = true;
-      applyTrackSelection(selectedTrackIndex);
-    }
-  });
-
-  api.error?.on(() => {
-    hooks.onRenderError("alphaTab failed to render this GP file.");
-  });
-
-  const loadWasStarted = api.load(base64ToBytes(sourceFile.contentBase64));
-
-  if (!loadWasStarted) {
-    throw new Error("GP renderer rejected the source data.");
-  }
+  startRendererSession(selectedTrackIndex, false);
 
   return {
     selectTrack: (trackIndex: number) => {
-      applyTrackSelection(trackIndex);
+      try {
+        startRendererSession(trackIndex, true);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not reload GP renderer session.";
+        hooks.onRenderError(message);
+      }
     },
     destroy: () => {
-      api.destroy?.();
+      activeSessionId += 1;
+      activeApi?.destroy?.();
+      activeApi = null;
     },
   };
 }
