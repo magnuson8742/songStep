@@ -82,6 +82,9 @@ function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRend
     "last-successful-confirmed-track-index",
     String(debugInfo?.lastSuccessfulConfirmedTrackIndex ?? "-"),
   );
+  updateDebugField(rootElement, "render-mode", debugInfo?.renderMode ?? "-");
+  updateDebugField(rootElement, "heavy-track-detected", debugInfo ? (debugInfo.heavyTrackDetected ? "yes" : "no") : "-");
+  updateDebugField(rootElement, "heavy-track-reason", debugInfo?.heavyTrackReason ?? "-");
   updateDebugField(rootElement, "score-track-count", String(debugInfo?.scoreTrackCount ?? "-"));
   updateDebugField(rootElement, "score-tracks", formatRuntimeTrackList(debugInfo?.scoreTracks ?? []));
   updateDebugField(rootElement, "rendered-tracks", formatRuntimeTrackList(debugInfo?.renderedTracks ?? []));

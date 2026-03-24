@@ -145,6 +145,12 @@ export function renderProjectScreen(
             <dd data-debug-field="render-timeout-hit">${debugInfo ? (debugInfo.renderTimeoutHit ? "yes" : "no") : "-"}</dd>
             <dt>Last successful confirmed track index</dt>
             <dd data-debug-field="last-successful-confirmed-track-index">${renderDebugValue(debugInfo?.lastSuccessfulConfirmedTrackIndex ?? null)}</dd>
+            <dt>Render mode</dt>
+            <dd data-debug-field="render-mode">${renderDebugValue(debugInfo?.renderMode ?? null)}</dd>
+            <dt>Heavy track detected</dt>
+            <dd data-debug-field="heavy-track-detected">${debugInfo ? (debugInfo.heavyTrackDetected ? "yes" : "no") : "-"}</dd>
+            <dt>Heavy track reason</dt>
+            <dd data-debug-field="heavy-track-reason">${renderDebugValue(debugInfo?.heavyTrackReason ?? null)}</dd>
             <dt>api.score?.tracks.length</dt>
             <dd data-debug-field="score-track-count">${renderDebugValue(debugInfo?.scoreTrackCount ?? null)}</dd>
           </dl>

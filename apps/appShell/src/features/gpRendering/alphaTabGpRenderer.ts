@@ -101,6 +101,9 @@ export interface GpRenderDebugInfo {
   lastRendererErrorStage: string | null;
   renderTimeoutHit: boolean;
   lastSuccessfulConfirmedTrackIndex: number | null;
+  renderMode: "normal" | "heavy-safe" | "fallback";
+  heavyTrackDetected: boolean;
+  heavyTrackReason: string | null;
   scoreTrackCount: number;
   scoreTracks: GpTrackRuntimeInfo[];
   renderedTracks: GpTrackRuntimeInfo[];
@@ -121,9 +124,19 @@ export interface GpRendererController {
 const BRAVURA_FONT_DIRECTORY = "/font/";
 const SONIVOX_SOUND_FONT_PATH = "/soundfont/sonivox.sf2";
 const TAB_ONLY_STAVE_PROFILE = "Tab";
-const ENABLE_LAZY_LOADING = false;
+const ENABLE_LAZY_LOADING_DEFAULT = false;
 const USE_WORKERS = false;
 const RENDER_TIMEOUT_MS = 5000;
+const HEAVY_TRACK_NOTE_THRESHOLD = 5000;
+const HEAVY_TRACK_BAR_THRESHOLD = 400;
+
+type RenderMode = "normal" | "heavy-safe" | "fallback";
+
+interface RenderPlan {
+  mode: RenderMode;
+  heavyTrackDetected: boolean;
+  heavyTrackReason: string | null;
+}
 
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -193,11 +206,11 @@ function toTrackRuntimeInfoList(tracks: AlphaTabTrack[], score: AlphaTabScore | 
   });
 }
 
-function buildAlphaTabSettings(): alphaTab.json.SettingsJson {
+function buildAlphaTabSettings(enableLazyLoading: boolean): alphaTab.json.SettingsJson {
   return {
     core: {
       fontDirectory: BRAVURA_FONT_DIRECTORY,
-      enableLazyLoading: ENABLE_LAZY_LOADING,
+      enableLazyLoading,
       useWorkers: USE_WORKERS,
     },
     display: {
@@ -215,8 +228,9 @@ function buildAlphaTabSettings(): alphaTab.json.SettingsJson {
   };
 }
 
-function createAlphaTabApi(container: HTMLElement): AlphaTabApi {
-  return new alphaTab.AlphaTabApi(container, buildAlphaTabSettings()) as unknown as AlphaTabApi;
+function createAlphaTabApi(container: HTMLElement, renderMode: RenderMode): AlphaTabApi {
+  const enableLazyLoading = renderMode === "heavy-safe" ? true : ENABLE_LAZY_LOADING_DEFAULT;
+  return new alphaTab.AlphaTabApi(container, buildAlphaTabSettings(enableLazyLoading)) as unknown as AlphaTabApi;
 }
 
 function resolveTrackSelection(availableTracks: AlphaTabTrack[], selectedTrackIndex: number): TrackSelection | null {
@@ -266,6 +280,10 @@ function clearRenderHost(container: HTMLElement): void {
   container.innerHTML = "";
 }
 
+function renderFallbackMessage(container: HTMLElement, message: string): void {
+  container.innerHTML = `<div class="gpRenderFallbackMessage" role="status">${message}</div>`;
+}
+
 function waitForAnimationFrame(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => {
@@ -298,6 +316,10 @@ export async function createGpRenderer(
   let renderTimeoutHit = false;
   let activeSessionToken = 0;
   let activeRenderTimeoutId: number | null = null;
+  let currentRenderMode: RenderMode = "normal";
+  let heavyTrackDetected = false;
+  let heavyTrackReason: string | null = null;
+  let lastKnownMasterBarCount = 0;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -334,6 +356,9 @@ export async function createGpRenderer(
       lastRendererErrorStage,
       renderTimeoutHit,
       lastSuccessfulConfirmedTrackIndex,
+      renderMode: currentRenderMode,
+      heavyTrackDetected,
+      heavyTrackReason,
       scoreTrackCount: scoreTracks.length,
       scoreTracks: toTrackRuntimeInfoList(scoreTracks, activeApi?.score),
       renderedTracks: toTrackRuntimeInfoList(renderedTracks, activeApi?.score),
@@ -354,6 +379,44 @@ export async function createGpRenderer(
     activeRenderTimeoutId = null;
   };
 
+  const buildRenderPlan = (trackIndex: number): RenderPlan => {
+    const track = lastLoadedScoreTracks.find((item) => item.index === trackIndex);
+    if (!track) {
+      return {
+        mode: "normal",
+        heavyTrackDetected: false,
+        heavyTrackReason: null,
+      };
+    }
+
+    const reasons: string[] = [];
+    if (/(drum|drums|percussion|perc|kit)/i.test(track.name || "")) {
+      reasons.push("track name looks percussive");
+    }
+
+    const signature = computeTrackContentSignature(track, lastKnownMasterBarCount);
+    if (signature.totalNotes >= HEAVY_TRACK_NOTE_THRESHOLD) {
+      reasons.push(`totalNotes=${signature.totalNotes}`);
+    }
+    if (signature.totalBars >= HEAVY_TRACK_BAR_THRESHOLD) {
+      reasons.push(`totalBars=${signature.totalBars}`);
+    }
+
+    if (reasons.length === 0) {
+      return {
+        mode: "normal",
+        heavyTrackDetected: false,
+        heavyTrackReason: null,
+      };
+    }
+
+    return {
+      mode: "heavy-safe",
+      heavyTrackDetected: true,
+      heavyTrackReason: reasons.join("; "),
+    };
+  };
+
   const scheduleRenderTimeout = (sessionToken: number, timedOutTrackIndex: number): void => {
     clearRenderTimeout();
     activeRenderTimeoutId = window.setTimeout(() => {
@@ -367,7 +430,12 @@ export async function createGpRenderer(
       rendererBusy = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       destroyActiveRenderer();
-      clearRenderHost(container);
+      if (currentRenderMode === "heavy-safe") {
+        currentRenderMode = "fallback";
+        renderFallbackMessage(container, "This track is too heavy to render safely right now.");
+      } else {
+        clearRenderHost(container);
+      }
       emitDebugInfo();
       hooks.onRenderError(`Track ${timedOutTrackIndex + 1} timed out while rendering.`);
 
@@ -381,6 +449,10 @@ export async function createGpRenderer(
 
   const switchTrackByReload = async (nextTrackIndex: number): Promise<void> => {
     requestedTrackIndex = nextTrackIndex;
+    const renderPlan = buildRenderPlan(nextTrackIndex);
+    currentRenderMode = renderPlan.mode;
+    heavyTrackDetected = renderPlan.heavyTrackDetected;
+    heavyTrackReason = renderPlan.heavyTrackReason;
 
     if (rendererBusy) {
       pendingRequestedTrackIndex = nextTrackIndex;
@@ -411,7 +483,7 @@ export async function createGpRenderer(
       return;
     }
 
-    const api = createAlphaTabApi(container);
+    const api = createAlphaTabApi(container, renderPlan.mode);
     activeApi = api;
 
     api.scoreLoaded.on((score) => {
@@ -421,6 +493,7 @@ export async function createGpRenderer(
 
       applyTrackNamePolicies(score);
       lastLoadedScoreTracks = score.tracks ?? [];
+      lastKnownMasterBarCount = score.masterBars?.length ?? lastKnownMasterBarCount;
       lastRendererErrorStage = "load";
       hooks.onTracksLoaded(toTrackInfoList(lastLoadedScoreTracks));
       emitDebugInfo();
@@ -471,7 +544,12 @@ export async function createGpRenderer(
       rendererBusy = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       destroyActiveRenderer();
-      clearRenderHost(container);
+      if (currentRenderMode === "heavy-safe") {
+        currentRenderMode = "fallback";
+        renderFallbackMessage(container, "This track is too heavy to render safely right now.");
+      } else {
+        clearRenderHost(container);
+      }
       hooks.onRenderError("alphaTab failed to render this GP file.");
       emitDebugInfo();
 
@@ -491,7 +569,12 @@ export async function createGpRenderer(
       rendererBusy = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       destroyActiveRenderer();
-      clearRenderHost(container);
+      if (currentRenderMode === "heavy-safe") {
+        currentRenderMode = "fallback";
+        renderFallbackMessage(container, "This track is too heavy to render safely right now.");
+      } else {
+        clearRenderHost(container);
+      }
       emitDebugInfo();
       const queuedTrackIndex = pendingRequestedTrackIndex;
       pendingRequestedTrackIndex = null;

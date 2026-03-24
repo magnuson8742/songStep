@@ -202,6 +202,20 @@ select {
   padding: 8px;
 }
 
+.gpRenderFallbackMessage {
+  min-height: 380px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 20px;
+  border: 1px dashed rgba(153, 50, 50, 0.45);
+  border-radius: 8px;
+  color: #6e1e1e;
+  background: rgba(255, 241, 241, 0.85);
+  font-weight: 600;
+}
+
 .trackDebugCard {
   margin-bottom: 12px;
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -366,4 +380,3 @@ select {
   border-color: rgba(120, 183, 255, 0.8);
   background: rgba(87, 143, 221, 0.3);
 }
-
