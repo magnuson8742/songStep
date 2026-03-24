@@ -183,7 +183,7 @@ export function startApp(rootElement: HTMLElement): void {
             resolvedTrackName: state.gpRenderDebugInfo?.resolvedTrackName ?? "",
             resolvedTrackIndex: state.gpRenderDebugInfo?.resolvedTrackIndex ?? trackIndex,
             resolvedTrackPosition: state.gpRenderDebugInfo?.resolvedTrackPosition ?? 0,
-            rendererReloaded: true,
+            rendererReloaded: false,
             scoreTrackCount: state.gpRenderDebugInfo?.scoreTrackCount ?? 0,
             scoreTracks: state.gpRenderDebugInfo?.scoreTracks ?? [],
             renderedTracks: state.gpRenderDebugInfo?.renderedTracks ?? [],
