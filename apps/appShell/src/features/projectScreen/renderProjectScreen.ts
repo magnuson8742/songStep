@@ -5,6 +5,8 @@ export interface ProjectScreenActions {
   statusMessage: string | null;
   tracks: GpTrackInfo[];
   selectedTrackIndex: number;
+  clickedTrackIndex: number | null;
+  pendingTrackIndex: number | null;
   confirmedActiveTrackIndex: number | null;
   debugInfo: GpRenderDebugInfo | null;
   onTrackSelectionChange: (trackIndex: number) => void;
@@ -35,7 +37,11 @@ function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"] | un
     .join("\n");
 }
 
-function renderTrackStrip(tracks: GpTrackInfo[], confirmedActiveTrackIndex: number | null): string {
+function renderTrackStrip(
+  tracks: GpTrackInfo[],
+  confirmedActiveTrackIndex: number | null,
+  pendingTrackIndex: number | null,
+): string {
   if (tracks.length === 0) {
     return '<p class="helperText">Loading tracks...</p>';
   }
@@ -43,22 +49,26 @@ function renderTrackStrip(tracks: GpTrackInfo[], confirmedActiveTrackIndex: numb
   return tracks
     .map((track) => {
       const isActive = confirmedActiveTrackIndex === track.index;
-      const activeClass = isActive ? "trackStripItem isActiveTrack" : "trackStripItem";
+      const isPending = pendingTrackIndex === track.index && !isActive;
+      const stateClass = isActive ? "isActiveTrack" : isPending ? "isPendingTrack" : "";
+      const activeClass = `trackStripItem ${stateClass}`.trim();
+
       return `
-        <article class="${activeClass}" data-track-item-index="${track.index}">
-          <button class="trackSelectButton" type="button" data-action="track-select-item" data-track-index="${track.index}">
-            ${track.name}
-          </button>
+        <article class="${activeClass}" data-track-item-index="${track.index}" data-action="track-card" role="button" tabindex="0" aria-label="Select track ${track.name}">
+          <div class="trackTitleRow">
+            <h3 class="trackTitle">${track.name}</h3>
+            <span class="trackStateBadge">${isActive ? "Active" : isPending ? "Pending" : "Idle"}</span>
+          </div>
           <div class="trackControlRow" aria-label="Track controls for ${track.name}">
-            <button class="secondaryButton trackControlButton" type="button" data-action="placeholder-solo">S</button>
-            <button class="secondaryButton trackControlButton" type="button" data-action="placeholder-mute">M</button>
+            <button class="secondaryButton trackControlButton" type="button" data-action="placeholder-solo" data-stop-track-select="true">S</button>
+            <button class="secondaryButton trackControlButton" type="button" data-action="placeholder-mute" data-stop-track-select="true">M</button>
             <label class="trackControlLabel">
               Vol
-              <input class="trackControlRange" type="range" min="0" max="100" value="80" data-action="placeholder-volume" />
+              <input class="trackControlRange" type="range" min="0" max="100" value="80" data-action="placeholder-volume" data-stop-track-select="true" />
             </label>
             <label class="trackControlLabel">
               Bal
-              <input class="trackControlRange" type="range" min="-50" max="50" value="0" data-action="placeholder-balance" />
+              <input class="trackControlRange" type="range" min="-50" max="50" value="0" data-action="placeholder-balance" data-stop-track-select="true" />
             </label>
           </div>
         </article>
@@ -104,6 +114,8 @@ export function renderProjectScreen(
           <dl class="trackDebugGrid">
             <dt>Selected track index (state)</dt>
             <dd data-debug-field="selected-track-index">${renderDebugValue(actions.selectedTrackIndex)}</dd>
+            <dt>Clicked track index</dt>
+            <dd data-debug-field="clicked-track-index">${renderDebugValue(actions.clickedTrackIndex)}</dd>
             <dt>Confirmed active track name</dt>
             <dd data-debug-field="confirmed-active-track-name">${renderDebugValue(debugInfo?.confirmedActiveTrackName ?? null)}</dd>
             <dt>Confirmed active track index</dt>
@@ -137,7 +149,7 @@ export function renderProjectScreen(
         <div id="gpRenderHost" class="gpRenderHost" aria-label="GP tablature render area"></div>
 
         <div class="trackStrip" aria-label="Track strip">
-          ${renderTrackStrip(actions.tracks, actions.confirmedActiveTrackIndex)}
+          ${renderTrackStrip(actions.tracks, actions.confirmedActiveTrackIndex, actions.pendingTrackIndex)}
         </div>
       </section>
 
@@ -156,16 +168,34 @@ export function renderProjectScreen(
   const playButton = container.querySelector<HTMLButtonElement>('[data-action="play"]');
   const pauseButton = container.querySelector<HTMLButtonElement>('[data-action="pause"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
-  const trackButtons = container.querySelectorAll<HTMLButtonElement>('[data-action="track-select-item"]');
+  const trackCards = container.querySelectorAll<HTMLElement>('[data-action="track-card"]');
 
-  trackButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      const trackIndex = Number(button.dataset.trackIndex);
-      if (Number.isNaN(trackIndex)) {
+  const handleTrackCardSelection = (trackCard: HTMLElement, eventTarget: EventTarget | null): void => {
+    const targetElement = eventTarget instanceof Element ? eventTarget : null;
+    if (targetElement?.closest("[data-stop-track-select='true']")) {
+      return;
+    }
+
+    const trackIndex = Number(trackCard.dataset.trackItemIndex);
+    if (Number.isNaN(trackIndex)) {
+      return;
+    }
+
+    actions.onTrackSelectionChange(trackIndex);
+  };
+
+  trackCards.forEach((trackCard) => {
+    trackCard.addEventListener("click", (event) => {
+      handleTrackCardSelection(trackCard, event.target);
+    });
+
+    trackCard.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") {
         return;
       }
 
-      actions.onTrackSelectionChange(trackIndex);
+      event.preventDefault();
+      handleTrackCardSelection(trackCard, event.target);
     });
   });
 

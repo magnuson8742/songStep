@@ -314,3 +314,64 @@ select {
 .trackControlRange {
   width: 100%;
 }
+
+.trackStripItem {
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.trackStripItem:hover {
+  border-color: rgba(132, 182, 255, 0.55);
+}
+
+.trackStripItem.isPendingTrack {
+  border-color: rgba(255, 199, 94, 0.85);
+  background: rgba(52, 40, 16, 0.62);
+}
+
+.trackStripItem.isActiveTrack {
+  border-color: rgba(110, 183, 255, 1);
+  background: linear-gradient(180deg, rgba(31, 57, 93, 0.86) 0%, rgba(19, 34, 56, 0.82) 100%);
+  box-shadow:
+    0 0 0 1px rgba(110, 183, 255, 0.45) inset,
+    0 0 14px rgba(93, 162, 255, 0.28);
+}
+
+.trackTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.trackTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #e4edf9;
+}
+
+.trackStripItem.isActiveTrack .trackTitle {
+  color: #f3f9ff;
+}
+
+.trackStateBadge {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #d8e5f7;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.trackStripItem.isActiveTrack .trackStateBadge {
+  border-color: rgba(120, 183, 255, 0.8);
+  background: rgba(87, 143, 221, 0.3);
+}
+
+.trackStripItem.isPendingTrack .trackStateBadge {
+  border-color: rgba(255, 193, 77, 0.9);
+  background: rgba(138, 99, 14, 0.4);
+}
