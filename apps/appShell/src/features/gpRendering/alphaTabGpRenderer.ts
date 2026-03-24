@@ -300,6 +300,7 @@ export async function createGpRenderer(
       return;
     }
 
+    api.renderTracks([]);
     api.renderTracks([selection.track]);
     container.scrollTo({ top: 0, left: 0, behavior: "auto" });
   };

@@ -27,12 +27,10 @@ interface AppState {
   projectStatusMessage: string | null;
   gpTracks: GpTrackInfo[];
   selectedTrackIndex: number;
+  requestedTrackIndex: number | null;
   gpRenderer: GpRendererController | null;
   gpRenderDebugInfo: GpRenderDebugInfo | null;
-  clickedTrackIndex: number | null;
-  pendingTrackIndex: number | null;
 }
-
 
 function updateDebugField(rootElement: HTMLElement, fieldName: string, value: string): void {
   const field = rootElement.querySelector<HTMLElement>(`[data-debug-field="${fieldName}"]`);
@@ -42,7 +40,6 @@ function updateDebugField(rootElement: HTMLElement, fieldName: string, value: st
 
   field.textContent = value;
 }
-
 
 function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"]): string {
   if (debugRows.length === 0) {
@@ -56,7 +53,7 @@ function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"]): st
 
 function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRenderDebugInfo | null): void {
   updateDebugField(rootElement, "selected-track-index", String(debugInfo?.selectedTrackIndex ?? "-"));
-  updateDebugField(rootElement, "clicked-track-index", "-");
+  updateDebugField(rootElement, "requested-track-index", "-");
   updateDebugField(rootElement, "confirmed-active-track-name", debugInfo?.confirmedActiveTrackName ?? "-");
   updateDebugField(rootElement, "confirmed-active-track-index", String(debugInfo?.confirmedActiveTrackIndex ?? "-"));
   updateDebugField(rootElement, "confirmed-active-track-position", String(debugInfo?.confirmedActiveTrackPosition ?? "-"));
@@ -69,20 +66,12 @@ function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRend
   updateDebugField(rootElement, "rendered-tracks", formatRuntimeTrackList(debugInfo?.renderedTracks ?? []));
 }
 
-
-function updateTrackStripState(
-  rootElement: HTMLElement,
-  confirmedActiveTrackIndex: number | null,
-  pendingTrackIndex: number | null,
-): void {
+function updateTrackStripActive(rootElement: HTMLElement, activeTrackIndex: number | null): void {
   const trackItems = rootElement.querySelectorAll<HTMLElement>("[data-track-item-index]");
   trackItems.forEach((item) => {
     const itemTrackIndex = Number(item.dataset.trackItemIndex);
-    const isActive = confirmedActiveTrackIndex !== null && itemTrackIndex === confirmedActiveTrackIndex;
-    const isPending = pendingTrackIndex !== null && itemTrackIndex === pendingTrackIndex && !isActive;
-
+    const isActive = activeTrackIndex !== null && itemTrackIndex === activeTrackIndex;
     item.classList.toggle("isActiveTrack", isActive);
-    item.classList.toggle("isPendingTrack", isPending);
   });
 }
 
@@ -104,10 +93,9 @@ export function startApp(rootElement: HTMLElement): void {
     projectStatusMessage: null,
     gpTracks: [],
     selectedTrackIndex: 0,
+    requestedTrackIndex: null,
     gpRenderer: null,
     gpRenderDebugInfo: null,
-    clickedTrackIndex: null,
-    pendingTrackIndex: null,
   };
 
   const cleanupRenderer = (): void => {
@@ -152,9 +140,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.projectStatusMessage = "New project created. Loading GP tracks...";
           state.gpTracks = [];
           state.selectedTrackIndex = project.viewState.selectedTrackIndex;
+          state.requestedTrackIndex = null;
           state.gpRenderDebugInfo = null;
-          state.clickedTrackIndex = null;
-          state.pendingTrackIndex = null;
           render();
         },
       });
@@ -179,9 +166,8 @@ export function startApp(rootElement: HTMLElement): void {
             state.projectStatusMessage = "Project opened. Loading GP tracks...";
             state.gpTracks = [];
             state.selectedTrackIndex = project.viewState.selectedTrackIndex;
+            state.requestedTrackIndex = null;
             state.gpRenderDebugInfo = null;
-            state.clickedTrackIndex = null;
-            state.pendingTrackIndex = null;
             render();
             return project.sourceFile.fileName;
           } catch (error) {
@@ -200,15 +186,12 @@ export function startApp(rootElement: HTMLElement): void {
         statusMessage: state.projectStatusMessage,
         tracks: state.gpTracks,
         selectedTrackIndex: state.selectedTrackIndex,
-        clickedTrackIndex: state.clickedTrackIndex,
-        pendingTrackIndex: state.pendingTrackIndex,
+        requestedTrackIndex: state.requestedTrackIndex,
         confirmedActiveTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
         debugInfo: state.gpRenderDebugInfo,
         onTrackSelectionChange: (trackIndex: number) => {
-          state.clickedTrackIndex = trackIndex;
-          state.pendingTrackIndex = trackIndex;
-          updateDebugField(rootElement, "clicked-track-index", String(trackIndex));
-          updateTrackStripState(rootElement, state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null, state.pendingTrackIndex);
+          state.requestedTrackIndex = trackIndex;
+          updateDebugField(rootElement, "requested-track-index", String(trackIndex));
           state.gpRenderer?.selectTrack(trackIndex);
         },
         onBackToHome: () => {
@@ -275,18 +258,19 @@ export function startApp(rootElement: HTMLElement): void {
         onDebugInfo: (debugInfo) => {
           state.gpRenderDebugInfo = debugInfo;
           updateProjectDebugInfoPanel(rootElement, debugInfo);
-          updateDebugField(rootElement, "clicked-track-index", String(state.clickedTrackIndex ?? "-"));
-          updateTrackStripState(rootElement, debugInfo.confirmedActiveTrackIndex, state.pendingTrackIndex);
+          updateDebugField(rootElement, "requested-track-index", String(state.requestedTrackIndex ?? "-"));
+          updateTrackStripActive(rootElement, debugInfo.confirmedActiveTrackIndex);
         },
         onActiveTrackConfirmed: (trackIndex) => {
           state.selectedTrackIndex = trackIndex;
-          state.pendingTrackIndex = null;
+          state.requestedTrackIndex = null;
           if (state.currentProject) {
             state.currentProject.viewState.selectedTrackIndex = trackIndex;
           }
 
-          updateTrackStripState(rootElement, trackIndex, state.pendingTrackIndex);
+          updateTrackStripActive(rootElement, trackIndex);
           updateDebugField(rootElement, "selected-track-index", String(trackIndex));
+          updateDebugField(rootElement, "requested-track-index", "-");
         },
         onRenderError: (message) => {
           state.projectStatusMessage = message;

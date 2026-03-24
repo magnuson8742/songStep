@@ -324,10 +324,6 @@ select {
   border-color: rgba(132, 182, 255, 0.55);
 }
 
-.trackStripItem.isPendingTrack {
-  border-color: rgba(255, 199, 94, 0.85);
-  background: rgba(52, 40, 16, 0.62);
-}
 
 .trackStripItem.isActiveTrack {
   border-color: rgba(110, 183, 255, 1);
@@ -371,7 +367,3 @@ select {
   background: rgba(87, 143, 221, 0.3);
 }
 
-.trackStripItem.isPendingTrack .trackStateBadge {
-  border-color: rgba(255, 193, 77, 0.9);
-  background: rgba(138, 99, 14, 0.4);
-}

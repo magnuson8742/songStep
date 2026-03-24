@@ -5,8 +5,7 @@ export interface ProjectScreenActions {
   statusMessage: string | null;
   tracks: GpTrackInfo[];
   selectedTrackIndex: number;
-  clickedTrackIndex: number | null;
-  pendingTrackIndex: number | null;
+  requestedTrackIndex: number | null;
   confirmedActiveTrackIndex: number | null;
   debugInfo: GpRenderDebugInfo | null;
   onTrackSelectionChange: (trackIndex: number) => void;
@@ -37,11 +36,7 @@ function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"] | un
     .join("\n");
 }
 
-function renderTrackStrip(
-  tracks: GpTrackInfo[],
-  confirmedActiveTrackIndex: number | null,
-  pendingTrackIndex: number | null,
-): string {
+function renderTrackStrip(tracks: GpTrackInfo[], confirmedActiveTrackIndex: number | null): string {
   if (tracks.length === 0) {
     return '<p class="helperText">Loading tracks...</p>';
   }
@@ -49,15 +44,13 @@ function renderTrackStrip(
   return tracks
     .map((track) => {
       const isActive = confirmedActiveTrackIndex === track.index;
-      const isPending = pendingTrackIndex === track.index && !isActive;
-      const stateClass = isActive ? "isActiveTrack" : isPending ? "isPendingTrack" : "";
-      const activeClass = `trackStripItem ${stateClass}`.trim();
+      const activeClass = isActive ? "trackStripItem isActiveTrack" : "trackStripItem";
 
       return `
         <article class="${activeClass}" data-track-item-index="${track.index}" data-action="track-card" role="button" tabindex="0" aria-label="Select track ${track.name}">
           <div class="trackTitleRow">
             <h3 class="trackTitle">${track.name}</h3>
-            <span class="trackStateBadge">${isActive ? "Active" : isPending ? "Pending" : "Idle"}</span>
+            <span class="trackStateBadge">${isActive ? "Active" : "Idle"}</span>
           </div>
           <div class="trackControlRow" aria-label="Track controls for ${track.name}">
             <button class="secondaryButton trackControlButton" type="button" data-action="placeholder-solo" data-stop-track-select="true">S</button>
@@ -114,8 +107,8 @@ export function renderProjectScreen(
           <dl class="trackDebugGrid">
             <dt>Selected track index (state)</dt>
             <dd data-debug-field="selected-track-index">${renderDebugValue(actions.selectedTrackIndex)}</dd>
-            <dt>Clicked track index</dt>
-            <dd data-debug-field="clicked-track-index">${renderDebugValue(actions.clickedTrackIndex)}</dd>
+            <dt>Requested track index</dt>
+            <dd data-debug-field="requested-track-index">${renderDebugValue(actions.requestedTrackIndex)}</dd>
             <dt>Confirmed active track name</dt>
             <dd data-debug-field="confirmed-active-track-name">${renderDebugValue(debugInfo?.confirmedActiveTrackName ?? null)}</dd>
             <dt>Confirmed active track index</dt>
@@ -149,7 +142,7 @@ export function renderProjectScreen(
         <div id="gpRenderHost" class="gpRenderHost" aria-label="GP tablature render area"></div>
 
         <div class="trackStrip" aria-label="Track strip">
-          ${renderTrackStrip(actions.tracks, actions.confirmedActiveTrackIndex, actions.pendingTrackIndex)}
+          ${renderTrackStrip(actions.tracks, actions.confirmedActiveTrackIndex)}
         </div>
       </section>
 
