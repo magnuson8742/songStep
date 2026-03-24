@@ -127,6 +127,16 @@ export function renderProjectScreen(
             <dd data-debug-field="confirmed-active-track-index">${renderDebugValue(debugInfo?.confirmedActiveTrackIndex ?? null)}</dd>
             <dt>Confirmed active track position</dt>
             <dd data-debug-field="confirmed-active-track-position">${renderDebugValue(debugInfo?.confirmedActiveTrackPosition ?? null)}</dd>
+            <dt>Renderer busy</dt>
+            <dd data-debug-field="renderer-busy">${debugInfo?.rendererBusy ? "yes" : "no"}</dd>
+            <dt>Pending requested track index</dt>
+            <dd data-debug-field="pending-requested-track-index">${renderDebugValue(debugInfo?.pendingRequestedTrackIndex ?? null)}</dd>
+            <dt>Render cycle counter</dt>
+            <dd data-debug-field="render-cycle-counter">${renderDebugValue(debugInfo?.renderCycleCounter ?? 0)}</dd>
+            <dt>Last render started</dt>
+            <dd data-debug-field="last-render-started-at">${renderDebugValue(debugInfo?.lastRenderStartedAtIso ?? null)}</dd>
+            <dt>Last render finished</dt>
+            <dd data-debug-field="last-render-finished-at">${renderDebugValue(debugInfo?.lastRenderFinishedAtIso ?? null)}</dd>
             <dt>api.score?.tracks.length</dt>
             <dd data-debug-field="score-track-count">${renderDebugValue(debugInfo?.scoreTrackCount ?? null)}</dd>
           </dl>
