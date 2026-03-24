@@ -23,6 +23,19 @@ interface AlphaTabTrack {
   name: string;
 }
 
+interface AlphaTabSettingsJson {
+  core?: {
+    fontDirectory?: string;
+  };
+  display?: {
+    staveProfile?: string;
+  };
+  player?: {
+    enablePlayer?: boolean;
+    soundFont?: string;
+  };
+}
+
 export interface GpTrackInfo {
   index: number;
   name: string;
@@ -37,6 +50,10 @@ export interface GpRendererController {
   selectTrack: (trackIndex: number) => void;
   destroy: () => void;
 }
+
+const BRAVURA_FONT_DIRECTORY = "/font/";
+const SONIVOX_SOUND_FONT_PATH = "/soundfont/sonivox.sf2";
+const TAB_ONLY_STAVE_PROFILE = "Tab";
 
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -56,8 +73,23 @@ function toTrackInfoList(tracks: AlphaTabTrack[]): GpTrackInfo[] {
   }));
 }
 
+function buildAlphaTabSettings(): AlphaTabSettingsJson {
+  return {
+    core: {
+      fontDirectory: BRAVURA_FONT_DIRECTORY,
+    },
+    display: {
+      staveProfile: TAB_ONLY_STAVE_PROFILE,
+    },
+    player: {
+      enablePlayer: false,
+      soundFont: SONIVOX_SOUND_FONT_PATH,
+    },
+  };
+}
+
 function createAlphaTabApi(container: HTMLElement): AlphaTabApi {
-  return new alphaTab.AlphaTabApi(container, {}) as unknown as AlphaTabApi;
+  return new alphaTab.AlphaTabApi(container, buildAlphaTabSettings()) as unknown as AlphaTabApi;
 }
 
 export async function createGpRenderer(
