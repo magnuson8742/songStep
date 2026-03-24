@@ -34,10 +34,12 @@ interface AlphaTabScore {
 interface AlphaTabTrack {
   index: number;
   name: string;
+  isPercussion?: boolean;
   staves?: AlphaTabStaff[];
 }
 
 interface AlphaTabStaff {
+  isPercussion?: boolean;
   bars?: AlphaTabBar[];
 }
 
@@ -101,9 +103,16 @@ export interface GpRenderDebugInfo {
   lastRendererErrorStage: string | null;
   renderTimeoutHit: boolean;
   lastSuccessfulConfirmedTrackIndex: number | null;
-  renderMode: "normal" | "heavy-safe" | "fallback";
+  renderMode:
+    | "string-tab"
+    | "string-heavy-safe"
+    | "percussion-default"
+    | "percussion-heavy-safe"
+    | "fallback";
   heavyTrackDetected: boolean;
   heavyTrackReason: string | null;
+  isPercussion: boolean;
+  effectiveStaveProfile: "Tab" | "Default";
   scoreTrackCount: number;
   scoreTracks: GpTrackRuntimeInfo[];
   renderedTracks: GpTrackRuntimeInfo[];
@@ -123,19 +132,26 @@ export interface GpRendererController {
 
 const BRAVURA_FONT_DIRECTORY = "/font/";
 const SONIVOX_SOUND_FONT_PATH = "/soundfont/sonivox.sf2";
-const TAB_ONLY_STAVE_PROFILE = "Tab";
 const ENABLE_LAZY_LOADING_DEFAULT = false;
 const USE_WORKERS = false;
 const RENDER_TIMEOUT_MS = 5000;
 const HEAVY_TRACK_NOTE_THRESHOLD = 5000;
 const HEAVY_TRACK_BAR_THRESHOLD = 400;
 
-type RenderMode = "normal" | "heavy-safe" | "fallback";
+type RenderMode =
+  | "string-tab"
+  | "string-heavy-safe"
+  | "percussion-default"
+  | "percussion-heavy-safe"
+  | "fallback";
+type StaveProfile = "Tab" | "Default";
 
 interface RenderPlan {
   mode: RenderMode;
   heavyTrackDetected: boolean;
   heavyTrackReason: string | null;
+  isPercussion: boolean;
+  effectiveStaveProfile: StaveProfile;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -206,7 +222,7 @@ function toTrackRuntimeInfoList(tracks: AlphaTabTrack[], score: AlphaTabScore | 
   });
 }
 
-function buildAlphaTabSettings(enableLazyLoading: boolean): alphaTab.json.SettingsJson {
+function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StaveProfile): alphaTab.json.SettingsJson {
   return {
     core: {
       fontDirectory: BRAVURA_FONT_DIRECTORY,
@@ -214,7 +230,7 @@ function buildAlphaTabSettings(enableLazyLoading: boolean): alphaTab.json.Settin
       useWorkers: USE_WORKERS,
     },
     display: {
-      staveProfile: TAB_ONLY_STAVE_PROFILE,
+      staveProfile,
     },
     notation: {
       elements: {
@@ -228,9 +244,13 @@ function buildAlphaTabSettings(enableLazyLoading: boolean): alphaTab.json.Settin
   };
 }
 
-function createAlphaTabApi(container: HTMLElement, renderMode: RenderMode): AlphaTabApi {
-  const enableLazyLoading = renderMode === "heavy-safe" ? true : ENABLE_LAZY_LOADING_DEFAULT;
-  return new alphaTab.AlphaTabApi(container, buildAlphaTabSettings(enableLazyLoading)) as unknown as AlphaTabApi;
+function createAlphaTabApi(container: HTMLElement, renderPlan: RenderPlan): AlphaTabApi {
+  const enableLazyLoading =
+    renderPlan.mode === "string-heavy-safe" || renderPlan.mode === "percussion-heavy-safe" ? true : ENABLE_LAZY_LOADING_DEFAULT;
+  return new alphaTab.AlphaTabApi(
+    container,
+    buildAlphaTabSettings(enableLazyLoading, renderPlan.effectiveStaveProfile),
+  ) as unknown as AlphaTabApi;
 }
 
 function resolveTrackSelection(availableTracks: AlphaTabTrack[], selectedTrackIndex: number): TrackSelection | null {
@@ -316,9 +336,11 @@ export async function createGpRenderer(
   let renderTimeoutHit = false;
   let activeSessionToken = 0;
   let activeRenderTimeoutId: number | null = null;
-  let currentRenderMode: RenderMode = "normal";
+  let currentRenderMode: RenderMode = "string-tab";
   let heavyTrackDetected = false;
   let heavyTrackReason: string | null = null;
+  let isPercussionTrack = false;
+  let effectiveStaveProfile: StaveProfile = "Tab";
   let lastKnownMasterBarCount = 0;
 
   const emitDebugInfo = (): void => {
@@ -359,6 +381,8 @@ export async function createGpRenderer(
       renderMode: currentRenderMode,
       heavyTrackDetected,
       heavyTrackReason,
+      isPercussion: isPercussionTrack,
+      effectiveStaveProfile,
       scoreTrackCount: scoreTracks.length,
       scoreTracks: toTrackRuntimeInfoList(scoreTracks, activeApi?.score),
       renderedTracks: toTrackRuntimeInfoList(renderedTracks, activeApi?.score),
@@ -379,21 +403,32 @@ export async function createGpRenderer(
     activeRenderTimeoutId = null;
   };
 
+  const isPercussionTrackFromRuntime = (track: AlphaTabTrack): boolean => {
+    if (track.isPercussion === true) {
+      return true;
+    }
+
+    if (track.staves?.some((staff) => staff.isPercussion === true)) {
+      return true;
+    }
+
+    return /(drum|drums|percussion|perc|kit)/i.test(track.name || "");
+  };
+
   const buildRenderPlan = (trackIndex: number): RenderPlan => {
     const track = lastLoadedScoreTracks.find((item) => item.index === trackIndex);
     if (!track) {
       return {
-        mode: "normal",
+        mode: "string-tab",
         heavyTrackDetected: false,
         heavyTrackReason: null,
+        isPercussion: false,
+        effectiveStaveProfile: "Tab",
       };
     }
 
+    const percussion = isPercussionTrackFromRuntime(track);
     const reasons: string[] = [];
-    if (/(drum|drums|percussion|perc|kit)/i.test(track.name || "")) {
-      reasons.push("track name looks percussive");
-    }
-
     const signature = computeTrackContentSignature(track, lastKnownMasterBarCount);
     if (signature.totalNotes >= HEAVY_TRACK_NOTE_THRESHOLD) {
       reasons.push(`totalNotes=${signature.totalNotes}`);
@@ -403,17 +438,31 @@ export async function createGpRenderer(
     }
 
     if (reasons.length === 0) {
+      if (percussion) {
+        return {
+          mode: "percussion-default",
+          heavyTrackDetected: false,
+          heavyTrackReason: null,
+          isPercussion: true,
+          effectiveStaveProfile: "Default",
+        };
+      }
+
       return {
-        mode: "normal",
+        mode: "string-tab",
         heavyTrackDetected: false,
         heavyTrackReason: null,
+        isPercussion: false,
+        effectiveStaveProfile: "Tab",
       };
     }
 
     return {
-      mode: "heavy-safe",
+      mode: percussion ? "percussion-heavy-safe" : "string-heavy-safe",
       heavyTrackDetected: true,
       heavyTrackReason: reasons.join("; "),
+      isPercussion: percussion,
+      effectiveStaveProfile: percussion ? "Default" : "Tab",
     };
   };
 
@@ -430,7 +479,7 @@ export async function createGpRenderer(
       rendererBusy = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       destroyActiveRenderer();
-      if (currentRenderMode === "heavy-safe") {
+      if (currentRenderMode === "string-heavy-safe" || currentRenderMode === "percussion-heavy-safe") {
         currentRenderMode = "fallback";
         renderFallbackMessage(container, "This track is too heavy to render safely right now.");
       } else {
@@ -453,6 +502,8 @@ export async function createGpRenderer(
     currentRenderMode = renderPlan.mode;
     heavyTrackDetected = renderPlan.heavyTrackDetected;
     heavyTrackReason = renderPlan.heavyTrackReason;
+    isPercussionTrack = renderPlan.isPercussion;
+    effectiveStaveProfile = renderPlan.effectiveStaveProfile;
 
     if (rendererBusy) {
       pendingRequestedTrackIndex = nextTrackIndex;
@@ -483,7 +534,7 @@ export async function createGpRenderer(
       return;
     }
 
-    const api = createAlphaTabApi(container, renderPlan.mode);
+    const api = createAlphaTabApi(container, renderPlan);
     activeApi = api;
 
     api.scoreLoaded.on((score) => {
@@ -544,7 +595,7 @@ export async function createGpRenderer(
       rendererBusy = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       destroyActiveRenderer();
-      if (currentRenderMode === "heavy-safe") {
+      if (currentRenderMode === "string-heavy-safe" || currentRenderMode === "percussion-heavy-safe") {
         currentRenderMode = "fallback";
         renderFallbackMessage(container, "This track is too heavy to render safely right now.");
       } else {
@@ -569,7 +620,7 @@ export async function createGpRenderer(
       rendererBusy = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       destroyActiveRenderer();
-      if (currentRenderMode === "heavy-safe") {
+      if (currentRenderMode === "string-heavy-safe" || currentRenderMode === "percussion-heavy-safe") {
         currentRenderMode = "fallback";
         renderFallbackMessage(container, "This track is too heavy to render safely right now.");
       } else {

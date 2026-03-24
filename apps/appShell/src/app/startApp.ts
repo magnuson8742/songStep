@@ -83,6 +83,8 @@ function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRend
     String(debugInfo?.lastSuccessfulConfirmedTrackIndex ?? "-"),
   );
   updateDebugField(rootElement, "render-mode", debugInfo?.renderMode ?? "-");
+  updateDebugField(rootElement, "is-percussion", debugInfo ? (debugInfo.isPercussion ? "yes" : "no") : "-");
+  updateDebugField(rootElement, "effective-stave-profile", debugInfo?.effectiveStaveProfile ?? "-");
   updateDebugField(rootElement, "heavy-track-detected", debugInfo ? (debugInfo.heavyTrackDetected ? "yes" : "no") : "-");
   updateDebugField(rootElement, "heavy-track-reason", debugInfo?.heavyTrackReason ?? "-");
   updateDebugField(rootElement, "score-track-count", String(debugInfo?.scoreTrackCount ?? "-"));

@@ -147,6 +147,10 @@ export function renderProjectScreen(
             <dd data-debug-field="last-successful-confirmed-track-index">${renderDebugValue(debugInfo?.lastSuccessfulConfirmedTrackIndex ?? null)}</dd>
             <dt>Render mode</dt>
             <dd data-debug-field="render-mode">${renderDebugValue(debugInfo?.renderMode ?? null)}</dd>
+            <dt>Is percussion</dt>
+            <dd data-debug-field="is-percussion">${debugInfo ? (debugInfo.isPercussion ? "yes" : "no") : "-"}</dd>
+            <dt>Effective stave profile</dt>
+            <dd data-debug-field="effective-stave-profile">${renderDebugValue(debugInfo?.effectiveStaveProfile ?? null)}</dd>
             <dt>Heavy track detected</dt>
             <dd data-debug-field="heavy-track-detected">${debugInfo ? (debugInfo.heavyTrackDetected ? "yes" : "no") : "-"}</dd>
             <dt>Heavy track reason</dt>
