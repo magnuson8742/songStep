@@ -41,12 +41,26 @@ function updateDebugField(rootElement: HTMLElement, fieldName: string, value: st
   field.textContent = value;
 }
 
+
+function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"]): string {
+  if (debugRows.length === 0) {
+    return "(empty)";
+  }
+
+  return debugRows
+    .map((row) => `pos=${row.position} | track.index=${row.trackIndex} | name=${row.trackName || "(unnamed)"}`)
+    .join("\n");
+}
+
 function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRenderDebugInfo | null): void {
   updateDebugField(rootElement, "selected-track-index", String(debugInfo?.selectedTrackIndex ?? "-"));
   updateDebugField(rootElement, "resolved-track-name", debugInfo?.resolvedTrackName ?? "-");
   updateDebugField(rootElement, "resolved-track-index", String(debugInfo?.resolvedTrackIndex ?? "-"));
   updateDebugField(rootElement, "resolved-track-position", String(debugInfo?.resolvedTrackPosition ?? "-"));
   updateDebugField(rootElement, "renderer-reloaded", debugInfo ? (debugInfo.rendererReloaded ? "yes" : "no") : "-");
+  updateDebugField(rootElement, "score-track-count", String(debugInfo?.scoreTrackCount ?? "-"));
+  updateDebugField(rootElement, "score-tracks", formatRuntimeTrackList(debugInfo?.scoreTracks ?? []));
+  updateDebugField(rootElement, "rendered-tracks", formatRuntimeTrackList(debugInfo?.renderedTracks ?? []));
 }
 
 function isSameTrackList(current: GpTrackInfo[], next: GpTrackInfo[]): boolean {
@@ -170,6 +184,9 @@ export function startApp(rootElement: HTMLElement): void {
             resolvedTrackIndex: state.gpRenderDebugInfo?.resolvedTrackIndex ?? trackIndex,
             resolvedTrackPosition: state.gpRenderDebugInfo?.resolvedTrackPosition ?? 0,
             rendererReloaded: true,
+            scoreTrackCount: state.gpRenderDebugInfo?.scoreTrackCount ?? 0,
+            scoreTracks: state.gpRenderDebugInfo?.scoreTracks ?? [],
+            renderedTracks: state.gpRenderDebugInfo?.renderedTracks ?? [],
           };
           updateProjectDebugInfoPanel(rootElement, state.gpRenderDebugInfo);
           state.gpRenderer?.selectTrack(trackIndex);

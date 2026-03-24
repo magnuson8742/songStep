@@ -6,6 +6,8 @@ interface AlphaTabApi {
   load: (scoreData: unknown, trackIndexes?: number[]) => boolean;
   renderTracks: (tracks: AlphaTabTrack[]) => void;
   renderScore?: (score: AlphaTabScore, trackIndexes: number[]) => void;
+  score?: AlphaTabScore;
+  tracks?: AlphaTabTrack[];
   destroy?: () => void;
   scoreLoaded: {
     on: (handler: (score: AlphaTabScore) => void) => void;
@@ -34,12 +36,21 @@ export interface GpTrackInfo {
   name: string;
 }
 
+export interface GpTrackRuntimeInfo {
+  position: number;
+  trackIndex: number;
+  trackName: string;
+}
+
 export interface GpRenderDebugInfo {
   selectedTrackIndex: number;
   resolvedTrackName: string;
   resolvedTrackIndex: number;
   resolvedTrackPosition: number;
   rendererReloaded: boolean;
+  scoreTrackCount: number;
+  scoreTracks: GpTrackRuntimeInfo[];
+  renderedTracks: GpTrackRuntimeInfo[];
 }
 
 export interface GpRendererHooks {
@@ -75,6 +86,14 @@ function toTrackInfoList(tracks: AlphaTabTrack[]): GpTrackInfo[] {
   }));
 }
 
+function toTrackRuntimeInfoList(tracks: AlphaTabTrack[]): GpTrackRuntimeInfo[] {
+  return tracks.map((track, position) => ({
+    position,
+    trackIndex: track.index,
+    trackName: track.name || `Track ${track.index + 1}`,
+  }));
+}
+
 function buildAlphaTabSettings(trackPositions: number[]): alphaTab.json.SettingsJson {
   return {
     core: {
@@ -94,7 +113,6 @@ function buildAlphaTabSettings(trackPositions: number[]): alphaTab.json.Settings
 function createAlphaTabApi(container: HTMLElement, trackPositions: number[]): AlphaTabApi {
   return new alphaTab.AlphaTabApi(container, buildAlphaTabSettings(trackPositions)) as unknown as AlphaTabApi;
 }
-
 
 function resolveTrackPositionFromKnownTracks(knownTracks: AlphaTabTrack[], selectedTrackIndex: number): number {
   const resolvedTrackPosition = knownTracks.findIndex((track) => track.index === selectedTrackIndex);
@@ -176,12 +194,18 @@ export async function createGpRenderer(
         return;
       }
 
+      const scoreTracks = api.score?.tracks ?? loadedTracks;
+      const renderedTracks = api.tracks ?? [];
+
       hooks.onDebugInfo({
         selectedTrackIndex: targetTrackIndex,
         resolvedTrackName: selection.track.name || `Track ${selection.track.index + 1}`,
         resolvedTrackIndex: selection.track.index,
         resolvedTrackPosition: selection.trackPosition,
         rendererReloaded,
+        scoreTrackCount: scoreTracks.length,
+        scoreTracks: toTrackRuntimeInfoList(scoreTracks),
+        renderedTracks: toTrackRuntimeInfoList(renderedTracks),
       });
 
       hasHandledScoreLoaded = true;

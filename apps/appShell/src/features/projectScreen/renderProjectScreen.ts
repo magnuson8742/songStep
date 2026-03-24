@@ -34,6 +34,19 @@ function renderDebugValue(value: string | number | null): string {
   return String(value);
 }
 
+function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"] | undefined): string {
+  if (!debugRows || debugRows.length === 0) {
+    return "(empty)";
+  }
+
+  return debugRows
+    .map(
+      (row) =>
+        `pos=${row.position} | track.index=${row.trackIndex} | name=${row.trackName || "(unnamed)"}`,
+    )
+    .join("\n");
+}
+
 export function renderProjectScreen(
   container: HTMLElement,
   project: SongStepProject,
@@ -84,7 +97,20 @@ export function renderProjectScreen(
             <dd data-debug-field="resolved-track-position">${renderDebugValue(debugInfo?.resolvedTrackPosition ?? null)}</dd>
             <dt>Renderer reload happened</dt>
             <dd data-debug-field="renderer-reloaded">${debugInfo ? (debugInfo.rendererReloaded ? "yes" : "no") : "-"}</dd>
+            <dt>api.score?.tracks.length</dt>
+            <dd data-debug-field="score-track-count">${renderDebugValue(debugInfo?.scoreTrackCount ?? null)}</dd>
           </dl>
+
+          <div class="trackDebugLists">
+            <div class="trackDebugListBlock">
+              <h4 class="trackDebugListTitle">Loaded score tracks</h4>
+              <pre class="trackDebugPre" data-debug-field="score-tracks">${formatRuntimeTrackList(debugInfo?.scoreTracks)}</pre>
+            </div>
+            <div class="trackDebugListBlock">
+              <h4 class="trackDebugListTitle">Currently rendered api.tracks</h4>
+              <pre class="trackDebugPre" data-debug-field="rendered-tracks">${formatRuntimeTrackList(debugInfo?.renderedTracks)}</pre>
+            </div>
+          </div>
         </div>
 
         <div id="gpRenderHost" class="gpRenderHost" aria-label="GP tablature render area"></div>
