@@ -75,10 +75,11 @@ function toTrackInfoList(tracks: AlphaTabTrack[]): GpTrackInfo[] {
   }));
 }
 
-function buildAlphaTabSettings(): alphaTab.json.SettingsJson {
+function buildAlphaTabSettings(trackPositions: number[]): alphaTab.json.SettingsJson {
   return {
     core: {
       fontDirectory: BRAVURA_FONT_DIRECTORY,
+      tracks: trackPositions,
     },
     display: {
       staveProfile: TAB_ONLY_STAVE_PROFILE,
@@ -90,8 +91,18 @@ function buildAlphaTabSettings(): alphaTab.json.SettingsJson {
   };
 }
 
-function createAlphaTabApi(container: HTMLElement): AlphaTabApi {
-  return new alphaTab.AlphaTabApi(container, buildAlphaTabSettings()) as unknown as AlphaTabApi;
+function createAlphaTabApi(container: HTMLElement, trackPositions: number[]): AlphaTabApi {
+  return new alphaTab.AlphaTabApi(container, buildAlphaTabSettings(trackPositions)) as unknown as AlphaTabApi;
+}
+
+
+function resolveTrackPositionFromKnownTracks(knownTracks: AlphaTabTrack[], selectedTrackIndex: number): number {
+  const resolvedTrackPosition = knownTracks.findIndex((track) => track.index === selectedTrackIndex);
+  if (resolvedTrackPosition >= 0) {
+    return resolvedTrackPosition;
+  }
+
+  return 0;
 }
 
 function resolveTrackSelection(loadedTracks: AlphaTabTrack[], selectedTrackIndex: number): TrackSelection | null {
@@ -127,15 +138,6 @@ function resolveTrackSelection(loadedTracks: AlphaTabTrack[], selectedTrackIndex
   };
 }
 
-function renderSelectedTrack(api: AlphaTabApi, loadedScore: AlphaTabScore, selection: TrackSelection): void {
-  if (api.renderScore) {
-    api.renderScore(loadedScore, [selection.trackPosition]);
-    return;
-  }
-
-  api.renderTracks([selection.track]);
-}
-
 export async function createGpRenderer(
   container: HTMLElement,
   sourceFile: SourceFileData,
@@ -144,24 +146,28 @@ export async function createGpRenderer(
 ): Promise<GpRendererController> {
   let activeApi: AlphaTabApi | null = null;
   let activeSessionId = 0;
+  let lastKnownTracks: AlphaTabTrack[] = [];
   const sourceBytes = base64ToBytes(sourceFile.contentBase64);
 
   const startRendererSession = (targetTrackIndex: number, rendererReloaded: boolean): void => {
     activeSessionId += 1;
     const sessionId = activeSessionId;
 
+    const selectedTrackPosition = resolveTrackPositionFromKnownTracks(lastKnownTracks, targetTrackIndex);
+
     activeApi?.destroy?.();
-    const api = createAlphaTabApi(container);
+    const api = createAlphaTabApi(container, [selectedTrackPosition]);
     activeApi = api;
 
-    let hasRenderedForSession = false;
+    let hasHandledScoreLoaded = false;
 
     api.scoreLoaded.on((score) => {
-      if (sessionId !== activeSessionId || hasRenderedForSession) {
+      if (sessionId !== activeSessionId || hasHandledScoreLoaded) {
         return;
       }
 
       const loadedTracks = score.tracks ?? [];
+      lastKnownTracks = loadedTracks;
       hooks.onTracksLoaded(toTrackInfoList(loadedTracks));
 
       const selection = resolveTrackSelection(loadedTracks, targetTrackIndex);
@@ -178,8 +184,7 @@ export async function createGpRenderer(
         rendererReloaded,
       });
 
-      hasRenderedForSession = true;
-      renderSelectedTrack(api, score, selection);
+      hasHandledScoreLoaded = true;
     });
 
     api.error?.on(() => {
