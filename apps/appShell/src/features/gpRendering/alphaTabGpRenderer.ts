@@ -24,6 +24,11 @@ interface AlphaTabTrack {
   name: string;
 }
 
+interface TrackSelection {
+  track: AlphaTabTrack;
+  trackPosition: number;
+}
+
 export interface GpTrackInfo {
   index: number;
   name: string;
@@ -80,24 +85,50 @@ function createAlphaTabApi(container: HTMLElement): AlphaTabApi {
   return new alphaTab.AlphaTabApi(container, buildAlphaTabSettings()) as unknown as AlphaTabApi;
 }
 
+function resolveTrackSelection(loadedTracks: AlphaTabTrack[], selectedTrackIndex: number): TrackSelection | null {
+  if (loadedTracks.length === 0) {
+    return null;
+  }
+
+  const selectedTrackPosition = loadedTracks.findIndex((track) => track.index === selectedTrackIndex);
+  const fallbackTrack = loadedTracks[0];
+
+  if (!fallbackTrack) {
+    return null;
+  }
+
+  if (selectedTrackPosition < 0) {
+    return {
+      track: fallbackTrack,
+      trackPosition: 0,
+    };
+  }
+
+  const selectedTrack = loadedTracks[selectedTrackPosition];
+  if (!selectedTrack) {
+    return {
+      track: fallbackTrack,
+      trackPosition: 0,
+    };
+  }
+
+  return {
+    track: selectedTrack,
+    trackPosition: selectedTrackPosition,
+  };
+}
 
 function renderSelectedTrack(
   api: AlphaTabApi,
-  loadedScore: AlphaTabScore | null,
-  loadedTracks: AlphaTabTrack[],
-  selectedTrackIndex: number,
+  loadedScore: AlphaTabScore,
+  selection: TrackSelection,
 ): void {
-  const selectedTrack = loadedTracks.find((track) => track.index === selectedTrackIndex) ?? loadedTracks[0];
-  if (!selectedTrack) {
+  if (api.renderScore) {
+    api.renderScore(loadedScore, [selection.trackPosition]);
     return;
   }
 
-  if (loadedScore && api.renderScore) {
-    api.renderScore(loadedScore, [selectedTrack.index]);
-    return;
-  }
-
-  api.renderTracks([selectedTrack]);
+  api.renderTracks([selection.track]);
 }
 
 export async function createGpRenderer(
@@ -109,13 +140,38 @@ export async function createGpRenderer(
   const api = createAlphaTabApi(container);
   let loadedScore: AlphaTabScore | null = null;
   let loadedTracks: AlphaTabTrack[] = [];
+  let hasAppliedInitialTrackSelection = false;
+  let isRerenderInProgress = false;
+
+  const applyTrackSelection = (trackIndex: number): void => {
+    if (!loadedScore) {
+      return;
+    }
+
+    const selection = resolveTrackSelection(loadedTracks, trackIndex);
+    if (!selection) {
+      return;
+    }
+
+    isRerenderInProgress = true;
+    renderSelectedTrack(api, loadedScore, selection);
+  };
 
   api.scoreLoaded.on((score) => {
     loadedScore = score;
     loadedTracks = score.tracks ?? [];
 
     hooks.onTracksLoaded(toTrackInfoList(loadedTracks));
-    renderSelectedTrack(api, loadedScore, loadedTracks, selectedTrackIndex);
+
+    if (isRerenderInProgress) {
+      isRerenderInProgress = false;
+      return;
+    }
+
+    if (!hasAppliedInitialTrackSelection) {
+      hasAppliedInitialTrackSelection = true;
+      applyTrackSelection(selectedTrackIndex);
+    }
   });
 
   api.error?.on(() => {
@@ -130,7 +186,7 @@ export async function createGpRenderer(
 
   return {
     selectTrack: (trackIndex: number) => {
-      renderSelectedTrack(api, loadedScore, loadedTracks, trackIndex);
+      applyTrackSelection(trackIndex);
     },
     destroy: () => {
       api.destroy?.();
