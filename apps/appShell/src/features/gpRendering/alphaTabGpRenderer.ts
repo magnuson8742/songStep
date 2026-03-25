@@ -206,6 +206,11 @@ interface RenderPlan {
   effectiveStaveProfile: StaveProfile;
 }
 
+interface RenderViewportScrollSnapshot {
+  left: number;
+  top: number;
+}
+
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -451,6 +456,7 @@ export async function createGpRenderer(
   let renderTimeoutHit = false;
   let activeSessionToken = 0;
   let activeRenderTimeoutId: number | null = null;
+  let pendingScrollSnapshot: RenderViewportScrollSnapshot | null = null;
   let currentRenderMode: RenderMode = "string-tab";
   let heavyTrackDetected = false;
   let heavyTrackReason: string | null = null;
@@ -534,6 +540,16 @@ export async function createGpRenderer(
 
     window.clearTimeout(activeRenderTimeoutId);
     activeRenderTimeoutId = null;
+  };
+
+  const captureRenderViewportScroll = (): RenderViewportScrollSnapshot => ({
+    left: container.scrollLeft,
+    top: container.scrollTop,
+  });
+
+  const restoreRenderViewportScroll = (snapshot: RenderViewportScrollSnapshot): void => {
+    container.scrollLeft = snapshot.left;
+    container.scrollTop = snapshot.top;
   };
 
   const isPercussionTrackFromRuntime = (track: AlphaTabTrack): boolean => {
@@ -655,6 +671,7 @@ export async function createGpRenderer(
 
     const sessionToken = activeSessionToken + 1;
     activeSessionToken = sessionToken;
+    pendingScrollSnapshot = captureRenderViewportScroll();
 
     destroyActiveRenderer();
     clearRenderHost(container);
@@ -716,6 +733,10 @@ export async function createGpRenderer(
       rendererBusy = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       lastRendererErrorStage = "renderFinished";
+      if (pendingScrollSnapshot) {
+        restoreRenderViewportScroll(pendingScrollSnapshot);
+        pendingScrollSnapshot = null;
+      }
       emitDebugInfo();
 
       const queuedTrackIndex = pendingRequestedTrackIndex;

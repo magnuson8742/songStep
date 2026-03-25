@@ -357,6 +357,8 @@ select {
 .arrangementOverview {
   --arrangement-track-label-width: 120px;
   --arrangement-track-gap: 8px;
+  --arrangement-bar-count: 1;
+  --arrangement-grid-width: 19px;
   margin-top: 10px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;
@@ -368,7 +370,7 @@ select {
 .arrangementBarHeader {
   position: relative;
   margin-left: calc(var(--arrangement-track-label-width) + var(--arrangement-track-gap));
-  width: calc(100% - var(--arrangement-track-label-width) - var(--arrangement-track-gap));
+  width: var(--arrangement-grid-width);
   min-height: 16px;
   margin-bottom: 6px;
 }
@@ -404,8 +406,8 @@ select {
 
 .arrangementBarRow {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(16px, 1fr);
+  width: var(--arrangement-grid-width);
+  grid-template-columns: repeat(var(--arrangement-bar-count), minmax(16px, 1fr));
   gap: 3px;
 }
 
@@ -425,7 +427,7 @@ select {
 .arrangementMarkers {
   position: relative;
   margin-left: calc(var(--arrangement-track-label-width) + var(--arrangement-track-gap));
-  width: calc(100% - var(--arrangement-track-label-width) - var(--arrangement-track-gap));
+  width: var(--arrangement-grid-width);
   margin-top: 8px;
   min-height: 16px;
 }

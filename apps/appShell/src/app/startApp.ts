@@ -199,17 +199,20 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
 }
 
 function updateArrangementOverview(state: AppState, rootElement: HTMLElement): void {
+  const overviewContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-overview='true']");
   const barHeaderContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-bar-header]");
   const rowsContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-rows]");
   const markersContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-markers]");
   const emptyState = rootElement.querySelector<HTMLElement>("[data-arrangement-empty]");
 
-  if (!barHeaderContainer || !rowsContainer || !markersContainer || !emptyState) {
+  if (!overviewContainer || !barHeaderContainer || !rowsContainer || !markersContainer || !emptyState) {
     return;
   }
 
   const overview = state.scoreOverview;
   if (!overview || overview.trackRows.length === 0 || overview.totalBars <= 0) {
+    overviewContainer.style.removeProperty("--arrangement-bar-count");
+    overviewContainer.style.removeProperty("--arrangement-grid-width");
     barHeaderContainer.innerHTML = "";
     rowsContainer.innerHTML = "";
     markersContainer.innerHTML = "";
@@ -219,6 +222,10 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   }
 
   emptyState.style.display = "none";
+  const arrangementBarCount = Math.max(overview.totalBars, 1);
+  const arrangementGridWidthPx = arrangementBarCount * 19;
+  overviewContainer.style.setProperty("--arrangement-bar-count", String(arrangementBarCount));
+  overviewContainer.style.setProperty("--arrangement-grid-width", `${arrangementGridWidthPx}px`);
   const barLabels = new Set<number>([0, overview.totalBars - 1]);
   for (let barIndex = 3; barIndex < overview.totalBars; barIndex += 4) {
     barLabels.add(barIndex);
@@ -256,7 +263,7 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   const laneEndPercents: number[] = [];
   const laneHeightPx = 18;
   const lanePaddingPx = 8;
-  const markerAreaWidthPx = Math.max(markersContainer.clientWidth, 1);
+  const markerAreaWidthPx = Math.max(markersContainer.scrollWidth, markersContainer.clientWidth, 1);
 
   markerNodes.forEach((markerNode) => {
     const leftPercent = Number(markerNode.style.left.replace("%", "")) || 0;
