@@ -22,8 +22,6 @@ import {
 import { renderProjectScreen } from "../features/projectScreen/renderProjectScreen";
 
 type AppView = "home" | "newProject" | "openProject" | "project";
-const TRACK_VOLUME_DEFAULT = 80;
-const TRACK_BALANCE_DEFAULT = 0;
 
 interface AppState {
   currentView: AppView;
@@ -176,7 +174,7 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
       return;
     }
 
-    const value = state.trackVolumeByIndex[trackIndex] ?? TRACK_VOLUME_DEFAULT;
+    const value = state.trackVolumeByIndex[trackIndex] ?? 80;
     input.value = String(value);
     const valueLabel = rootElement.querySelector<HTMLElement>(`[data-track-volume-value="${trackIndex}"]`);
     if (valueLabel) {
@@ -191,7 +189,7 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
       return;
     }
 
-    const value = state.trackBalanceByIndex[trackIndex] ?? TRACK_BALANCE_DEFAULT;
+    const value = state.trackBalanceByIndex[trackIndex] ?? 0;
     input.value = String(value);
     const valueLabel = rootElement.querySelector<HTMLElement>(`[data-track-balance-value="${trackIndex}"]`);
     if (valueLabel) {
@@ -206,7 +204,7 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   const barHeaderContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-bar-header]");
   const emptyState = rootElement.querySelector<HTMLElement>("[data-arrangement-empty]");
 
-  if (!rowsContainer || !markersContainer || !emptyState || !barHeaderContainer) {
+  if (!rowsContainer || !markersContainer || !barHeaderContainer || !emptyState) {
     return;
   }
 
@@ -241,12 +239,12 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
     })
     .join("");
 
-  const barLabelIndices = new Set<number>([0, overview.totalBars - 1]);
+  const barHeaderIndices = new Set<number>([0, overview.totalBars - 1]);
   for (let barIndex = 3; barIndex < overview.totalBars; barIndex += 4) {
-    barLabelIndices.add(barIndex);
+    barHeaderIndices.add(barIndex);
   }
 
-  barHeaderContainer.innerHTML = Array.from(barLabelIndices)
+  barHeaderContainer.innerHTML = Array.from(barHeaderIndices)
     .sort((left, right) => left - right)
     .map((barIndex) => {
       const positionPercent = overview.totalBars > 1 ? (barIndex / (overview.totalBars - 1)) * 100 : 0;
@@ -603,10 +601,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.scoreOverview = info;
           info.trackRows.forEach((row) => {
             if (state.trackVolumeByIndex[row.trackIndex] === undefined) {
-              state.trackVolumeByIndex[row.trackIndex] = TRACK_VOLUME_DEFAULT;
+              state.trackVolumeByIndex[row.trackIndex] = 80;
             }
             if (state.trackBalanceByIndex[row.trackIndex] === undefined) {
-              state.trackBalanceByIndex[row.trackIndex] = TRACK_BALANCE_DEFAULT;
+              state.trackBalanceByIndex[row.trackIndex] = 0;
             }
           });
           updateArrangementOverview(state, rootElement);

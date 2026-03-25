@@ -338,32 +338,6 @@ export function renderProjectScreen(
     }
   });
 
-  trackStrip?.addEventListener("dblclick", (event) => {
-    const targetElement = event.target instanceof HTMLInputElement ? event.target : null;
-    if (!targetElement) {
-      return;
-    }
-
-    if (targetElement.dataset.trackAction === "set-volume") {
-      const trackIndex = Number(targetElement.dataset.trackVolumeIndex);
-      if (Number.isNaN(trackIndex)) {
-        return;
-      }
-
-      actions.onTrackVolumeChange(trackIndex, 80);
-      return;
-    }
-
-    if (targetElement.dataset.trackAction === "set-balance") {
-      const trackIndex = Number(targetElement.dataset.trackBalanceIndex);
-      if (Number.isNaN(trackIndex)) {
-        return;
-      }
-
-      actions.onTrackBalanceChange(trackIndex, 0);
-    }
-  });
-
   trackStrip?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") {
       return;

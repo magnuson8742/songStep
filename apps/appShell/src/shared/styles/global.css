@@ -355,6 +355,8 @@ select {
 }
 
 .arrangementOverview {
+  --arrangement-track-label-width: 120px;
+  --arrangement-track-gap: 8px;
   margin-top: 10px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;
@@ -370,13 +372,14 @@ select {
 
 .arrangementBarHeader {
   position: relative;
-  min-height: 14px;
+  min-height: 16px;
   margin-bottom: 6px;
+  margin-left: calc(var(--arrangement-track-label-width) + var(--arrangement-track-gap));
+  width: calc(100% - (var(--arrangement-track-label-width) + var(--arrangement-track-gap)));
 }
 
 .arrangementBarHeaderLabel {
   position: absolute;
-  transform: translateX(-50%);
   font-size: 10px;
   color: #9fb2cd;
   white-space: nowrap;
@@ -384,8 +387,8 @@ select {
 
 .arrangementRow {
   display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 8px;
+  grid-template-columns: var(--arrangement-track-label-width) 1fr;
+  gap: var(--arrangement-track-gap);
   align-items: center;
 }
 
@@ -400,12 +403,12 @@ select {
 .arrangementBarRow {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(12px, 1fr);
+  grid-auto-columns: minmax(16px, 1fr);
   gap: 3px;
 }
 
 .arrangementBarCell {
-  height: 14px;
+  height: 20px;
   border-radius: 2px;
 }
 
@@ -421,11 +424,12 @@ select {
   position: relative;
   margin-top: 8px;
   min-height: 16px;
+  margin-left: calc(var(--arrangement-track-label-width) + var(--arrangement-track-gap));
+  width: calc(100% - (var(--arrangement-track-label-width) + var(--arrangement-track-gap)));
 }
 
 .arrangementMarker {
   position: absolute;
-  transform: translateX(-50%);
   font-size: 11px;
   color: #b7c8df;
   white-space: nowrap;
