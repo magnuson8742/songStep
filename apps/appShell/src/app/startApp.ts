@@ -655,6 +655,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentBar = info.currentBar;
           updatePlayerRuntimeFields(state, rootElement);
         },
+        onRuntimeNotice: (message) => {
+          state.projectStatusMessage = message;
+          updateProjectStatusBanner(rootElement, message);
+        },
         onActiveTrackConfirmed: (trackIndex) => {
           state.selectedTrackIndex = trackIndex;
           state.requestedTrackIndex = null;

@@ -180,6 +180,7 @@ export interface GpRendererHooks {
   onScoreRuntimeInfo: (info: GpScoreRuntimeInfo) => void;
   onScoreOverviewRuntimeInfo: (info: GpScoreOverviewRuntimeInfo) => void;
   onPlaybackRuntimeInfo: (info: GpPlaybackRuntimeInfo) => void;
+  onRuntimeNotice: (message: string) => void;
   onRenderError: (message: string) => void;
 }
 
@@ -937,12 +938,12 @@ export async function createGpRenderer(
     },
     play: () => {
       if (isPercussionTrack) {
-        hooks.onRenderError("Playback is not enabled for percussion tracks yet.");
+        hooks.onRuntimeNotice("Playback is not enabled for percussion tracks yet.");
         return;
       }
 
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRenderError(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
 
@@ -951,12 +952,12 @@ export async function createGpRenderer(
     },
     pause: () => {
       if (isPercussionTrack) {
-        hooks.onRenderError("Playback is not enabled for percussion tracks yet.");
+        hooks.onRuntimeNotice("Playback is not enabled for percussion tracks yet.");
         return;
       }
 
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRenderError(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
 
@@ -965,12 +966,12 @@ export async function createGpRenderer(
     },
     stop: () => {
       if (isPercussionTrack) {
-        hooks.onRenderError("Playback is not enabled for percussion tracks yet.");
+        hooks.onRuntimeNotice("Playback is not enabled for percussion tracks yet.");
         return;
       }
 
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRenderError(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
 
