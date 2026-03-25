@@ -376,7 +376,6 @@ select {
 .arrangementBarHeaderLabel {
   position: absolute;
   top: 0;
-  transform: translateX(-50%);
   font-size: 10px;
   line-height: 1.3;
   color: rgba(183, 200, 223, 0.9);

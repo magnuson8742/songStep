@@ -45,6 +45,9 @@ function renderDebugValue(value: string | number | null): string {
   return String(value);
 }
 
+const DEFAULT_TRACK_VOLUME = 80;
+const DEFAULT_TRACK_BALANCE = 0;
+
 function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"] | undefined): string {
   if (!debugRows || debugRows.length === 0) {
     return "(empty)";
@@ -86,13 +89,13 @@ function renderTrackStrip(
             <button class="secondaryButton trackControlButton ${mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}">M</button>
             <label class="trackControlLabel">
               Vol
-              <input class="trackControlRange" type="range" min="0" max="100" value="${trackVolumeByIndex[track.index] ?? 80}" data-stop-track-select="true" data-track-action="set-volume" data-track-volume-index="${track.index}" />
-              <span class="trackControlValue" data-track-volume-value="${track.index}">${trackVolumeByIndex[track.index] ?? 80}</span>
+              <input class="trackControlRange" type="range" min="0" max="100" value="${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}" data-stop-track-select="true" data-track-action="set-volume" data-track-volume-index="${track.index}" />
+              <span class="trackControlValue" data-track-volume-value="${track.index}">${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}</span>
             </label>
             <label class="trackControlLabel trackBalanceControl">
               Bal
-              <input class="trackBalanceKnob" type="range" min="-50" max="50" value="${trackBalanceByIndex[track.index] ?? 0}" data-stop-track-select="true" data-track-action="set-balance" data-track-balance-index="${track.index}" />
-              <span class="trackControlValue" data-track-balance-value="${track.index}">${trackBalanceByIndex[track.index] ?? 0}</span>
+              <input class="trackBalanceKnob" type="range" min="-50" max="50" value="${trackBalanceByIndex[track.index] ?? DEFAULT_TRACK_BALANCE}" data-stop-track-select="true" data-track-action="set-balance" data-track-balance-index="${track.index}" />
+              <span class="trackControlValue" data-track-balance-value="${track.index}">${trackBalanceByIndex[track.index] ?? DEFAULT_TRACK_BALANCE}</span>
             </label>
           </div>
         </article>
@@ -350,6 +353,32 @@ export function renderProjectScreen(
 
     event.preventDefault();
     handleTrackSelection(event.target);
+  });
+
+  trackStrip?.addEventListener("dblclick", (event) => {
+    const targetElement = event.target instanceof HTMLInputElement ? event.target : null;
+    if (!targetElement) {
+      return;
+    }
+
+    if (targetElement.dataset.trackAction === "set-volume") {
+      const trackIndex = Number(targetElement.dataset.trackVolumeIndex);
+      if (Number.isNaN(trackIndex)) {
+        return;
+      }
+
+      actions.onTrackVolumeChange(trackIndex, DEFAULT_TRACK_VOLUME);
+      return;
+    }
+
+    if (targetElement.dataset.trackAction === "set-balance") {
+      const trackIndex = Number(targetElement.dataset.trackBalanceIndex);
+      if (Number.isNaN(trackIndex)) {
+        return;
+      }
+
+      actions.onTrackBalanceChange(trackIndex, DEFAULT_TRACK_BALANCE);
+    }
   });
 
   saveProjectButton?.addEventListener("click", actions.onSaveProject);
