@@ -30,7 +30,7 @@ interface PlaybackBarAnchor {
   height: number;
 }
 
-const ENABLE_CUSTOM_PLAYHEAD = false;
+const ENABLE_CUSTOM_PLAYHEAD = true;
 
 interface AppState {
   currentView: AppView;
@@ -66,6 +66,8 @@ interface AppState {
   renderHostElementCounts: string | null;
   playbackPlayheadVisible: boolean;
   playbackBarAnchors: PlaybackBarAnchor[];
+  playbackAnchorRebuildToken: number;
+  playbackAnchorRebuildScheduled: boolean;
   activeTrackName: string | null;
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
@@ -378,43 +380,18 @@ function hidePlaybackPlayhead(rootElement: HTMLElement, state: AppState): void {
 
 function updateRenderHostDomDiagnostics(state: AppState, rootElement: HTMLElement, renderHost: HTMLElement): void {
   const hasSvg = renderHost.querySelector("svg") !== null;
-  const firstLevelChildTags = Array.from(renderHost.children)
-    .slice(0, 8)
-    .map((child) => child.tagName.toLowerCase())
+  const firstLevelChildTags = Array.from(renderHost.children, (child) => child.tagName.toLowerCase())
+    .slice(0, 4)
     .join(", ");
-
-  const elements = Array.from(renderHost.querySelectorAll<HTMLElement>("*"));
-  const tagClassCombos = Array.from(
-    new Set(
-      elements
-        .slice(0, 120)
-        .map((element) => {
-          const firstClass = element.className.trim().split(/\s+/)[0] ?? "";
-          return firstClass ? `${element.tagName.toLowerCase()}.${firstClass}` : element.tagName.toLowerCase();
-        }),
-    ),
-  )
-    .slice(0, 10)
-    .join(", ");
-
-  const elementCounts = [
-    `svg=${renderHost.querySelectorAll("svg").length}`,
-    `g=${renderHost.querySelectorAll("g").length}`,
-    `rect=${renderHost.querySelectorAll("rect").length}`,
-    `line=${renderHost.querySelectorAll("line").length}`,
-    `text=${renderHost.querySelectorAll("text").length}`,
-    `class=${renderHost.querySelectorAll("[class]").length}`,
-    `id=${renderHost.querySelectorAll("[id]").length}`,
-  ].join(", ");
 
   state.renderHostHasSvg = hasSvg;
   state.renderHostChildTags = firstLevelChildTags || null;
-  state.renderHostTopTagClassCombos = tagClassCombos || null;
-  state.renderHostElementCounts = elementCounts;
+  state.renderHostTopTagClassCombos = null;
+  state.renderHostElementCounts = null;
   updateDebugField(rootElement, "render-host-has-svg", hasSvg ? "yes" : "no");
   updateDebugField(rootElement, "render-host-child-tags", firstLevelChildTags || "-");
-  updateDebugField(rootElement, "render-host-tag-class", tagClassCombos || "-");
-  updateDebugField(rootElement, "render-host-element-counts", elementCounts);
+  updateDebugField(rootElement, "render-host-tag-class", "minimal");
+  updateDebugField(rootElement, "render-host-element-counts", "minimal");
 }
 
 function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): void {
@@ -454,30 +431,6 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     {
       source: "dom:[data-bar-index]",
       resolveAnchors: () => Array.from(renderHost.querySelectorAll<HTMLElement>("[data-bar-index]")),
-    },
-    {
-      source: "dom:.at-bar",
-      resolveAnchors: () => Array.from(renderHost.querySelectorAll<HTMLElement>(".at-bar")),
-    },
-    {
-      source: "geometry:svg-line-vertical",
-      resolveAnchors: () =>
-        Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line")).filter((line) => {
-          const x1 = Number(line.getAttribute("x1"));
-          const x2 = Number(line.getAttribute("x2"));
-          const y1 = Number(line.getAttribute("y1"));
-          const y2 = Number(line.getAttribute("y2"));
-          return Number.isFinite(x1) && Number.isFinite(x2) && Number.isFinite(y1) && Number.isFinite(y2) && Math.abs(x1 - x2) <= 0.8 && Math.abs(y1 - y2) > 16;
-        }),
-    },
-    {
-      source: "geometry:svg-rect-vertical",
-      resolveAnchors: () =>
-        Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect")).filter((rect) => {
-          const width = Number(rect.getAttribute("width"));
-          const height = Number(rect.getAttribute("height"));
-          return Number.isFinite(width) && Number.isFinite(height) && width > 0 && width <= 3 && height > 18;
-        }),
     },
   ] as const;
   const renderHostRect = renderHost.getBoundingClientRect();
@@ -558,6 +511,49 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
   );
 }
 
+function schedulePlaybackBarAnchorRebuild(state: AppState, rootElement: HTMLElement): void {
+  if (!ENABLE_CUSTOM_PLAYHEAD) {
+    return;
+  }
+
+  state.playbackAnchorRebuildToken += 1;
+  if (state.playbackAnchorRebuildScheduled) {
+    return;
+  }
+
+  state.playbackAnchorRebuildScheduled = true;
+  const scheduledToken = state.playbackAnchorRebuildToken;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      state.playbackAnchorRebuildScheduled = false;
+      if (scheduledToken !== state.playbackAnchorRebuildToken) {
+        schedulePlaybackBarAnchorRebuild(state, rootElement);
+        return;
+      }
+
+      try {
+        rebuildPlaybackBarAnchors(state, rootElement);
+      } catch {
+        state.playbackBarAnchors = [];
+        state.playbackBarAnchorCount = 0;
+        state.playbackBarAnchorSource = null;
+        state.playbackAnchorStrategyAttempts = "error";
+        updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+        updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+        updateDebugField(rootElement, "playback-anchor-strategy-attempts", "error");
+        hidePlaybackPlayhead(rootElement, state);
+        return;
+      }
+
+      updatePlaybackPlayheadFromRuntime(state, rootElement);
+    });
+  });
+}
+
+function invalidatePlaybackBarAnchorRebuild(state: AppState): void {
+  state.playbackAnchorRebuildToken += 1;
+}
+
 function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLElement): void {
   if (!ENABLE_CUSTOM_PLAYHEAD) {
     hidePlaybackPlayhead(rootElement, state);
@@ -597,110 +593,10 @@ function updatePlaybackFollowDiagnostics(
   updateDebugField(rootElement, "playback-follow-source", followSource ?? "-");
 }
 
-function resolvePlaybackFollowTarget(renderHost: HTMLElement): { targetElement: HTMLElement; source: string } | null {
-  const customPlayhead = renderHost.querySelector<HTMLElement>("[data-playback-playhead='true']");
-  if (customPlayhead && customPlayhead.style.display !== "none") {
-    return {
-      targetElement: customPlayhead,
-      source: "custom:playhead",
-    };
-  }
-
-  const selectorPriority = [
-    { selector: ".at-cursor-beat", source: "alphaTab:cursor-beat" },
-    { selector: ".at-cursor-bar", source: "alphaTab:cursor-bar" },
-    { selector: ".at-cursor", source: "alphaTab:cursor" },
-    { selector: ".at-highlight", source: "alphaTab:highlight" },
-    { selector: "[class*='cursor']", source: "dom:cursor-class" },
-  ] as const;
-
-  for (const entry of selectorPriority) {
-    const candidate = renderHost.querySelector<HTMLElement>(entry.selector);
-    if (!candidate) {
-      continue;
-    }
-
-    const candidateRect = candidate.getBoundingClientRect();
-    if (candidateRect.width <= 0 && candidateRect.height <= 0) {
-      continue;
-    }
-
-    return {
-      targetElement: candidate,
-      source: entry.source,
-    };
-  }
-
-  return null;
-}
-
 function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElement): void {
-  if (!ENABLE_CUSTOM_PLAYHEAD) {
-    state.playbackFollowTargetFound = false;
-    state.playbackFollowSource = "disabled";
-    updatePlaybackFollowDiagnostics(rootElement, false, "disabled");
-    return;
-  }
-
-  const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
-  if (!renderHost) {
-    return;
-  }
-
-  if (!state.playbackIsPlaying || state.playbackCurrentTick === null) {
-    state.playbackFollowTargetFound = false;
-    state.playbackFollowSource = null;
-    updatePlaybackFollowDiagnostics(rootElement, false, null);
-    return;
-  }
-
-  const followTarget = resolvePlaybackFollowTarget(renderHost);
-  if (!followTarget) {
-    state.playbackFollowTargetFound = false;
-    state.playbackFollowSource = "none";
-    updatePlaybackFollowDiagnostics(rootElement, false, "none");
-    return;
-  }
-
-  state.playbackFollowTargetFound = true;
-  state.playbackFollowSource = followTarget.source;
-  updatePlaybackFollowDiagnostics(rootElement, true, followTarget.source);
-
-  const targetRect = followTarget.targetElement.getBoundingClientRect();
-  const hostRect = renderHost.getBoundingClientRect();
-
-  const targetCenterX = targetRect.left - hostRect.left + renderHost.scrollLeft + targetRect.width / 2;
-  const targetCenterY = targetRect.top - hostRect.top + renderHost.scrollTop + targetRect.height / 2;
-  const horizontalMargin = Math.max(renderHost.clientWidth * 0.25, 32);
-  const verticalMargin = Math.max(renderHost.clientHeight * 0.25, 24);
-
-  const leftBound = renderHost.scrollLeft + horizontalMargin;
-  const rightBound = renderHost.scrollLeft + renderHost.clientWidth - horizontalMargin;
-  const topBound = renderHost.scrollTop + verticalMargin;
-  const bottomBound = renderHost.scrollTop + renderHost.clientHeight - verticalMargin;
-
-  let nextScrollLeft = renderHost.scrollLeft;
-  let nextScrollTop = renderHost.scrollTop;
-
-  if (targetCenterX < leftBound || targetCenterX > rightBound) {
-    nextScrollLeft = targetCenterX - renderHost.clientWidth / 2;
-  }
-  if (targetCenterY < topBound || targetCenterY > bottomBound) {
-    nextScrollTop = targetCenterY - renderHost.clientHeight / 2;
-  }
-
-  const maxScrollLeft = Math.max(renderHost.scrollWidth - renderHost.clientWidth, 0);
-  const maxScrollTop = Math.max(renderHost.scrollHeight - renderHost.clientHeight, 0);
-  const clampedScrollLeft = Math.min(Math.max(nextScrollLeft, 0), maxScrollLeft);
-  const clampedScrollTop = Math.min(Math.max(nextScrollTop, 0), maxScrollTop);
-
-  if (Math.abs(clampedScrollLeft - renderHost.scrollLeft) > 4 || Math.abs(clampedScrollTop - renderHost.scrollTop) > 4) {
-    renderHost.scrollTo({
-      left: clampedScrollLeft,
-      top: clampedScrollTop,
-      behavior: "auto",
-    });
-  }
+  state.playbackFollowTargetFound = false;
+  state.playbackFollowSource = "disabled";
+  updatePlaybackFollowDiagnostics(rootElement, false, "disabled");
 }
 
 function updateProjectStatusBanner(rootElement: HTMLElement, message: string): void {
@@ -768,6 +664,8 @@ export function startApp(rootElement: HTMLElement): void {
     renderHostElementCounts: null,
     playbackPlayheadVisible: false,
     playbackBarAnchors: [],
+    playbackAnchorRebuildToken: 0,
+    playbackAnchorRebuildScheduled: false,
     activeTrackName: null,
     scoreOverview: null,
     trackVolumeByIndex: {},
@@ -777,6 +675,7 @@ export function startApp(rootElement: HTMLElement): void {
   };
 
   const cleanupRenderer = (): void => {
+    invalidatePlaybackBarAnchorRebuild(state);
     if (!state.gpRenderer) {
       return;
     }
@@ -985,6 +884,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "playback-bar-anchor-count", "0");
           updateDebugField(rootElement, "playback-bar-anchor-source", "-");
           updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
+          invalidatePlaybackBarAnchorRebuild(state);
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
@@ -1088,6 +988,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
           state.playbackAnchorStrategyAttempts = null;
+          invalidatePlaybackBarAnchorRebuild(state);
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateDebugField(rootElement, "playback-bar-anchor-count", "0");
           updateDebugField(rootElement, "playback-bar-anchor-source", "-");
@@ -1140,8 +1041,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "selection-fired", state.selectionFired ? "yes" : "no");
           updateTrackStripActive(rootElement, debugInfo.confirmedActiveTrackIndex);
           if (debugInfo.lastRendererErrorStage === "renderFinished") {
-            rebuildPlaybackBarAnchors(state, rootElement);
-            updatePlaybackPlayheadFromRuntime(state, rootElement);
+            schedulePlaybackBarAnchorRebuild(state, rootElement);
           }
         },
         onScoreRuntimeInfo: (info) => {
@@ -1207,6 +1107,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
           state.playbackAnchorStrategyAttempts = null;
+          invalidatePlaybackBarAnchorRebuild(state);
           updateProjectStatusBanner(rootElement, message);
           updateDebugField(rootElement, "current-tick", "-");
           updateDebugField(rootElement, "playback-bar-anchor-count", "0");
@@ -1226,6 +1127,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
           state.playbackAnchorStrategyAttempts = null;
+          invalidatePlaybackBarAnchorRebuild(state);
           state.currentBarSourcePath = null;
           state.requestedTrackIndex = null;
           state.selectionFired = false;
@@ -1249,6 +1151,8 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onRenderError: (message) => {
           state.projectStatusMessage = message;
+          invalidatePlaybackBarAnchorRebuild(state);
+          hidePlaybackPlayhead(rootElement, state);
           render();
         },
       })
