@@ -483,6 +483,8 @@ export async function createGpRenderer(
     positionLabel: null,
     currentBar: null,
   };
+  let hasLoggedPlayerPositionPayloadShape = false;
+  let hasLoggedPlayerStatePayloadShape = false;
   let playbackCapabilityMessage: string | null = null;
 
   const emitDebugInfo = (): void => {
@@ -564,24 +566,78 @@ export async function createGpRenderer(
     return `${minutesPart}:${String(secondsPart).padStart(2, "0")}`;
   };
 
+  const readNumberAtPath = (payload: unknown, path: string): number | null => {
+    const segments = path.split(".");
+    let currentValue: unknown = payload;
+
+    for (const segment of segments) {
+      if (!currentValue || typeof currentValue !== "object") {
+        return null;
+      }
+
+      currentValue = (currentValue as Record<string, unknown>)[segment];
+    }
+
+    return typeof currentValue === "number" && !Number.isNaN(currentValue) ? currentValue : null;
+  };
+
+  const describePayloadShape = (payload: unknown): string => {
+    if (payload === null) {
+      return "null";
+    }
+    if (payload === undefined) {
+      return "undefined";
+    }
+    if (typeof payload !== "object") {
+      return typeof payload;
+    }
+
+    const rootKeys = Object.keys(payload as Record<string, unknown>);
+    const nestedKeys = rootKeys
+      .flatMap((key) => {
+        const value = (payload as Record<string, unknown>)[key];
+        if (!value || typeof value !== "object") {
+          return [];
+        }
+
+        return Object.keys(value as Record<string, unknown>).map((nestedKey) => `${key}.${nestedKey}`);
+      })
+      .slice(0, 16);
+
+    return [...rootKeys, ...nestedKeys].join(", ");
+  };
+
   const extractCurrentBarFromPositionPayload = (payload: unknown): number | null => {
-    if (!payload || typeof payload !== "object") {
-      return null;
+    const knownBarPaths = [
+      "currentBar",
+      "bar",
+      "barIndex",
+      "masterBarIndex",
+      "barNumber",
+      "barNo",
+      "position.bar",
+      "position.barIndex",
+      "position.masterBarIndex",
+      "currentBeat.bar",
+      "currentBeat.barIndex",
+      "currentBeat.voice.bar.index",
+      "currentBeat.voice.bar.masterBar.index",
+      "currentBeat.voice.bar.masterBarIndex",
+      "currentBeat.masterBar.index",
+      "tickLookup.masterBar.index",
+      "tickPosition.masterBar.index",
+    ] as const;
+
+    for (const path of knownBarPaths) {
+      const candidate = readNumberAtPath(payload, path);
+      if (candidate === null) {
+        continue;
+      }
+
+      return candidate >= 0 ? candidate + 1 : candidate;
     }
 
-    const maybeObject = payload as {
-      currentBar?: number;
-      bar?: number;
-      barIndex?: number;
-      masterBarIndex?: number;
-    };
-    const candidate =
-      maybeObject.currentBar ?? maybeObject.bar ?? maybeObject.barIndex ?? maybeObject.masterBarIndex ?? null;
-    if (typeof candidate !== "number" || Number.isNaN(candidate)) {
-      return null;
-    }
-
-    return candidate >= 0 ? candidate + 1 : candidate;
+    return null;
   };
 
   const extractPositionLabelFromPayload = (payload: unknown): string | null => {
@@ -615,6 +671,51 @@ export async function createGpRenderer(
 
   const isPlaybackApiAvailable = (api: AlphaTabApi): boolean =>
     typeof api.play === "function" && typeof api.pause === "function" && typeof api.stop === "function";
+
+  const normalizePlaybackState = (statePayload: unknown): "playing" | "paused" | "stopped" | null => {
+    if (typeof statePayload === "boolean") {
+      return statePayload ? "playing" : "paused";
+    }
+
+    if (typeof statePayload === "number") {
+      if (statePayload === 2) {
+        return "playing";
+      }
+      if (statePayload === 1) {
+        return "paused";
+      }
+      if (statePayload === 0) {
+        return "stopped";
+      }
+    }
+
+    const normalizedText =
+      typeof statePayload === "string"
+        ? statePayload
+        : typeof statePayload === "object" && statePayload
+          ? String(
+              (statePayload as { state?: unknown; status?: unknown; value?: unknown }).state ??
+                (statePayload as { status?: unknown }).status ??
+                (statePayload as { value?: unknown }).value ??
+                "",
+            )
+        : "";
+    const loweredText = normalizedText.trim().toLowerCase();
+    if (!loweredText) {
+      return null;
+    }
+    if (loweredText.includes("play")) {
+      return "playing";
+    }
+    if (loweredText.includes("pause")) {
+      return "paused";
+    }
+    if (loweredText.includes("stop")) {
+      return "stopped";
+    }
+
+    return null;
+  };
 
   const clearRenderTimeout = (): void => {
     if (activeRenderTimeoutId === null) {
@@ -786,15 +887,20 @@ export async function createGpRenderer(
           return;
         }
 
-        const normalizedState =
-          typeof statePayload === "string"
-            ? statePayload
-            : typeof statePayload === "object" && statePayload && "state" in statePayload
-              ? String((statePayload as { state?: string | number }).state ?? "")
-              : String(statePayload ?? "");
+        if (!hasLoggedPlayerStatePayloadShape) {
+          hasLoggedPlayerStatePayloadShape = true;
+          console.info("[songStep] alphaTab playerStateChanged payload shape:", describePayloadShape(statePayload));
+        }
+
+        const normalizedState = normalizePlaybackState(statePayload);
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
-          isPlaying: /play/i.test(normalizedState) && !/pause|stop/i.test(normalizedState),
+          isPlaying:
+            normalizedState === null
+              ? playbackRuntimeInfo.isPlaying
+              : normalizedState === "playing"
+                ? true
+                : false,
         };
         emitPlaybackRuntimeInfo();
       });
@@ -802,6 +908,11 @@ export async function createGpRenderer(
       api.playerPositionChanged?.on((positionPayload) => {
         if (sessionToken !== activeSessionToken) {
           return;
+        }
+
+        if (!hasLoggedPlayerPositionPayloadShape) {
+          hasLoggedPlayerPositionPayloadShape = true;
+          console.info("[songStep] alphaTab playerPositionChanged payload shape:", describePayloadShape(positionPayload));
         }
 
         playbackRuntimeInfo = {
