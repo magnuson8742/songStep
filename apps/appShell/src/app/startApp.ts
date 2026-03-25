@@ -160,6 +160,25 @@ function updateTrackToggleVisualState(state: AppState, rootElement: HTMLElement)
   });
 }
 
+function updateProjectStatusBanner(rootElement: HTMLElement, message: string): void {
+  let statusBanner = rootElement.querySelector<HTMLElement>("[data-status-banner='true']");
+  if (!statusBanner) {
+    const appShell = rootElement.querySelector<HTMLElement>(".appShell");
+    const appHeader = rootElement.querySelector<HTMLElement>(".appHeader");
+    if (!appShell || !appHeader) {
+      return;
+    }
+
+    statusBanner = document.createElement("p");
+    statusBanner.className = "statusBanner";
+    statusBanner.setAttribute("role", "status");
+    statusBanner.dataset.statusBanner = "true";
+    appShell.insertBefore(statusBanner, appHeader.nextSibling);
+  }
+
+  statusBanner.textContent = message;
+}
+
 function isSameTrackList(current: GpTrackInfo[], next: GpTrackInfo[]): boolean {
   if (current.length !== next.length) {
     return false;
@@ -393,13 +412,22 @@ export function startApp(rootElement: HTMLElement): void {
           updateTrackToggleVisualState(state, rootElement);
         },
         onPlay: () => {
-          state.gpRenderer?.play();
+          state.playbackIsPlaying = null;
+          state.projectStatusMessage = "Playback is not connected yet.";
+          updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+          updatePlayerRuntimeFields(state, rootElement);
         },
         onPause: () => {
-          state.gpRenderer?.pause();
+          state.playbackIsPlaying = null;
+          state.projectStatusMessage = "Pause is unavailable until playback is implemented.";
+          updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+          updatePlayerRuntimeFields(state, rootElement);
         },
         onStop: () => {
-          state.gpRenderer?.stop();
+          state.playbackIsPlaying = null;
+          state.projectStatusMessage = "Stop is unavailable until playback is implemented.";
+          updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+          updatePlayerRuntimeFields(state, rootElement);
         },
       });
 

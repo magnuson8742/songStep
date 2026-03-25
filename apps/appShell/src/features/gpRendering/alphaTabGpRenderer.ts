@@ -425,11 +425,6 @@ export async function createGpRenderer(
     hooks.onPlaybackRuntimeInfo(playbackRuntimeInfo);
   };
 
-  const getApiPlayer = (): { play?: () => void; pause?: () => void; stop?: () => void } | null => {
-    const candidate = activeApi as unknown as { player?: { play?: () => void; pause?: () => void; stop?: () => void } };
-    return candidate.player ?? null;
-  };
-
   const clearRenderTimeout = (): void => {
     if (activeRenderTimeoutId === null) {
       return;
@@ -691,50 +686,9 @@ export async function createGpRenderer(
         hooks.onRenderError(message);
       });
     },
-    play: () => {
-      const player = getApiPlayer();
-      if (!player?.play) {
-        hooks.onRenderError("Playback is not available in the current renderer mode.");
-        return;
-      }
-
-      player.play();
-      playbackRuntimeInfo = {
-        ...playbackRuntimeInfo,
-        isPlaying: true,
-      };
-      emitPlaybackRuntimeInfo();
-    },
-    pause: () => {
-      const player = getApiPlayer();
-      if (!player?.pause) {
-        hooks.onRenderError("Playback is not available in the current renderer mode.");
-        return;
-      }
-
-      player.pause();
-      playbackRuntimeInfo = {
-        ...playbackRuntimeInfo,
-        isPlaying: false,
-      };
-      emitPlaybackRuntimeInfo();
-    },
-    stop: () => {
-      const player = getApiPlayer();
-      if (!player?.stop) {
-        hooks.onRenderError("Playback is not available in the current renderer mode.");
-        return;
-      }
-
-      player.stop();
-      playbackRuntimeInfo = {
-        ...playbackRuntimeInfo,
-        isPlaying: false,
-        positionLabel: null,
-        currentBar: null,
-      };
-      emitPlaybackRuntimeInfo();
-    },
+    play: () => {},
+    pause: () => {},
+    stop: () => {},
     destroy: () => {
       activeSessionToken += 1;
       clearRenderTimeout();

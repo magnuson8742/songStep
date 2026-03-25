@@ -90,7 +90,7 @@ export function renderProjectScreen(
   actions: ProjectScreenActions,
 ): void {
   const statusBanner = actions.statusMessage
-    ? `<p class="statusBanner" role="status">${actions.statusMessage}</p>`
+    ? `<p class="statusBanner" role="status" data-status-banner="true">${actions.statusMessage}</p>`
     : "";
 
   const debugInfo = actions.debugInfo;
