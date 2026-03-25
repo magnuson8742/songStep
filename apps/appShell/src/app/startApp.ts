@@ -9,6 +9,7 @@ import {
   createGpRenderer,
   type GpRenderDebugInfo,
   type GpRendererController,
+  type GpScoreOverviewRuntimeInfo,
   type GpTrackInfo,
 } from "../features/gpRendering/alphaTabGpRenderer";
 import {
@@ -42,6 +43,9 @@ interface AppState {
   playbackCurrentBar: number | null;
   playbackIsPlaying: boolean | null;
   activeTrackName: string | null;
+  scoreOverview: GpScoreOverviewRuntimeInfo | null;
+  trackVolumeByIndex: Record<number, number>;
+  trackBalanceByIndex: Record<number, number>;
   mutedTrackIndexes: number[];
   soloTrackIndexes: number[];
 }
@@ -162,6 +166,78 @@ function updateTrackToggleVisualState(state: AppState, rootElement: HTMLElement)
   });
 }
 
+function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement): void {
+  const volumeInputs = rootElement.querySelectorAll<HTMLInputElement>("[data-track-volume-index]");
+  volumeInputs.forEach((input) => {
+    const trackIndex = Number(input.dataset.trackVolumeIndex);
+    if (Number.isNaN(trackIndex)) {
+      return;
+    }
+
+    const value = state.trackVolumeByIndex[trackIndex] ?? 80;
+    input.value = String(value);
+    const valueLabel = rootElement.querySelector<HTMLElement>(`[data-track-volume-value="${trackIndex}"]`);
+    if (valueLabel) {
+      valueLabel.textContent = `${value}`;
+    }
+  });
+
+  const balanceInputs = rootElement.querySelectorAll<HTMLInputElement>("[data-track-balance-index]");
+  balanceInputs.forEach((input) => {
+    const trackIndex = Number(input.dataset.trackBalanceIndex);
+    if (Number.isNaN(trackIndex)) {
+      return;
+    }
+
+    const value = state.trackBalanceByIndex[trackIndex] ?? 0;
+    input.value = String(value);
+    const valueLabel = rootElement.querySelector<HTMLElement>(`[data-track-balance-value="${trackIndex}"]`);
+    if (valueLabel) {
+      valueLabel.textContent = `${value}`;
+    }
+  });
+}
+
+function updateArrangementOverview(state: AppState, rootElement: HTMLElement): void {
+  const rowsContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-rows]");
+  const markersContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-markers]");
+  const emptyState = rootElement.querySelector<HTMLElement>("[data-arrangement-empty]");
+
+  if (!rowsContainer || !markersContainer || !emptyState) {
+    return;
+  }
+
+  const overview = state.scoreOverview;
+  if (!overview || overview.trackRows.length === 0 || overview.totalBars <= 0) {
+    rowsContainer.innerHTML = "";
+    markersContainer.innerHTML = "";
+    emptyState.style.display = "block";
+    return;
+  }
+
+  emptyState.style.display = "none";
+  rowsContainer.innerHTML = overview.trackRows
+    .map((row) => {
+      const barCells = row.barActivity
+        .map((active) => `<span class="arrangementBarCell ${active ? "isBarActive" : "isBarEmpty"}"></span>`)
+        .join("");
+      return `
+        <div class="arrangementRow">
+          <span class="arrangementTrackLabel">${row.trackName}</span>
+          <div class="arrangementBarRow">${barCells}</div>
+        </div>
+      `;
+    })
+    .join("");
+
+  markersContainer.innerHTML = overview.sectionMarkers
+    .map((marker) => {
+      const positionPercent = overview.totalBars > 1 ? (marker.barIndex / (overview.totalBars - 1)) * 100 : 0;
+      return `<span class="arrangementMarker" style="left:${positionPercent}%">${marker.label}</span>`;
+    })
+    .join("");
+}
+
 function updateProjectStatusBanner(rootElement: HTMLElement, message: string): void {
   let statusBanner = rootElement.querySelector<HTMLElement>("[data-status-banner='true']");
   if (!statusBanner) {
@@ -213,6 +289,9 @@ export function startApp(rootElement: HTMLElement): void {
     playbackCurrentBar: null,
     playbackIsPlaying: null,
     activeTrackName: null,
+    scoreOverview: null,
+    trackVolumeByIndex: {},
+    trackBalanceByIndex: {},
     mutedTrackIndexes: [],
     soloTrackIndexes: [],
   };
@@ -268,6 +347,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentBar = null;
           state.playbackIsPlaying = null;
           state.activeTrackName = null;
+          state.scoreOverview = null;
+          state.trackVolumeByIndex = {};
+          state.trackBalanceByIndex = {};
           state.mutedTrackIndexes = [];
           state.soloTrackIndexes = [];
           state.lastClickedTrackIndex = null;
@@ -307,6 +389,9 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackCurrentBar = null;
             state.playbackIsPlaying = null;
             state.activeTrackName = null;
+            state.scoreOverview = null;
+            state.trackVolumeByIndex = {};
+            state.trackBalanceByIndex = {};
             state.mutedTrackIndexes = [];
             state.soloTrackIndexes = [];
             state.lastClickedTrackIndex = null;
@@ -345,6 +430,9 @@ export function startApp(rootElement: HTMLElement): void {
         totalBars: state.totalBars,
         tempoBpm: state.tempoBpm,
         playbackIsPlaying: state.playbackIsPlaying,
+        scoreOverview: state.scoreOverview,
+        trackVolumeByIndex: state.trackVolumeByIndex,
+        trackBalanceByIndex: state.trackBalanceByIndex,
         mutedTrackIndexes: state.mutedTrackIndexes,
         soloTrackIndexes: state.soloTrackIndexes,
         onTrackSelectionChange: (trackIndex: number) => {
@@ -408,6 +496,7 @@ export function startApp(rootElement: HTMLElement): void {
             ? state.mutedTrackIndexes.filter((value) => value !== trackIndex)
             : [...state.mutedTrackIndexes, trackIndex];
           updateTrackToggleVisualState(state, rootElement);
+          updateTrackControlVisualState(state, rootElement);
         },
         onToggleTrackSolo: (trackIndex) => {
           const isSolo = state.soloTrackIndexes.includes(trackIndex);
@@ -415,6 +504,15 @@ export function startApp(rootElement: HTMLElement): void {
             ? state.soloTrackIndexes.filter((value) => value !== trackIndex)
             : [...state.soloTrackIndexes, trackIndex];
           updateTrackToggleVisualState(state, rootElement);
+          updateTrackControlVisualState(state, rootElement);
+        },
+        onTrackVolumeChange: (trackIndex, volume) => {
+          state.trackVolumeByIndex[trackIndex] = volume;
+          updateTrackControlVisualState(state, rootElement);
+        },
+        onTrackBalanceChange: (trackIndex, balance) => {
+          state.trackBalanceByIndex[trackIndex] = balance;
+          updateTrackControlVisualState(state, rootElement);
         },
         onPlay: () => {
           state.playbackIsPlaying = null;
@@ -441,6 +539,9 @@ export function startApp(rootElement: HTMLElement): void {
         state.projectStatusMessage = "GP render area is unavailable.";
         return;
       }
+
+      updateArrangementOverview(state, rootElement);
+      updateTrackControlVisualState(state, rootElement);
 
       const project = state.currentProject;
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
@@ -480,6 +581,19 @@ export function startApp(rootElement: HTMLElement): void {
           state.totalBars = info.totalBars;
           state.tempoBpm = info.tempoBpm;
           updatePlayerRuntimeFields(state, rootElement);
+        },
+        onScoreOverviewRuntimeInfo: (info) => {
+          state.scoreOverview = info;
+          info.trackRows.forEach((row) => {
+            if (state.trackVolumeByIndex[row.trackIndex] === undefined) {
+              state.trackVolumeByIndex[row.trackIndex] = 80;
+            }
+            if (state.trackBalanceByIndex[row.trackIndex] === undefined) {
+              state.trackBalanceByIndex[row.trackIndex] = 0;
+            }
+          });
+          updateArrangementOverview(state, rootElement);
+          updateTrackControlVisualState(state, rootElement);
         },
         onPlaybackRuntimeInfo: (info) => {
           state.playbackIsPlaying = info.isPlaying;

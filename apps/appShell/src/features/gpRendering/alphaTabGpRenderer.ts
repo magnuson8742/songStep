@@ -54,6 +54,13 @@ interface AlphaTabMasterBar {
   tempoAutomation?: {
     value?: number;
   };
+  section?: {
+    text?: string;
+  };
+  sectionTitle?: string;
+  marker?: {
+    title?: string;
+  };
 }
 
 interface AlphaTabVoice {
@@ -139,11 +146,30 @@ export interface GpPlaybackRuntimeInfo {
   currentBar: number | null;
 }
 
+export interface GpTrackOverviewInfo {
+  trackIndex: number;
+  trackName: string;
+  isPercussion: boolean;
+  barActivity: boolean[];
+}
+
+export interface GpSectionMarkerInfo {
+  barIndex: number;
+  label: string;
+}
+
+export interface GpScoreOverviewRuntimeInfo {
+  totalBars: number;
+  trackRows: GpTrackOverviewInfo[];
+  sectionMarkers: GpSectionMarkerInfo[];
+}
+
 export interface GpRendererHooks {
   onTracksLoaded: (tracks: GpTrackInfo[]) => void;
   onDebugInfo: (debugInfo: GpRenderDebugInfo) => void;
   onActiveTrackConfirmed: (trackIndex: number) => void;
   onScoreRuntimeInfo: (info: GpScoreRuntimeInfo) => void;
+  onScoreOverviewRuntimeInfo: (info: GpScoreOverviewRuntimeInfo) => void;
   onPlaybackRuntimeInfo: (info: GpPlaybackRuntimeInfo) => void;
   onRenderError: (message: string) => void;
 }
@@ -269,6 +295,51 @@ function extractTempoBpm(score: AlphaTabScore): number | null {
   }
 
   return toSafeTempoBpm(firstMasterBar?.tempoAutomation?.value);
+}
+
+function toTrackOverviewRow(track: AlphaTabTrack, fallbackBarCount: number): GpTrackOverviewInfo {
+  const bars = track.staves?.[0]?.bars ?? [];
+  const barCount = bars.length > 0 ? bars.length : fallbackBarCount;
+  const barActivity = Array.from({ length: barCount }, (_, barIndex) => countNotesInBar(bars[barIndex]) > 0);
+
+  return {
+    trackIndex: track.index,
+    trackName: track.name || `Track ${track.index + 1}`,
+    isPercussion: track.isPercussion === true || track.staves?.some((staff) => staff.isPercussion === true) === true,
+    barActivity,
+  };
+}
+
+function toSectionMarkerInfo(masterBars: AlphaTabMasterBar[] | undefined): GpSectionMarkerInfo[] {
+  if (!masterBars || masterBars.length === 0) {
+    return [];
+  }
+
+  const markers: GpSectionMarkerInfo[] = [];
+  masterBars.forEach((bar, barIndex) => {
+    const label = bar.section?.text?.trim() || bar.sectionTitle?.trim() || bar.marker?.title?.trim() || "";
+    if (!label) {
+      return;
+    }
+
+    markers.push({
+      barIndex,
+      label,
+    });
+  });
+
+  return markers;
+}
+
+function toScoreOverviewRuntimeInfo(score: AlphaTabScore): GpScoreOverviewRuntimeInfo {
+  const totalBars = score.masterBars?.length ?? 0;
+  const trackRows = (score.tracks ?? []).map((track) => toTrackOverviewRow(track, totalBars));
+
+  return {
+    totalBars,
+    trackRows,
+    sectionMarkers: toSectionMarkerInfo(score.masterBars),
+  };
 }
 
 function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StaveProfile): alphaTab.json.SettingsJson {
@@ -615,6 +686,7 @@ export async function createGpRenderer(
       lastRendererErrorStage = "load";
       hooks.onTracksLoaded(toTrackInfoList(lastLoadedScoreTracks));
       emitScoreRuntimeInfo();
+      hooks.onScoreOverviewRuntimeInfo(toScoreOverviewRuntimeInfo(score));
       emitPlaybackRuntimeInfo();
       emitDebugInfo();
     });

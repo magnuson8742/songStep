@@ -334,6 +334,89 @@ select {
   width: 100%;
 }
 
+.trackControlValue {
+  min-width: 24px;
+  text-align: right;
+  font-size: 11px;
+  color: #d5e0ef;
+}
+
+.trackBalanceControl {
+  justify-content: space-between;
+}
+
+.trackBalanceKnob {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  appearance: none;
+  background: radial-gradient(circle, rgba(24, 35, 51, 0.95) 40%, rgba(17, 24, 36, 0.92) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.arrangementOverview {
+  margin-top: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(9, 14, 20, 0.5);
+  padding: 10px;
+  overflow-x: auto;
+}
+
+.arrangementRows {
+  display: grid;
+  gap: 6px;
+}
+
+.arrangementRow {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.arrangementTrackLabel {
+  font-size: 12px;
+  color: #ced9ea;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arrangementBarRow {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(8px, 1fr);
+  gap: 2px;
+}
+
+.arrangementBarCell {
+  height: 10px;
+  border-radius: 2px;
+}
+
+.arrangementBarCell.isBarActive {
+  background: #6ea6ff;
+}
+
+.arrangementBarCell.isBarEmpty {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.arrangementMarkers {
+  position: relative;
+  margin-top: 8px;
+  min-height: 16px;
+}
+
+.arrangementMarker {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: #b7c8df;
+  white-space: nowrap;
+}
+
 .playerInfoGrid {
   margin: 12px 0 0;
   display: grid;

@@ -1,5 +1,5 @@
 import type { SongStepProject } from "../../domain/project/projectModel";
-import type { GpRenderDebugInfo, GpTrackInfo } from "../gpRendering/alphaTabGpRenderer";
+import type { GpRenderDebugInfo, GpScoreOverviewRuntimeInfo, GpTrackInfo } from "../gpRendering/alphaTabGpRenderer";
 
 export interface ProjectScreenActions {
   statusMessage: string | null;
@@ -19,11 +19,16 @@ export interface ProjectScreenActions {
   totalBars: number | null;
   tempoBpm: number | null;
   playbackIsPlaying: boolean | null;
+  scoreOverview: GpScoreOverviewRuntimeInfo | null;
+  trackVolumeByIndex: Record<number, number>;
+  trackBalanceByIndex: Record<number, number>;
   mutedTrackIndexes: number[];
   soloTrackIndexes: number[];
   onTrackSelectionChange: (trackIndex: number) => void;
   onToggleTrackMute: (trackIndex: number) => void;
   onToggleTrackSolo: (trackIndex: number) => void;
+  onTrackVolumeChange: (trackIndex: number, volume: number) => void;
+  onTrackBalanceChange: (trackIndex: number, balance: number) => void;
   onBackToHome: () => void;
   onSaveProject: () => Promise<void>;
   onSaveProjectAs: () => Promise<void>;
@@ -58,6 +63,8 @@ function renderTrackStrip(
   confirmedActiveTrackIndex: number | null,
   mutedTrackIndexes: number[],
   soloTrackIndexes: number[],
+  trackVolumeByIndex: Record<number, number>,
+  trackBalanceByIndex: Record<number, number>,
 ): string {
   if (tracks.length === 0) {
     return '<p class="helperText">Loading tracks...</p>';
@@ -77,6 +84,16 @@ function renderTrackStrip(
           <div class="trackControlRow" aria-label="Track controls for ${track.name}">
             <button class="secondaryButton trackControlButton ${soloTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-solo" data-track-index="${track.index}">S</button>
             <button class="secondaryButton trackControlButton ${mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}">M</button>
+            <label class="trackControlLabel">
+              Vol
+              <input class="trackControlRange" type="range" min="0" max="100" value="${trackVolumeByIndex[track.index] ?? 80}" data-stop-track-select="true" data-track-action="set-volume" data-track-volume-index="${track.index}" />
+              <span class="trackControlValue" data-track-volume-value="${track.index}">${trackVolumeByIndex[track.index] ?? 80}</span>
+            </label>
+            <label class="trackControlLabel trackBalanceControl">
+              Bal
+              <input class="trackBalanceKnob" type="range" min="-50" max="50" value="${trackBalanceByIndex[track.index] ?? 0}" data-stop-track-select="true" data-track-action="set-balance" data-track-balance-index="${track.index}" />
+              <span class="trackControlValue" data-track-balance-value="${track.index}">${trackBalanceByIndex[track.index] ?? 0}</span>
+            </label>
           </div>
         </article>
       `;
@@ -191,7 +208,19 @@ export function renderProjectScreen(
             actions.confirmedActiveTrackIndex,
             actions.mutedTrackIndexes,
             actions.soloTrackIndexes,
+            actions.trackVolumeByIndex,
+            actions.trackBalanceByIndex,
           )}
+        </div>
+      </section>
+
+      <section class="homeCard">
+        <h2 class="sectionTitle">Arrangement overview</h2>
+        <p class="helperText">Read-only map: colored bars have note content, gray bars are empty.</p>
+        <div class="arrangementOverview" data-arrangement-overview="true">
+          <p class="helperText" data-arrangement-empty>${actions.scoreOverview ? "" : "Overview loads with score runtime data."}</p>
+          <div class="arrangementRows" data-arrangement-rows></div>
+          <div class="arrangementMarkers" data-arrangement-markers></div>
         </div>
       </section>
 
@@ -266,9 +295,46 @@ export function renderProjectScreen(
         actions.onToggleTrackSolo(trackIndex);
         return;
       }
+
+      if (trackActionButton.dataset.trackAction === "set-volume") {
+        const slider = trackActionButton as HTMLInputElement;
+        actions.onTrackVolumeChange(trackIndex, Number(slider.value));
+        return;
+      }
+
+      if (trackActionButton.dataset.trackAction === "set-balance") {
+        const knob = trackActionButton as HTMLInputElement;
+        actions.onTrackBalanceChange(trackIndex, Number(knob.value));
+      }
     }
 
     handleTrackSelection(event.target);
+  });
+
+  trackStrip?.addEventListener("input", (event) => {
+    const targetElement = event.target instanceof HTMLInputElement ? event.target : null;
+    if (!targetElement) {
+      return;
+    }
+
+    if (targetElement.dataset.trackAction === "set-volume") {
+      const trackIndex = Number(targetElement.dataset.trackVolumeIndex);
+      if (Number.isNaN(trackIndex)) {
+        return;
+      }
+
+      actions.onTrackVolumeChange(trackIndex, Number(targetElement.value));
+      return;
+    }
+
+    if (targetElement.dataset.trackAction === "set-balance") {
+      const trackIndex = Number(targetElement.dataset.trackBalanceIndex);
+      if (Number.isNaN(trackIndex)) {
+        return;
+      }
+
+      actions.onTrackBalanceChange(trackIndex, Number(targetElement.value));
+    }
   });
 
   trackStrip?.addEventListener("keydown", (event) => {
