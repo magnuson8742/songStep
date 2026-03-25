@@ -153,6 +153,9 @@ export interface GpPlaybackRuntimeInfo {
   isPlaying: boolean | null;
   positionLabel: string | null;
   currentBar: number | null;
+  playerPositionPayloadShape: string | null;
+  playerStatePayloadShape: string | null;
+  currentBarSourcePath: string | null;
 }
 
 export interface GpTrackOverviewInfo {
@@ -482,6 +485,9 @@ export async function createGpRenderer(
     isPlaying: null,
     positionLabel: null,
     currentBar: null,
+    playerPositionPayloadShape: null,
+    playerStatePayloadShape: null,
+    currentBarSourcePath: null,
   };
   let hasLoggedPlayerPositionPayloadShape = false;
   let hasLoggedPlayerStatePayloadShape = false;
@@ -555,6 +561,9 @@ export async function createGpRenderer(
       isPlaying: null,
       positionLabel: null,
       currentBar: null,
+      playerPositionPayloadShape: null,
+      playerStatePayloadShape: null,
+      currentBarSourcePath: null,
     };
     emitPlaybackRuntimeInfo();
   };
@@ -607,7 +616,12 @@ export async function createGpRenderer(
     return [...rootKeys, ...nestedKeys].join(", ");
   };
 
-  const extractCurrentBarFromPositionPayload = (payload: unknown): number | null => {
+  const extractCurrentBarFromPositionPayload = (
+    payload: unknown,
+  ): {
+    currentBar: number | null;
+    sourcePath: string | null;
+  } => {
     const knownBarPaths = [
       "currentBar",
       "bar",
@@ -634,10 +648,16 @@ export async function createGpRenderer(
         continue;
       }
 
-      return candidate >= 0 ? candidate + 1 : candidate;
+      return {
+        currentBar: candidate >= 0 ? candidate + 1 : candidate,
+        sourcePath: path,
+      };
     }
 
-    return null;
+    return {
+      currentBar: null,
+      sourcePath: null,
+    };
   };
 
   const extractPositionLabelFromPayload = (payload: unknown): string | null => {
@@ -893,6 +913,7 @@ export async function createGpRenderer(
         }
 
         const normalizedState = normalizePlaybackState(statePayload);
+        const playerStatePayloadShape = describePayloadShape(statePayload);
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
           isPlaying:
@@ -901,6 +922,7 @@ export async function createGpRenderer(
               : normalizedState === "playing"
                 ? true
                 : false,
+          playerStatePayloadShape,
         };
         emitPlaybackRuntimeInfo();
       });
@@ -914,11 +936,15 @@ export async function createGpRenderer(
           hasLoggedPlayerPositionPayloadShape = true;
           console.info("[songStep] alphaTab playerPositionChanged payload shape:", describePayloadShape(positionPayload));
         }
+        const currentBarTelemetry = extractCurrentBarFromPositionPayload(positionPayload);
+        const playerPositionPayloadShape = describePayloadShape(positionPayload);
 
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
           positionLabel: extractPositionLabelFromPayload(positionPayload),
-          currentBar: extractCurrentBarFromPositionPayload(positionPayload),
+          currentBar: currentBarTelemetry.currentBar,
+          currentBarSourcePath: currentBarTelemetry.sourcePath,
+          playerPositionPayloadShape,
         };
         emitPlaybackRuntimeInfo();
       });

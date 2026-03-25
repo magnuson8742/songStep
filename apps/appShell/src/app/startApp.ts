@@ -42,6 +42,9 @@ interface AppState {
   playbackPositionLabel: string | null;
   playbackCurrentBar: number | null;
   playbackIsPlaying: boolean | null;
+  playerPositionPayloadShape: string | null;
+  playerStatePayloadShape: string | null;
+  currentBarSourcePath: string | null;
   activeTrackName: string | null;
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
@@ -356,6 +359,9 @@ export function startApp(rootElement: HTMLElement): void {
     playbackPositionLabel: null,
     playbackCurrentBar: null,
     playbackIsPlaying: null,
+    playerPositionPayloadShape: null,
+    playerStatePayloadShape: null,
+    currentBarSourcePath: null,
     activeTrackName: null,
     scoreOverview: null,
     trackVolumeByIndex: {},
@@ -414,6 +420,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackPositionLabel = null;
           state.playbackCurrentBar = null;
           state.playbackIsPlaying = null;
+          state.playerPositionPayloadShape = null;
+          state.playerStatePayloadShape = null;
+          state.currentBarSourcePath = null;
           state.activeTrackName = null;
           state.scoreOverview = null;
           state.trackVolumeByIndex = {};
@@ -456,6 +465,9 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackPositionLabel = null;
             state.playbackCurrentBar = null;
             state.playbackIsPlaying = null;
+            state.playerPositionPayloadShape = null;
+            state.playerStatePayloadShape = null;
+            state.currentBarSourcePath = null;
             state.activeTrackName = null;
             state.scoreOverview = null;
             state.trackVolumeByIndex = {};
@@ -498,6 +510,9 @@ export function startApp(rootElement: HTMLElement): void {
         totalBars: state.totalBars,
         tempoBpm: state.tempoBpm,
         playbackIsPlaying: state.playbackIsPlaying,
+        playerPositionPayloadShape: state.playerPositionPayloadShape,
+        playerStatePayloadShape: state.playerStatePayloadShape,
+        currentBarSourcePath: state.currentBarSourcePath,
         scoreOverview: state.scoreOverview,
         trackVolumeByIndex: state.trackVolumeByIndex,
         trackBalanceByIndex: state.trackBalanceByIndex,
@@ -506,6 +521,9 @@ export function startApp(rootElement: HTMLElement): void {
         onTrackSelectionChange: (trackIndex: number) => {
           state.requestedTrackIndex = trackIndex;
           state.playbackCurrentBar = null;
+          state.playerPositionPayloadShape = null;
+          state.playerStatePayloadShape = null;
+          state.currentBarSourcePath = null;
           state.lastClickedTrackIndex = trackIndex;
           state.clickCounter += 1;
           state.lastClickTimestampIso = new Date().toISOString();
@@ -516,6 +534,9 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "click-counter", String(state.clickCounter));
           updateDebugField(rootElement, "last-click-timestamp", state.lastClickTimestampIso);
           updateDebugField(rootElement, "selection-fired", "yes");
+          updateDebugField(rootElement, "player-position-payload-shape", "-");
+          updateDebugField(rootElement, "player-state-payload-shape", "-");
+          updateDebugField(rootElement, "current-bar-source-path", "-");
           updateArrangementPlaybackHighlight(state, rootElement);
           state.gpRenderer?.selectTrack(trackIndex);
         },
@@ -680,7 +701,29 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackIsPlaying = info.isPlaying;
           state.playbackPositionLabel = info.positionLabel;
           state.playbackCurrentBar = info.currentBar;
+          state.playerPositionPayloadShape = info.playerPositionPayloadShape;
+          state.playerStatePayloadShape = info.playerStatePayloadShape;
+          state.currentBarSourcePath = info.currentBarSourcePath;
           updatePlayerRuntimeFields(state, rootElement);
+          updateDebugField(
+            rootElement,
+            "player-position-payload-shape",
+            state.playerPositionPayloadShape && state.playerPositionPayloadShape.length > 0
+              ? state.playerPositionPayloadShape
+              : "-",
+          );
+          updateDebugField(
+            rootElement,
+            "player-state-payload-shape",
+            state.playerStatePayloadShape && state.playerStatePayloadShape.length > 0
+              ? state.playerStatePayloadShape
+              : "-",
+          );
+          updateDebugField(
+            rootElement,
+            "current-bar-source-path",
+            state.currentBarSourcePath && state.currentBarSourcePath.length > 0 ? state.currentBarSourcePath : "-",
+          );
           updateArrangementPlaybackHighlight(state, rootElement);
         },
         onRuntimeNotice: (message) => {
@@ -692,6 +735,7 @@ export function startApp(rootElement: HTMLElement): void {
         onActiveTrackConfirmed: (trackIndex) => {
           state.selectedTrackIndex = trackIndex;
           state.playbackCurrentBar = null;
+          state.currentBarSourcePath = null;
           state.requestedTrackIndex = null;
           state.selectionFired = false;
           if (state.currentProject) {
@@ -703,6 +747,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "selected-track-index", String(trackIndex));
           updateDebugField(rootElement, "requested-track-index", "-");
           updateDebugField(rootElement, "selection-fired", "no");
+          updateDebugField(rootElement, "current-bar-source-path", "-");
           updateArrangementPlaybackHighlight(state, rootElement);
         },
         onRenderError: (message) => {

@@ -19,6 +19,9 @@ export interface ProjectScreenActions {
   totalBars: number | null;
   tempoBpm: number | null;
   playbackIsPlaying: boolean | null;
+  playerPositionPayloadShape: string | null;
+  playerStatePayloadShape: string | null;
+  currentBarSourcePath: string | null;
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
   trackBalanceByIndex: Record<number, number>;
@@ -189,6 +192,12 @@ export function renderProjectScreen(
             <dd data-debug-field="heavy-track-reason">${renderDebugValue(debugInfo?.heavyTrackReason ?? null)}</dd>
             <dt>api.score?.tracks.length</dt>
             <dd data-debug-field="score-track-count">${renderDebugValue(debugInfo?.scoreTrackCount ?? null)}</dd>
+            <dt>playerPosition payload keys</dt>
+            <dd data-debug-field="player-position-payload-shape">${renderDebugValue(actions.playerPositionPayloadShape)}</dd>
+            <dt>playerState payload keys</dt>
+            <dd data-debug-field="player-state-payload-shape">${renderDebugValue(actions.playerStatePayloadShape)}</dd>
+            <dt>currentBar source path</dt>
+            <dd data-debug-field="current-bar-source-path">${renderDebugValue(actions.currentBarSourcePath)}</dd>
           </dl>
 
           <div class="trackDebugLists">
