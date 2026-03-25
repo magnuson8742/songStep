@@ -25,6 +25,8 @@ export interface ProjectScreenActions {
   currentBarSourcePath: string | null;
   playbackFollowTargetFound: boolean;
   playbackFollowSource: string | null;
+  playbackBarAnchorCount: number;
+  playbackBarAnchorSource: string | null;
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
   trackBalanceByIndex: Record<number, number>;
@@ -207,6 +209,10 @@ export function renderProjectScreen(
             <dd data-debug-field="playback-follow-target-found">${actions.playbackFollowTargetFound ? "yes" : "no"}</dd>
             <dt>playback follow source</dt>
             <dd data-debug-field="playback-follow-source">${renderDebugValue(actions.playbackFollowSource)}</dd>
+            <dt>playback bar anchors</dt>
+            <dd data-debug-field="playback-bar-anchor-count">${renderDebugValue(actions.playbackBarAnchorCount)}</dd>
+            <dt>playback bar anchor source</dt>
+            <dd data-debug-field="playback-bar-anchor-source">${renderDebugValue(actions.playbackBarAnchorSource)}</dd>
           </dl>
 
           <div class="trackDebugLists">

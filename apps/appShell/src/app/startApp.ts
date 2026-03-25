@@ -23,6 +23,13 @@ import { renderProjectScreen } from "../features/projectScreen/renderProjectScre
 
 type AppView = "home" | "newProject" | "openProject" | "project";
 
+interface PlaybackBarAnchor {
+  barNumber: number;
+  x: number;
+  y: number;
+  height: number;
+}
+
 interface AppState {
   currentView: AppView;
   currentProject: SongStepProject | null;
@@ -48,6 +55,10 @@ interface AppState {
   currentBarSourcePath: string | null;
   playbackFollowTargetFound: boolean;
   playbackFollowSource: string | null;
+  playbackBarAnchorCount: number;
+  playbackBarAnchorSource: string | null;
+  playbackPlayheadVisible: boolean;
+  playbackBarAnchors: PlaybackBarAnchor[];
   activeTrackName: string | null;
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
@@ -114,6 +125,8 @@ function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRend
   updateDebugField(rootElement, "current-tick", "-");
   updateDebugField(rootElement, "playback-follow-target-found", "no");
   updateDebugField(rootElement, "playback-follow-source", "-");
+  updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+  updateDebugField(rootElement, "playback-bar-anchor-source", "-");
   updateDebugField(rootElement, "score-tracks", formatRuntimeTrackList(debugInfo?.scoreTracks ?? []));
   updateDebugField(rootElement, "rendered-tracks", formatRuntimeTrackList(debugInfo?.renderedTracks ?? []));
 }
@@ -324,6 +337,141 @@ function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLEl
   activeTrackCell.classList.add("isPlaybackCurrentBar");
 }
 
+function ensurePlaybackPlayheadElement(rootElement: HTMLElement): HTMLElement | null {
+  const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+  if (!renderHost) {
+    return null;
+  }
+
+  let playhead = renderHost.querySelector<HTMLElement>("[data-playback-playhead='true']");
+  if (!playhead) {
+    playhead = document.createElement("div");
+    playhead.className = "playbackPlayhead";
+    playhead.dataset.playbackPlayhead = "true";
+    playhead.setAttribute("aria-hidden", "true");
+    renderHost.append(playhead);
+  }
+
+  return playhead;
+}
+
+function hidePlaybackPlayhead(rootElement: HTMLElement, state: AppState): void {
+  const playhead = rootElement.querySelector<HTMLElement>("[data-playback-playhead='true']");
+  if (playhead) {
+    playhead.style.display = "none";
+  }
+
+  state.playbackPlayheadVisible = false;
+}
+
+function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): void {
+  const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+  if (!renderHost) {
+    state.playbackBarAnchors = [];
+    state.playbackBarAnchorCount = 0;
+    state.playbackBarAnchorSource = null;
+    updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+    updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+    return;
+  }
+
+  const selectorStrategies = [
+    { selector: "[data-bar-index]", source: "dom:[data-bar-index]" },
+    { selector: ".at-bar", source: "dom:.at-bar" },
+    { selector: "g.bar", source: "dom:g.bar" },
+    { selector: "g[class*='bar']", source: "dom:g[class*=bar]" },
+  ] as const;
+  const renderHostRect = renderHost.getBoundingClientRect();
+  const totalBars = state.totalBars ?? 0;
+
+  for (const strategy of selectorStrategies) {
+    const elements = Array.from(renderHost.querySelectorAll<HTMLElement>(strategy.selector));
+    if (elements.length === 0) {
+      continue;
+    }
+
+    const rawAnchors = elements
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 2 && rect.height < 6) {
+          return null;
+        }
+
+        return {
+          x: rect.left - renderHostRect.left + renderHost.scrollLeft,
+          y: rect.top - renderHostRect.top + renderHost.scrollTop,
+          height: Math.max(rect.height, 28),
+        };
+      })
+      .filter((anchor): anchor is { x: number; y: number; height: number } => anchor !== null)
+      .sort((left, right) => (left.y === right.y ? left.x - right.x : left.y - right.y));
+
+    if (rawAnchors.length === 0) {
+      continue;
+    }
+
+    const dedupedAnchors = rawAnchors.filter((anchor, index) => {
+      if (index === 0) {
+        return true;
+      }
+
+      const previous = rawAnchors[index - 1];
+      if (!previous) {
+        return true;
+      }
+
+      return Math.abs(anchor.x - previous.x) > 8 || Math.abs(anchor.y - previous.y) > 8;
+    });
+    const limitedAnchors = totalBars > 0 ? dedupedAnchors.slice(0, totalBars) : dedupedAnchors;
+    if (limitedAnchors.length === 0) {
+      continue;
+    }
+
+    state.playbackBarAnchors = limitedAnchors.map((anchor, index) => ({
+      barNumber: index + 1,
+      x: anchor.x,
+      y: anchor.y,
+      height: anchor.height,
+    }));
+    state.playbackBarAnchorCount = state.playbackBarAnchors.length;
+    state.playbackBarAnchorSource = strategy.source;
+    updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
+    updateDebugField(rootElement, "playback-bar-anchor-source", strategy.source);
+    return;
+  }
+
+  state.playbackBarAnchors = [];
+  state.playbackBarAnchorCount = 0;
+  state.playbackBarAnchorSource = null;
+  updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+  updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+}
+
+function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLElement): void {
+  if (state.playbackCurrentBar === null || state.playbackCurrentBar <= 0) {
+    hidePlaybackPlayhead(rootElement, state);
+    return;
+  }
+
+  const anchor = state.playbackBarAnchors.find((item) => item.barNumber === state.playbackCurrentBar);
+  if (!anchor) {
+    hidePlaybackPlayhead(rootElement, state);
+    return;
+  }
+
+  const playhead = ensurePlaybackPlayheadElement(rootElement);
+  if (!playhead) {
+    state.playbackPlayheadVisible = false;
+    return;
+  }
+
+  playhead.style.left = `${anchor.x}px`;
+  playhead.style.top = `${anchor.y}px`;
+  playhead.style.height = `${Math.max(anchor.height, 28)}px`;
+  playhead.style.display = "block";
+  state.playbackPlayheadVisible = true;
+}
+
 function updatePlaybackFollowDiagnostics(
   rootElement: HTMLElement,
   followTargetFound: boolean,
@@ -334,6 +482,14 @@ function updatePlaybackFollowDiagnostics(
 }
 
 function resolvePlaybackFollowTarget(renderHost: HTMLElement): { targetElement: HTMLElement; source: string } | null {
+  const customPlayhead = renderHost.querySelector<HTMLElement>("[data-playback-playhead='true']");
+  if (customPlayhead && customPlayhead.style.display !== "none") {
+    return {
+      targetElement: customPlayhead,
+      source: "custom:playhead",
+    };
+  }
+
   const selectorPriority = [
     { selector: ".at-cursor-beat", source: "alphaTab:cursor-beat" },
     { selector: ".at-cursor-bar", source: "alphaTab:cursor-bar" },
@@ -480,6 +636,10 @@ export function startApp(rootElement: HTMLElement): void {
     currentBarSourcePath: null,
     playbackFollowTargetFound: false,
     playbackFollowSource: null,
+    playbackBarAnchorCount: 0,
+    playbackBarAnchorSource: null,
+    playbackPlayheadVisible: false,
+    playbackBarAnchors: [],
     activeTrackName: null,
     scoreOverview: null,
     trackVolumeByIndex: {},
@@ -544,6 +704,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentBarSourcePath = null;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
+          state.playbackPlayheadVisible = false;
+          state.playbackBarAnchorCount = 0;
+          state.playbackBarAnchorSource = null;
+          state.playbackBarAnchors = [];
           state.activeTrackName = null;
           state.scoreOverview = null;
           state.trackVolumeByIndex = {};
@@ -592,6 +756,10 @@ export function startApp(rootElement: HTMLElement): void {
             state.currentBarSourcePath = null;
             state.playbackFollowTargetFound = false;
             state.playbackFollowSource = null;
+            state.playbackBarAnchorCount = 0;
+            state.playbackBarAnchorSource = null;
+            state.playbackPlayheadVisible = false;
+            state.playbackBarAnchors = [];
             state.activeTrackName = null;
             state.scoreOverview = null;
             state.trackVolumeByIndex = {};
@@ -640,6 +808,8 @@ export function startApp(rootElement: HTMLElement): void {
         currentBarSourcePath: state.currentBarSourcePath,
         playbackFollowTargetFound: state.playbackFollowTargetFound,
         playbackFollowSource: state.playbackFollowSource,
+        playbackBarAnchorCount: state.playbackBarAnchorCount,
+        playbackBarAnchorSource: state.playbackBarAnchorSource,
         scoreOverview: state.scoreOverview,
         trackVolumeByIndex: state.trackVolumeByIndex,
         trackBalanceByIndex: state.trackBalanceByIndex,
@@ -668,6 +838,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "current-tick", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
+          hidePlaybackPlayhead(rootElement, state);
           state.gpRenderer?.selectTrack(trackIndex);
         },
         onBackToHome: () => {
@@ -764,8 +935,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentTick = null;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
+          state.playbackPlayheadVisible = false;
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
+          hidePlaybackPlayhead(rootElement, state);
           state.gpRenderer.stop();
         },
       });
@@ -811,6 +984,10 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "last-click-timestamp", state.lastClickTimestampIso ?? "-");
           updateDebugField(rootElement, "selection-fired", state.selectionFired ? "yes" : "no");
           updateTrackStripActive(rootElement, debugInfo.confirmedActiveTrackIndex);
+          if (debugInfo.lastRendererErrorStage === "renderFinished") {
+            rebuildPlaybackBarAnchors(state, rootElement);
+            updatePlaybackPlayheadFromRuntime(state, rootElement);
+          }
         },
         onScoreRuntimeInfo: (info) => {
           state.scoreTitle = info.scoreTitle;
@@ -830,6 +1007,8 @@ export function startApp(rootElement: HTMLElement): void {
           });
           updateArrangementOverview(state, rootElement);
           updateTrackControlVisualState(state, rootElement);
+          rebuildPlaybackBarAnchors(state, rootElement);
+          hidePlaybackPlayhead(rootElement, state);
         },
         onPlaybackRuntimeInfo: (info) => {
           state.playbackIsPlaying = info.isPlaying;
@@ -861,6 +1040,7 @@ export function startApp(rootElement: HTMLElement): void {
           );
           updateDebugField(rootElement, "current-tick", state.playbackCurrentTick === null ? "-" : String(state.playbackCurrentTick));
           updateArrangementPlaybackHighlight(state, rootElement);
+          updatePlaybackPlayheadFromRuntime(state, rootElement);
           updatePlaybackFollowInRenderHost(state, rootElement);
         },
         onRuntimeNotice: (message) => {
@@ -869,10 +1049,12 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentTick = null;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
+          state.playbackPlayheadVisible = false;
           updateProjectStatusBanner(rootElement, message);
           updateDebugField(rootElement, "current-tick", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
+          hidePlaybackPlayhead(rootElement, state);
         },
         onActiveTrackConfirmed: (trackIndex) => {
           state.selectedTrackIndex = trackIndex;
@@ -880,6 +1062,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentTick = null;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
+          state.playbackPlayheadVisible = false;
           state.currentBarSourcePath = null;
           state.requestedTrackIndex = null;
           state.selectionFired = false;
@@ -896,6 +1079,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "current-tick", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
+          hidePlaybackPlayhead(rootElement, state);
         },
         onRenderError: (message) => {
           state.projectStatusMessage = message;

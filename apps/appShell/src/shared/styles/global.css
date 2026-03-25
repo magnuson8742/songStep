@@ -193,6 +193,7 @@ select {
 }
 
 .gpRenderHost {
+  position: relative;
   min-height: 420px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
@@ -200,6 +201,17 @@ select {
   color: #111;
   overflow: auto;
   padding: 8px;
+}
+
+.playbackPlayhead {
+  position: absolute;
+  width: 2px;
+  min-height: 28px;
+  background: linear-gradient(180deg, rgba(255, 116, 116, 0.96) 0%, rgba(255, 182, 99, 0.96) 100%);
+  box-shadow: 0 0 8px rgba(255, 107, 107, 0.75);
+  pointer-events: none;
+  z-index: 5;
+  display: none;
 }
 
 .gpRenderFallbackMessage {
