@@ -424,6 +424,11 @@ select {
   background: rgba(255, 255, 255, 0.15);
 }
 
+.arrangementBarCell.isPlaybackCurrentBar {
+  box-shadow: inset 0 0 0 2px rgba(255, 213, 102, 0.95);
+  filter: brightness(1.12);
+}
+
 .arrangementMarkers {
   position: relative;
   margin-left: calc(var(--arrangement-track-label-width) + var(--arrangement-track-gap));

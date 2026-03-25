@@ -241,7 +241,10 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   rowsContainer.innerHTML = overview.trackRows
     .map((row) => {
       const barCells = row.barActivity
-        .map((active) => `<span class="arrangementBarCell ${active ? "isBarActive" : "isBarEmpty"}"></span>`)
+        .map(
+          (active, barIndex) =>
+            `<span class="arrangementBarCell ${active ? "isBarActive" : "isBarEmpty"}" data-arrangement-bar-index="${barIndex}"></span>`,
+        )
         .join("");
       return `
         <div class="arrangementRow">
@@ -281,6 +284,26 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   });
 
   markersContainer.style.height = `${Math.max(laneEndPercents.length, 1) * laneHeightPx}px`;
+  updateArrangementPlaybackHighlight(state, rootElement);
+}
+
+function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLElement): void {
+  const arrangementCells = rootElement.querySelectorAll<HTMLElement>("[data-arrangement-bar-index]");
+  arrangementCells.forEach((cell) => {
+    cell.classList.remove("isPlaybackCurrentBar");
+  });
+
+  if (state.playbackCurrentBar === null || state.playbackCurrentBar <= 0) {
+    return;
+  }
+
+  const playbackBarIndex = state.playbackCurrentBar - 1;
+  arrangementCells.forEach((cell) => {
+    const cellBarIndex = Number(cell.dataset.arrangementBarIndex);
+    if (cellBarIndex === playbackBarIndex) {
+      cell.classList.add("isPlaybackCurrentBar");
+    }
+  });
 }
 
 function updateProjectStatusBanner(rootElement: HTMLElement, message: string): void {
@@ -482,6 +505,7 @@ export function startApp(rootElement: HTMLElement): void {
         soloTrackIndexes: state.soloTrackIndexes,
         onTrackSelectionChange: (trackIndex: number) => {
           state.requestedTrackIndex = trackIndex;
+          state.playbackCurrentBar = null;
           state.lastClickedTrackIndex = trackIndex;
           state.clickCounter += 1;
           state.lastClickTimestampIso = new Date().toISOString();
@@ -492,6 +516,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "click-counter", String(state.clickCounter));
           updateDebugField(rootElement, "last-click-timestamp", state.lastClickTimestampIso);
           updateDebugField(rootElement, "selection-fired", "yes");
+          updateArrangementPlaybackHighlight(state, rootElement);
           state.gpRenderer?.selectTrack(trackIndex);
         },
         onBackToHome: () => {
@@ -584,6 +609,8 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
 
+          state.playbackCurrentBar = null;
+          updateArrangementPlaybackHighlight(state, rootElement);
           state.gpRenderer.stop();
         },
       });
@@ -654,13 +681,17 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackPositionLabel = info.positionLabel;
           state.playbackCurrentBar = info.currentBar;
           updatePlayerRuntimeFields(state, rootElement);
+          updateArrangementPlaybackHighlight(state, rootElement);
         },
         onRuntimeNotice: (message) => {
           state.projectStatusMessage = message;
+          state.playbackCurrentBar = null;
           updateProjectStatusBanner(rootElement, message);
+          updateArrangementPlaybackHighlight(state, rootElement);
         },
         onActiveTrackConfirmed: (trackIndex) => {
           state.selectedTrackIndex = trackIndex;
+          state.playbackCurrentBar = null;
           state.requestedTrackIndex = null;
           state.selectionFired = false;
           if (state.currentProject) {
@@ -672,6 +703,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "selected-track-index", String(trackIndex));
           updateDebugField(rootElement, "requested-track-index", "-");
           updateDebugField(rootElement, "selection-fired", "no");
+          updateArrangementPlaybackHighlight(state, rootElement);
         },
         onRenderError: (message) => {
           state.projectStatusMessage = message;
