@@ -536,6 +536,63 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       continue;
     }
 
+    const rowTolerance = 10;
+    const rowSummaries: Array<{ yCenter: number; yMin: number; yMax: number; maxHeight: number; rowRightX: number | null }> = [];
+    const anchorRowIndexes = new Array<number>(limitedAnchors.length).fill(-1);
+    for (let index = 0; index < limitedAnchors.length; index += 1) {
+      const anchor = limitedAnchors[index];
+      if (!anchor) {
+        continue;
+      }
+
+      const existingRowIndex = rowSummaries.findIndex((row) => Math.abs(row.yCenter - anchor.y) <= rowTolerance);
+      if (existingRowIndex >= 0) {
+        const existingRow = rowSummaries[existingRowIndex];
+        if (existingRow) {
+          existingRow.yMin = Math.min(existingRow.yMin, anchor.y);
+          existingRow.yMax = Math.max(existingRow.yMax, anchor.y);
+          existingRow.maxHeight = Math.max(existingRow.maxHeight, anchor.height);
+          existingRow.yCenter = (existingRow.yMin + existingRow.yMax) / 2;
+          anchorRowIndexes[index] = existingRowIndex;
+        }
+      } else {
+        rowSummaries.push({
+          yCenter: anchor.y,
+          yMin: anchor.y,
+          yMax: anchor.y,
+          maxHeight: anchor.height,
+          rowRightX: null,
+        });
+        anchorRowIndexes[index] = rowSummaries.length - 1;
+      }
+    }
+
+    const rowBoundCandidates = Array.from(renderHost.querySelectorAll<SVGGraphicsElement>("svg line, svg rect, svg text, svg path"))
+      .map((node) => node.getBoundingClientRect())
+      .filter((rect) => rect.width >= 2 || rect.height >= 6)
+      .map((rect) => ({
+        top: rect.top - renderHostRect.top + renderHost.scrollTop,
+        bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
+        right: rect.right - renderHostRect.left + renderHost.scrollLeft,
+      }));
+
+    rowSummaries.forEach((row) => {
+      const rowTop = row.yMin - 8;
+      const rowBottom = row.yMax + row.maxHeight + 8;
+      let rowRightX = Number.NEGATIVE_INFINITY;
+
+      rowBoundCandidates.forEach((candidate) => {
+        const overlapsRow = candidate.bottom >= rowTop && candidate.top <= rowBottom;
+        if (!overlapsRow) {
+          return;
+        }
+
+        rowRightX = Math.max(rowRightX, candidate.right);
+      });
+
+      row.rowRightX = Number.isFinite(rowRightX) ? rowRightX : null;
+    });
+
     const sameSystemGaps: number[] = [];
     for (let index = 0; index < limitedAnchors.length - 1; index += 1) {
       const currentAnchor = limitedAnchors[index];
@@ -544,7 +601,9 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
         continue;
       }
 
-      if (Math.abs(currentAnchor.y - nextAnchor.y) > 10) {
+      const currentRow = anchorRowIndexes[index];
+      const nextRow = anchorRowIndexes[index + 1];
+      if (currentRow < 0 || nextRow < 0 || currentRow !== nextRow) {
         continue;
       }
 
@@ -560,10 +619,18 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
 
     state.playbackBarAnchors = limitedAnchors.map((anchor, index) => {
       const nextAnchor = limitedAnchors[index + 1];
+      const currentRowIndex = anchorRowIndexes[index];
+      const nextRowIndex = anchorRowIndexes[index + 1] ?? -1;
       const sameSystemNext =
-        nextAnchor && Math.abs(nextAnchor.y - anchor.y) <= 10 && nextAnchor.x > anchor.x + 8 ? nextAnchor : null;
+        nextAnchor && currentRowIndex >= 0 && currentRowIndex === nextRowIndex && nextAnchor.x > anchor.x + 8
+          ? nextAnchor
+          : null;
+      const rowRightX = currentRowIndex >= 0 ? rowSummaries[currentRowIndex]?.rowRightX ?? null : null;
       const fallbackEndX = anchor.x + fallbackGap;
-      const endX = sameSystemNext ? Math.max(anchor.x + 12, sameSystemNext.x - 2) : fallbackEndX;
+      const rowBoundaryEndX = rowRightX !== null ? Math.max(anchor.x + 12, rowRightX - 2) : fallbackEndX;
+      const endX = sameSystemNext
+        ? Math.max(anchor.x + 12, sameSystemNext.x - 2)
+        : rowBoundaryEndX;
       return {
         barNumber: index + 1,
         startX: anchor.x,
