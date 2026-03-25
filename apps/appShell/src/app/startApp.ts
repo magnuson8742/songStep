@@ -560,22 +560,31 @@ export function startApp(rootElement: HTMLElement): void {
           updateTrackControlVisualState(state, rootElement);
         },
         onPlay: () => {
-          state.playbackIsPlaying = null;
-          state.projectStatusMessage = "Playback is not connected yet.";
-          updateProjectStatusBanner(rootElement, state.projectStatusMessage);
-          updatePlayerRuntimeFields(state, rootElement);
+          if (!state.gpRenderer) {
+            state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            return;
+          }
+
+          state.gpRenderer.play();
         },
         onPause: () => {
-          state.playbackIsPlaying = null;
-          state.projectStatusMessage = "Pause is unavailable until playback is implemented.";
-          updateProjectStatusBanner(rootElement, state.projectStatusMessage);
-          updatePlayerRuntimeFields(state, rootElement);
+          if (!state.gpRenderer) {
+            state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            return;
+          }
+
+          state.gpRenderer.pause();
         },
         onStop: () => {
-          state.playbackIsPlaying = null;
-          state.projectStatusMessage = "Stop is unavailable until playback is implemented.";
-          updateProjectStatusBanner(rootElement, state.projectStatusMessage);
-          updatePlayerRuntimeFields(state, rootElement);
+          if (!state.gpRenderer) {
+            state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            return;
+          }
+
+          state.gpRenderer.stop();
         },
       });
 

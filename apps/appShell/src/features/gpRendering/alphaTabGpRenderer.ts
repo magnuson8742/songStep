@@ -6,7 +6,16 @@ interface AlphaTabApi {
   load: (scoreData: unknown, trackIndexes?: number[]) => boolean;
   score?: AlphaTabScore;
   tracks?: AlphaTabTrack[];
+  play?: () => void;
+  pause?: () => void;
+  stop?: () => void;
   destroy?: () => void;
+  playerStateChanged?: {
+    on: (handler: (state: unknown) => void) => void;
+  };
+  playerPositionChanged?: {
+    on: (handler: (position: unknown) => void) => void;
+  };
   scoreLoaded: {
     on: (handler: (score: AlphaTabScore) => void) => void;
   };
@@ -358,7 +367,7 @@ function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StavePr
       staveProfile,
     },
     player: {
-      enablePlayer: false,
+      enablePlayer: staveProfile === "Tab",
       soundFont: SONIVOX_SOUND_FONT_PATH,
     },
   };
@@ -473,6 +482,7 @@ export async function createGpRenderer(
     positionLabel: null,
     currentBar: null,
   };
+  let playbackCapabilityMessage: string | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -532,6 +542,78 @@ export async function createGpRenderer(
   const emitPlaybackRuntimeInfo = (): void => {
     hooks.onPlaybackRuntimeInfo(playbackRuntimeInfo);
   };
+
+  const setPlaybackCapabilityMessage = (message: string | null): void => {
+    playbackCapabilityMessage = message;
+  };
+
+  const resetPlaybackRuntimeInfo = (): void => {
+    playbackRuntimeInfo = {
+      isPlaying: null,
+      positionLabel: null,
+      currentBar: null,
+    };
+    emitPlaybackRuntimeInfo();
+  };
+
+  const formatPlaybackSeconds = (secondsValue: number): string => {
+    const seconds = Math.max(0, Math.floor(secondsValue));
+    const minutesPart = Math.floor(seconds / 60);
+    const secondsPart = seconds % 60;
+    return `${minutesPart}:${String(secondsPart).padStart(2, "0")}`;
+  };
+
+  const extractCurrentBarFromPositionPayload = (payload: unknown): number | null => {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+
+    const maybeObject = payload as {
+      currentBar?: number;
+      bar?: number;
+      barIndex?: number;
+      masterBarIndex?: number;
+    };
+    const candidate =
+      maybeObject.currentBar ?? maybeObject.bar ?? maybeObject.barIndex ?? maybeObject.masterBarIndex ?? null;
+    if (typeof candidate !== "number" || Number.isNaN(candidate)) {
+      return null;
+    }
+
+    return candidate >= 0 ? candidate + 1 : candidate;
+  };
+
+  const extractPositionLabelFromPayload = (payload: unknown): string | null => {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+
+    const maybeObject = payload as { currentTime?: number; endTime?: number; position?: number; duration?: number };
+    const currentTime =
+      typeof maybeObject.currentTime === "number"
+        ? maybeObject.currentTime
+        : typeof maybeObject.position === "number"
+          ? maybeObject.position
+          : null;
+    if (currentTime === null || Number.isNaN(currentTime)) {
+      return null;
+    }
+
+    const endTime =
+      typeof maybeObject.endTime === "number"
+        ? maybeObject.endTime
+        : typeof maybeObject.duration === "number"
+          ? maybeObject.duration
+          : null;
+    if (endTime === null || Number.isNaN(endTime)) {
+      return formatPlaybackSeconds(currentTime);
+    }
+
+    return `${formatPlaybackSeconds(currentTime)} / ${formatPlaybackSeconds(endTime)}`;
+  };
+
+  const isPlaybackApiAvailable = (api: AlphaTabApi): boolean =>
+    typeof api.play === "function" && typeof api.pause === "function" && typeof api.stop === "function";
 
   const clearRenderTimeout = (): void => {
     if (activeRenderTimeoutId === null) {
@@ -667,6 +749,8 @@ export async function createGpRenderer(
     lastRenderFinishedAtIso = null;
     renderTimeoutHit = false;
     lastRendererErrorStage = "renderer-rebuild-start";
+    setPlaybackCapabilityMessage(null);
+    resetPlaybackRuntimeInfo();
     emitDebugInfo();
 
     const sessionToken = activeSessionToken + 1;
@@ -686,6 +770,47 @@ export async function createGpRenderer(
 
     const api = createAlphaTabApi(container, renderPlan);
     activeApi = api;
+    const playbackAvailable = !renderPlan.isPercussion && isPlaybackApiAvailable(api);
+    if (renderPlan.isPercussion) {
+      setPlaybackCapabilityMessage("Playback is not enabled for percussion tracks yet.");
+    } else if (!playbackAvailable) {
+      setPlaybackCapabilityMessage("Playback is unavailable in this runtime.");
+    } else {
+      setPlaybackCapabilityMessage(null);
+    }
+
+    if (playbackAvailable) {
+      api.playerStateChanged?.on((statePayload) => {
+        if (sessionToken !== activeSessionToken) {
+          return;
+        }
+
+        const normalizedState =
+          typeof statePayload === "string"
+            ? statePayload
+            : typeof statePayload === "object" && statePayload && "state" in statePayload
+              ? String((statePayload as { state?: string | number }).state ?? "")
+              : String(statePayload ?? "");
+        playbackRuntimeInfo = {
+          ...playbackRuntimeInfo,
+          isPlaying: /play/i.test(normalizedState) && !/pause|stop/i.test(normalizedState),
+        };
+        emitPlaybackRuntimeInfo();
+      });
+
+      api.playerPositionChanged?.on((positionPayload) => {
+        if (sessionToken !== activeSessionToken) {
+          return;
+        }
+
+        playbackRuntimeInfo = {
+          ...playbackRuntimeInfo,
+          positionLabel: extractPositionLabelFromPayload(positionPayload),
+          currentBar: extractCurrentBarFromPositionPayload(positionPayload),
+        };
+        emitPlaybackRuntimeInfo();
+      });
+    }
 
     api.scoreLoaded.on((score) => {
       if (sessionToken !== activeSessionToken) {
@@ -810,9 +935,48 @@ export async function createGpRenderer(
         hooks.onRenderError(message);
       });
     },
-    play: () => {},
-    pause: () => {},
-    stop: () => {},
+    play: () => {
+      if (isPercussionTrack) {
+        hooks.onRenderError("Playback is not enabled for percussion tracks yet.");
+        return;
+      }
+
+      if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
+        hooks.onRenderError(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        return;
+      }
+
+      const playbackApi = activeApi as AlphaTabApi & { play: () => void };
+      playbackApi.play();
+    },
+    pause: () => {
+      if (isPercussionTrack) {
+        hooks.onRenderError("Playback is not enabled for percussion tracks yet.");
+        return;
+      }
+
+      if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
+        hooks.onRenderError(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        return;
+      }
+
+      const playbackApi = activeApi as AlphaTabApi & { pause: () => void };
+      playbackApi.pause();
+    },
+    stop: () => {
+      if (isPercussionTrack) {
+        hooks.onRenderError("Playback is not enabled for percussion tracks yet.");
+        return;
+      }
+
+      if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
+        hooks.onRenderError(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        return;
+      }
+
+      const playbackApi = activeApi as AlphaTabApi & { stop: () => void };
+      playbackApi.stop();
+    },
     destroy: () => {
       activeSessionToken += 1;
       clearRenderTimeout();
