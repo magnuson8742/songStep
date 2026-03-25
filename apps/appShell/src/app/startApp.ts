@@ -57,6 +57,11 @@ interface AppState {
   playbackFollowSource: string | null;
   playbackBarAnchorCount: number;
   playbackBarAnchorSource: string | null;
+  playbackAnchorStrategyAttempts: string | null;
+  renderHostHasSvg: boolean;
+  renderHostChildTags: string | null;
+  renderHostTopTagClassCombos: string | null;
+  renderHostElementCounts: string | null;
   playbackPlayheadVisible: boolean;
   playbackBarAnchors: PlaybackBarAnchor[];
   activeTrackName: string | null;
@@ -127,6 +132,11 @@ function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRend
   updateDebugField(rootElement, "playback-follow-source", "-");
   updateDebugField(rootElement, "playback-bar-anchor-count", "0");
   updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+  updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
+  updateDebugField(rootElement, "render-host-has-svg", "no");
+  updateDebugField(rootElement, "render-host-child-tags", "-");
+  updateDebugField(rootElement, "render-host-tag-class", "-");
+  updateDebugField(rootElement, "render-host-element-counts", "-");
   updateDebugField(rootElement, "score-tracks", formatRuntimeTrackList(debugInfo?.scoreTracks ?? []));
   updateDebugField(rootElement, "rendered-tracks", formatRuntimeTrackList(debugInfo?.renderedTracks ?? []));
 }
@@ -364,6 +374,47 @@ function hidePlaybackPlayhead(rootElement: HTMLElement, state: AppState): void {
   state.playbackPlayheadVisible = false;
 }
 
+function updateRenderHostDomDiagnostics(state: AppState, rootElement: HTMLElement, renderHost: HTMLElement): void {
+  const hasSvg = renderHost.querySelector("svg") !== null;
+  const firstLevelChildTags = Array.from(renderHost.children)
+    .slice(0, 8)
+    .map((child) => child.tagName.toLowerCase())
+    .join(", ");
+
+  const elements = Array.from(renderHost.querySelectorAll<HTMLElement>("*"));
+  const tagClassCombos = Array.from(
+    new Set(
+      elements
+        .slice(0, 120)
+        .map((element) => {
+          const firstClass = element.className.trim().split(/\s+/)[0] ?? "";
+          return firstClass ? `${element.tagName.toLowerCase()}.${firstClass}` : element.tagName.toLowerCase();
+        }),
+    ),
+  )
+    .slice(0, 10)
+    .join(", ");
+
+  const elementCounts = [
+    `svg=${renderHost.querySelectorAll("svg").length}`,
+    `g=${renderHost.querySelectorAll("g").length}`,
+    `rect=${renderHost.querySelectorAll("rect").length}`,
+    `line=${renderHost.querySelectorAll("line").length}`,
+    `text=${renderHost.querySelectorAll("text").length}`,
+    `class=${renderHost.querySelectorAll("[class]").length}`,
+    `id=${renderHost.querySelectorAll("[id]").length}`,
+  ].join(", ");
+
+  state.renderHostHasSvg = hasSvg;
+  state.renderHostChildTags = firstLevelChildTags || null;
+  state.renderHostTopTagClassCombos = tagClassCombos || null;
+  state.renderHostElementCounts = elementCounts;
+  updateDebugField(rootElement, "render-host-has-svg", hasSvg ? "yes" : "no");
+  updateDebugField(rootElement, "render-host-child-tags", firstLevelChildTags || "-");
+  updateDebugField(rootElement, "render-host-tag-class", tagClassCombos || "-");
+  updateDebugField(rootElement, "render-host-element-counts", elementCounts);
+}
+
 function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): void {
   const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
   if (!renderHost) {
@@ -372,20 +423,49 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     state.playbackBarAnchorSource = null;
     updateDebugField(rootElement, "playback-bar-anchor-count", "0");
     updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+    state.playbackAnchorStrategyAttempts = null;
+    updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
     return;
   }
+  updateRenderHostDomDiagnostics(state, rootElement, renderHost);
 
   const selectorStrategies = [
-    { selector: "[data-bar-index]", source: "dom:[data-bar-index]" },
-    { selector: ".at-bar", source: "dom:.at-bar" },
-    { selector: "g.bar", source: "dom:g.bar" },
-    { selector: "g[class*='bar']", source: "dom:g[class*=bar]" },
+    {
+      source: "dom:[data-bar-index]",
+      resolveAnchors: () => Array.from(renderHost.querySelectorAll<HTMLElement>("[data-bar-index]")),
+    },
+    {
+      source: "dom:.at-bar",
+      resolveAnchors: () => Array.from(renderHost.querySelectorAll<HTMLElement>(".at-bar")),
+    },
+    {
+      source: "geometry:svg-line-vertical",
+      resolveAnchors: () =>
+        Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line")).filter((line) => {
+          const x1 = Number(line.getAttribute("x1"));
+          const x2 = Number(line.getAttribute("x2"));
+          const y1 = Number(line.getAttribute("y1"));
+          const y2 = Number(line.getAttribute("y2"));
+          return Number.isFinite(x1) && Number.isFinite(x2) && Number.isFinite(y1) && Number.isFinite(y2) && Math.abs(x1 - x2) <= 0.8 && Math.abs(y1 - y2) > 16;
+        }),
+    },
+    {
+      source: "geometry:svg-rect-vertical",
+      resolveAnchors: () =>
+        Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect")).filter((rect) => {
+          const width = Number(rect.getAttribute("width"));
+          const height = Number(rect.getAttribute("height"));
+          return Number.isFinite(width) && Number.isFinite(height) && width > 0 && width <= 3 && height > 18;
+        }),
+    },
   ] as const;
   const renderHostRect = renderHost.getBoundingClientRect();
   const totalBars = state.totalBars ?? 0;
+  const strategyAttempts: string[] = [];
 
   for (const strategy of selectorStrategies) {
-    const elements = Array.from(renderHost.querySelectorAll<HTMLElement>(strategy.selector));
+    const elements = strategy.resolveAnchors();
+    strategyAttempts.push(`${strategy.source} => ${elements.length}`);
     if (elements.length === 0) {
       continue;
     }
@@ -435,16 +515,26 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     }));
     state.playbackBarAnchorCount = state.playbackBarAnchors.length;
     state.playbackBarAnchorSource = strategy.source;
+    state.playbackAnchorStrategyAttempts = strategyAttempts.join(" | ");
     updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
     updateDebugField(rootElement, "playback-bar-anchor-source", strategy.source);
+    updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
     return;
   }
 
   state.playbackBarAnchors = [];
   state.playbackBarAnchorCount = 0;
   state.playbackBarAnchorSource = null;
+  state.playbackAnchorStrategyAttempts = strategyAttempts.join(" | ");
   updateDebugField(rootElement, "playback-bar-anchor-count", "0");
   updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+  updateDebugField(
+    rootElement,
+    "playback-anchor-strategy-attempts",
+    state.playbackAnchorStrategyAttempts && state.playbackAnchorStrategyAttempts.length > 0
+      ? state.playbackAnchorStrategyAttempts
+      : "-",
+  );
 }
 
 function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLElement): void {
@@ -638,6 +728,11 @@ export function startApp(rootElement: HTMLElement): void {
     playbackFollowSource: null,
     playbackBarAnchorCount: 0,
     playbackBarAnchorSource: null,
+    playbackAnchorStrategyAttempts: null,
+    renderHostHasSvg: false,
+    renderHostChildTags: null,
+    renderHostTopTagClassCombos: null,
+    renderHostElementCounts: null,
     playbackPlayheadVisible: false,
     playbackBarAnchors: [],
     activeTrackName: null,
@@ -707,6 +802,14 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
+          state.playbackAnchorStrategyAttempts = null;
+          state.playbackBarAnchorCount = 0;
+          state.playbackBarAnchorSource = null;
+          state.playbackAnchorStrategyAttempts = null;
+          state.renderHostHasSvg = false;
+          state.renderHostChildTags = null;
+          state.renderHostTopTagClassCombos = null;
+          state.renderHostElementCounts = null;
           state.playbackBarAnchors = [];
           state.activeTrackName = null;
           state.scoreOverview = null;
@@ -758,6 +861,11 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackFollowSource = null;
             state.playbackBarAnchorCount = 0;
             state.playbackBarAnchorSource = null;
+            state.playbackAnchorStrategyAttempts = null;
+            state.renderHostHasSvg = false;
+            state.renderHostChildTags = null;
+            state.renderHostTopTagClassCombos = null;
+            state.renderHostElementCounts = null;
             state.playbackPlayheadVisible = false;
             state.playbackBarAnchors = [];
             state.activeTrackName = null;
@@ -810,6 +918,11 @@ export function startApp(rootElement: HTMLElement): void {
         playbackFollowSource: state.playbackFollowSource,
         playbackBarAnchorCount: state.playbackBarAnchorCount,
         playbackBarAnchorSource: state.playbackBarAnchorSource,
+        playbackAnchorStrategyAttempts: state.playbackAnchorStrategyAttempts,
+        renderHostHasSvg: state.renderHostHasSvg,
+        renderHostChildTags: state.renderHostChildTags,
+        renderHostTopTagClassCombos: state.renderHostTopTagClassCombos,
+        renderHostElementCounts: state.renderHostElementCounts,
         scoreOverview: state.scoreOverview,
         trackVolumeByIndex: state.trackVolumeByIndex,
         trackBalanceByIndex: state.trackBalanceByIndex,
@@ -836,6 +949,9 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "player-state-payload-shape", "-");
           updateDebugField(rootElement, "current-bar-source-path", "-");
           updateDebugField(rootElement, "current-tick", "-");
+          updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+          updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+          updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
@@ -936,7 +1052,13 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.playbackPlayheadVisible = false;
+          state.playbackBarAnchorCount = 0;
+          state.playbackBarAnchorSource = null;
+          state.playbackAnchorStrategyAttempts = null;
           updatePlaybackFollowDiagnostics(rootElement, false, null);
+          updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+          updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+          updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
           updateArrangementPlaybackHighlight(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
           state.gpRenderer.stop();
@@ -1050,8 +1172,14 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.playbackPlayheadVisible = false;
+          state.playbackBarAnchorCount = 0;
+          state.playbackBarAnchorSource = null;
+          state.playbackAnchorStrategyAttempts = null;
           updateProjectStatusBanner(rootElement, message);
           updateDebugField(rootElement, "current-tick", "-");
+          updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+          updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+          updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
@@ -1063,6 +1191,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.playbackPlayheadVisible = false;
+          state.playbackBarAnchorCount = 0;
+          state.playbackBarAnchorSource = null;
+          state.playbackAnchorStrategyAttempts = null;
           state.currentBarSourcePath = null;
           state.requestedTrackIndex = null;
           state.selectionFired = false;
@@ -1077,6 +1208,9 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "selection-fired", "no");
           updateDebugField(rootElement, "current-bar-source-path", "-");
           updateDebugField(rootElement, "current-tick", "-");
+          updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+          updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+          updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);

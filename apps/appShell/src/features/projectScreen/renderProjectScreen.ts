@@ -27,6 +27,11 @@ export interface ProjectScreenActions {
   playbackFollowSource: string | null;
   playbackBarAnchorCount: number;
   playbackBarAnchorSource: string | null;
+  playbackAnchorStrategyAttempts: string | null;
+  renderHostHasSvg: boolean;
+  renderHostChildTags: string | null;
+  renderHostTopTagClassCombos: string | null;
+  renderHostElementCounts: string | null;
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
   trackBalanceByIndex: Record<number, number>;
@@ -213,6 +218,16 @@ export function renderProjectScreen(
             <dd data-debug-field="playback-bar-anchor-count">${renderDebugValue(actions.playbackBarAnchorCount)}</dd>
             <dt>playback bar anchor source</dt>
             <dd data-debug-field="playback-bar-anchor-source">${renderDebugValue(actions.playbackBarAnchorSource)}</dd>
+            <dt>anchor strategy attempts</dt>
+            <dd data-debug-field="playback-anchor-strategy-attempts">${renderDebugValue(actions.playbackAnchorStrategyAttempts)}</dd>
+            <dt>render host has svg</dt>
+            <dd data-debug-field="render-host-has-svg">${actions.renderHostHasSvg ? "yes" : "no"}</dd>
+            <dt>render host child tags</dt>
+            <dd data-debug-field="render-host-child-tags">${renderDebugValue(actions.renderHostChildTags)}</dd>
+            <dt>render host tag/class</dt>
+            <dd data-debug-field="render-host-tag-class">${renderDebugValue(actions.renderHostTopTagClassCombos)}</dd>
+            <dt>render host element counts</dt>
+            <dd data-debug-field="render-host-element-counts">${renderDebugValue(actions.renderHostElementCounts)}</dd>
           </dl>
 
           <div class="trackDebugLists">
