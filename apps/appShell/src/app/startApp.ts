@@ -114,6 +114,52 @@ function updateTrackStripActive(rootElement: HTMLElement, activeTrackIndex: numb
   });
 }
 
+function renderPlayerFieldValue(value: string | number | null): string {
+  if (value === null || value === "") {
+    return "-";
+  }
+
+  return String(value);
+}
+
+function updatePlayerRuntimeFields(state: AppState, rootElement: HTMLElement): void {
+  const setPlayerField = (fieldName: string, value: string): void => {
+    const field = rootElement.querySelector<HTMLElement>(`[data-player-field="${fieldName}"]`);
+    if (field) {
+      field.textContent = value;
+    }
+  };
+
+  setPlayerField("score-title", renderPlayerFieldValue(state.scoreTitle));
+  setPlayerField(
+    "playback-state",
+    state.playbackIsPlaying === null ? "-" : state.playbackIsPlaying ? "playing" : "paused/stopped",
+  );
+  setPlayerField("playback-position", renderPlayerFieldValue(state.playbackPositionLabel));
+  setPlayerField("current-bar", renderPlayerFieldValue(state.playbackCurrentBar));
+  setPlayerField("total-bars", renderPlayerFieldValue(state.totalBars));
+  setPlayerField("tempo", state.tempoBpm === null ? "-" : `${state.tempoBpm} BPM`);
+}
+
+function updateTrackToggleVisualState(state: AppState, rootElement: HTMLElement): void {
+  const toggleButtons = rootElement.querySelectorAll<HTMLElement>("[data-track-action][data-track-index]");
+  toggleButtons.forEach((button) => {
+    const trackIndex = Number(button.dataset.trackIndex);
+    if (Number.isNaN(trackIndex)) {
+      return;
+    }
+
+    const isMute = button.dataset.trackAction === "toggle-mute";
+    const isSolo = button.dataset.trackAction === "toggle-solo";
+    const isOn = isMute
+      ? state.mutedTrackIndexes.includes(trackIndex)
+      : isSolo
+        ? state.soloTrackIndexes.includes(trackIndex)
+        : false;
+    button.classList.toggle("isTrackToggleOn", isOn);
+  });
+}
+
 function isSameTrackList(current: GpTrackInfo[], next: GpTrackInfo[]): boolean {
   if (current.length !== next.length) {
     return false;
@@ -337,14 +383,14 @@ export function startApp(rootElement: HTMLElement): void {
           state.mutedTrackIndexes = isMuted
             ? state.mutedTrackIndexes.filter((value) => value !== trackIndex)
             : [...state.mutedTrackIndexes, trackIndex];
-          render();
+          updateTrackToggleVisualState(state, rootElement);
         },
         onToggleTrackSolo: (trackIndex) => {
           const isSolo = state.soloTrackIndexes.includes(trackIndex);
           state.soloTrackIndexes = isSolo
             ? state.soloTrackIndexes.filter((value) => value !== trackIndex)
             : [...state.soloTrackIndexes, trackIndex];
-          render();
+          updateTrackToggleVisualState(state, rootElement);
         },
         onPlay: () => {
           state.gpRenderer?.play();
@@ -398,13 +444,13 @@ export function startApp(rootElement: HTMLElement): void {
           state.scoreTitle = info.scoreTitle;
           state.totalBars = info.totalBars;
           state.tempoBpm = info.tempoBpm;
-          render();
+          updatePlayerRuntimeFields(state, rootElement);
         },
         onPlaybackRuntimeInfo: (info) => {
           state.playbackIsPlaying = info.isPlaying;
           state.playbackPositionLabel = info.positionLabel;
           state.playbackCurrentBar = info.currentBar;
-          render();
+          updatePlayerRuntimeFields(state, rootElement);
         },
         onActiveTrackConfirmed: (trackIndex) => {
           state.selectedTrackIndex = trackIndex;

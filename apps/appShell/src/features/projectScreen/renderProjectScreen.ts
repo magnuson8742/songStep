@@ -101,7 +101,7 @@ export function renderProjectScreen(
         <div>
           <h1 class="appTitle">${project.title}</h1>
           <p class="appSubtitle">Source file: ${actions.sourceFileName}</p>
-          <p class="appSubtitle">Score title: ${renderDebugValue(actions.scoreTitle)}</p>
+          <p class="appSubtitle">Score title: <span data-player-field="score-title">${renderDebugValue(actions.scoreTitle)}</span></p>
         </div>
         <div class="projectTopActions">
           <button class="secondaryButton" type="button" data-action="back-home">Main Menu</button>
@@ -204,15 +204,15 @@ export function renderProjectScreen(
         </div>
         <dl class="playerInfoGrid">
           <dt>Playback state</dt>
-          <dd>${actions.playbackIsPlaying === null ? "-" : actions.playbackIsPlaying ? "playing" : "paused/stopped"}</dd>
+          <dd data-player-field="playback-state">${actions.playbackIsPlaying === null ? "-" : actions.playbackIsPlaying ? "playing" : "paused/stopped"}</dd>
           <dt>Playback position</dt>
-          <dd>${renderDebugValue(actions.playbackPositionLabel)}</dd>
+          <dd data-player-field="playback-position">${renderDebugValue(actions.playbackPositionLabel)}</dd>
           <dt>Current bar</dt>
-          <dd>${renderDebugValue(actions.currentBar)}</dd>
+          <dd data-player-field="current-bar">${renderDebugValue(actions.currentBar)}</dd>
           <dt>Total bars</dt>
-          <dd>${renderDebugValue(actions.totalBars)}</dd>
+          <dd data-player-field="total-bars">${renderDebugValue(actions.totalBars)}</dd>
           <dt>Tempo</dt>
-          <dd>${actions.tempoBpm === null ? "-" : `${actions.tempoBpm} BPM`}</dd>
+          <dd data-player-field="tempo">${actions.tempoBpm === null ? "-" : `${actions.tempoBpm} BPM`}</dd>
         </dl>
         <p class="helperText">Mute/Solo are UI state only in this step.</p>
       </section>
