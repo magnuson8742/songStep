@@ -23,6 +23,8 @@ export interface ProjectScreenActions {
   playerPositionPayloadShape: string | null;
   playerStatePayloadShape: string | null;
   currentBarSourcePath: string | null;
+  playbackFollowTargetFound: boolean;
+  playbackFollowSource: string | null;
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
   trackBalanceByIndex: Record<number, number>;
@@ -201,6 +203,10 @@ export function renderProjectScreen(
             <dd data-debug-field="current-bar-source-path">${renderDebugValue(actions.currentBarSourcePath)}</dd>
             <dt>currentTick</dt>
             <dd data-debug-field="current-tick">${renderDebugValue(actions.currentTick)}</dd>
+            <dt>playback follow target</dt>
+            <dd data-debug-field="playback-follow-target-found">${actions.playbackFollowTargetFound ? "yes" : "no"}</dd>
+            <dt>playback follow source</dt>
+            <dd data-debug-field="playback-follow-source">${renderDebugValue(actions.playbackFollowSource)}</dd>
           </dl>
 
           <div class="trackDebugLists">

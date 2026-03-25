@@ -46,6 +46,8 @@ interface AppState {
   playerPositionPayloadShape: string | null;
   playerStatePayloadShape: string | null;
   currentBarSourcePath: string | null;
+  playbackFollowTargetFound: boolean;
+  playbackFollowSource: string | null;
   activeTrackName: string | null;
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
@@ -110,6 +112,8 @@ function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRend
   updateDebugField(rootElement, "player-state-payload-shape", "-");
   updateDebugField(rootElement, "current-bar-source-path", "-");
   updateDebugField(rootElement, "current-tick", "-");
+  updateDebugField(rootElement, "playback-follow-target-found", "no");
+  updateDebugField(rootElement, "playback-follow-source", "-");
   updateDebugField(rootElement, "score-tracks", formatRuntimeTrackList(debugInfo?.scoreTracks ?? []));
   updateDebugField(rootElement, "rendered-tracks", formatRuntimeTrackList(debugInfo?.renderedTracks ?? []));
 }
@@ -320,6 +324,106 @@ function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLEl
   activeTrackCell.classList.add("isPlaybackCurrentBar");
 }
 
+function updatePlaybackFollowDiagnostics(
+  rootElement: HTMLElement,
+  followTargetFound: boolean,
+  followSource: string | null,
+): void {
+  updateDebugField(rootElement, "playback-follow-target-found", followTargetFound ? "yes" : "no");
+  updateDebugField(rootElement, "playback-follow-source", followSource ?? "-");
+}
+
+function resolvePlaybackFollowTarget(renderHost: HTMLElement): { targetElement: HTMLElement; source: string } | null {
+  const selectorPriority = [
+    { selector: ".at-cursor-beat", source: "alphaTab:cursor-beat" },
+    { selector: ".at-cursor-bar", source: "alphaTab:cursor-bar" },
+    { selector: ".at-cursor", source: "alphaTab:cursor" },
+    { selector: ".at-highlight", source: "alphaTab:highlight" },
+    { selector: "[class*='cursor']", source: "dom:cursor-class" },
+  ] as const;
+
+  for (const entry of selectorPriority) {
+    const candidate = renderHost.querySelector<HTMLElement>(entry.selector);
+    if (!candidate) {
+      continue;
+    }
+
+    const candidateRect = candidate.getBoundingClientRect();
+    if (candidateRect.width <= 0 && candidateRect.height <= 0) {
+      continue;
+    }
+
+    return {
+      targetElement: candidate,
+      source: entry.source,
+    };
+  }
+
+  return null;
+}
+
+function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElement): void {
+  const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+  if (!renderHost) {
+    return;
+  }
+
+  if (!state.playbackIsPlaying || state.playbackCurrentTick === null) {
+    state.playbackFollowTargetFound = false;
+    state.playbackFollowSource = null;
+    updatePlaybackFollowDiagnostics(rootElement, false, null);
+    return;
+  }
+
+  const followTarget = resolvePlaybackFollowTarget(renderHost);
+  if (!followTarget) {
+    state.playbackFollowTargetFound = false;
+    state.playbackFollowSource = "none";
+    updatePlaybackFollowDiagnostics(rootElement, false, "none");
+    return;
+  }
+
+  state.playbackFollowTargetFound = true;
+  state.playbackFollowSource = followTarget.source;
+  updatePlaybackFollowDiagnostics(rootElement, true, followTarget.source);
+
+  const targetRect = followTarget.targetElement.getBoundingClientRect();
+  const hostRect = renderHost.getBoundingClientRect();
+
+  const targetCenterX = targetRect.left - hostRect.left + renderHost.scrollLeft + targetRect.width / 2;
+  const targetCenterY = targetRect.top - hostRect.top + renderHost.scrollTop + targetRect.height / 2;
+  const horizontalMargin = Math.max(renderHost.clientWidth * 0.25, 32);
+  const verticalMargin = Math.max(renderHost.clientHeight * 0.25, 24);
+
+  const leftBound = renderHost.scrollLeft + horizontalMargin;
+  const rightBound = renderHost.scrollLeft + renderHost.clientWidth - horizontalMargin;
+  const topBound = renderHost.scrollTop + verticalMargin;
+  const bottomBound = renderHost.scrollTop + renderHost.clientHeight - verticalMargin;
+
+  let nextScrollLeft = renderHost.scrollLeft;
+  let nextScrollTop = renderHost.scrollTop;
+
+  if (targetCenterX < leftBound || targetCenterX > rightBound) {
+    nextScrollLeft = targetCenterX - renderHost.clientWidth / 2;
+  }
+  if (targetCenterY < topBound || targetCenterY > bottomBound) {
+    nextScrollTop = targetCenterY - renderHost.clientHeight / 2;
+  }
+
+  const maxScrollLeft = Math.max(renderHost.scrollWidth - renderHost.clientWidth, 0);
+  const maxScrollTop = Math.max(renderHost.scrollHeight - renderHost.clientHeight, 0);
+  const clampedScrollLeft = Math.min(Math.max(nextScrollLeft, 0), maxScrollLeft);
+  const clampedScrollTop = Math.min(Math.max(nextScrollTop, 0), maxScrollTop);
+
+  if (Math.abs(clampedScrollLeft - renderHost.scrollLeft) > 4 || Math.abs(clampedScrollTop - renderHost.scrollTop) > 4) {
+    renderHost.scrollTo({
+      left: clampedScrollLeft,
+      top: clampedScrollTop,
+      behavior: "auto",
+    });
+  }
+}
+
 function updateProjectStatusBanner(rootElement: HTMLElement, message: string): void {
   let statusBanner = rootElement.querySelector<HTMLElement>("[data-status-banner='true']");
   if (!statusBanner) {
@@ -374,6 +478,8 @@ export function startApp(rootElement: HTMLElement): void {
     playerPositionPayloadShape: null,
     playerStatePayloadShape: null,
     currentBarSourcePath: null,
+    playbackFollowTargetFound: false,
+    playbackFollowSource: null,
     activeTrackName: null,
     scoreOverview: null,
     trackVolumeByIndex: {},
@@ -436,6 +542,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.playerPositionPayloadShape = null;
           state.playerStatePayloadShape = null;
           state.currentBarSourcePath = null;
+          state.playbackFollowTargetFound = false;
+          state.playbackFollowSource = null;
           state.activeTrackName = null;
           state.scoreOverview = null;
           state.trackVolumeByIndex = {};
@@ -482,6 +590,8 @@ export function startApp(rootElement: HTMLElement): void {
             state.playerPositionPayloadShape = null;
             state.playerStatePayloadShape = null;
             state.currentBarSourcePath = null;
+            state.playbackFollowTargetFound = false;
+            state.playbackFollowSource = null;
             state.activeTrackName = null;
             state.scoreOverview = null;
             state.trackVolumeByIndex = {};
@@ -528,6 +638,8 @@ export function startApp(rootElement: HTMLElement): void {
         playerPositionPayloadShape: state.playerPositionPayloadShape,
         playerStatePayloadShape: state.playerStatePayloadShape,
         currentBarSourcePath: state.currentBarSourcePath,
+        playbackFollowTargetFound: state.playbackFollowTargetFound,
+        playbackFollowSource: state.playbackFollowSource,
         scoreOverview: state.scoreOverview,
         trackVolumeByIndex: state.trackVolumeByIndex,
         trackBalanceByIndex: state.trackBalanceByIndex,
@@ -554,6 +666,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "player-state-payload-shape", "-");
           updateDebugField(rootElement, "current-bar-source-path", "-");
           updateDebugField(rootElement, "current-tick", "-");
+          updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
           state.gpRenderer?.selectTrack(trackIndex);
         },
@@ -649,6 +762,9 @@ export function startApp(rootElement: HTMLElement): void {
 
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
+          state.playbackFollowTargetFound = false;
+          state.playbackFollowSource = null;
+          updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
           state.gpRenderer.stop();
         },
@@ -745,19 +861,25 @@ export function startApp(rootElement: HTMLElement): void {
           );
           updateDebugField(rootElement, "current-tick", state.playbackCurrentTick === null ? "-" : String(state.playbackCurrentTick));
           updateArrangementPlaybackHighlight(state, rootElement);
+          updatePlaybackFollowInRenderHost(state, rootElement);
         },
         onRuntimeNotice: (message) => {
           state.projectStatusMessage = message;
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
+          state.playbackFollowTargetFound = false;
+          state.playbackFollowSource = null;
           updateProjectStatusBanner(rootElement, message);
           updateDebugField(rootElement, "current-tick", "-");
+          updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
         },
         onActiveTrackConfirmed: (trackIndex) => {
           state.selectedTrackIndex = trackIndex;
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
+          state.playbackFollowTargetFound = false;
+          state.playbackFollowSource = null;
           state.currentBarSourcePath = null;
           state.requestedTrackIndex = null;
           state.selectionFired = false;
@@ -772,6 +894,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "selection-fired", "no");
           updateDebugField(rootElement, "current-bar-source-path", "-");
           updateDebugField(rootElement, "current-tick", "-");
+          updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
         },
         onRenderError: (message) => {
