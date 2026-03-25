@@ -16,6 +16,7 @@ export interface ProjectScreenActions {
   sourceFileName: string;
   playbackPositionLabel: string | null;
   currentBar: number | null;
+  currentTick: number | null;
   totalBars: number | null;
   tempoBpm: number | null;
   playbackIsPlaying: boolean | null;
@@ -198,6 +199,8 @@ export function renderProjectScreen(
             <dd data-debug-field="player-state-payload-shape">${renderDebugValue(actions.playerStatePayloadShape)}</dd>
             <dt>currentBar source path</dt>
             <dd data-debug-field="current-bar-source-path">${renderDebugValue(actions.currentBarSourcePath)}</dd>
+            <dt>currentTick</dt>
+            <dd data-debug-field="current-tick">${renderDebugValue(actions.currentTick)}</dd>
           </dl>
 
           <div class="trackDebugLists">

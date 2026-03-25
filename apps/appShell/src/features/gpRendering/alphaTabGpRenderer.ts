@@ -56,9 +56,25 @@ interface AlphaTabStaff {
 
 interface AlphaTabBar {
   voices?: AlphaTabVoice[];
+  start?: number;
+  startTick?: number;
+  tick?: number;
+  playbackStart?: number;
+  absoluteStart?: number;
+  startPosition?: {
+    tick?: number;
+  };
 }
 
 interface AlphaTabMasterBar {
+  start?: number;
+  startTick?: number;
+  tick?: number;
+  playbackStart?: number;
+  absoluteStart?: number;
+  startPosition?: {
+    tick?: number;
+  };
   tempo?: number;
   tempoAutomation?: {
     value?: number;
@@ -153,6 +169,7 @@ export interface GpPlaybackRuntimeInfo {
   isPlaying: boolean | null;
   positionLabel: string | null;
   currentBar: number | null;
+  currentTick: number | null;
   playerPositionPayloadShape: string | null;
   playerStatePayloadShape: string | null;
   currentBarSourcePath: string | null;
@@ -222,6 +239,12 @@ interface RenderPlan {
 interface RenderViewportScrollSnapshot {
   left: number;
   top: number;
+}
+
+interface TickBarRange {
+  startTick: number;
+  endTickExclusive: number;
+  barNumber: number;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -360,6 +383,56 @@ function toScoreOverviewRuntimeInfo(score: AlphaTabScore): GpScoreOverviewRuntim
   };
 }
 
+function tryReadTickAtPath(value: unknown, path: string): number | null {
+  const segments = path.split(".");
+  let currentValue: unknown = value;
+  for (const segment of segments) {
+    if (!currentValue || typeof currentValue !== "object") {
+      return null;
+    }
+    currentValue = (currentValue as Record<string, unknown>)[segment];
+  }
+
+  return typeof currentValue === "number" && Number.isFinite(currentValue) ? currentValue : null;
+}
+
+function resolveBarStartTick(
+  score: AlphaTabScore,
+  barIndex: number,
+): {
+  tick: number | null;
+  sourcePath: string | null;
+} {
+  const masterBar = score.masterBars?.[barIndex];
+  const masterBarPaths = ["startTick", "start", "tick", "playbackStart", "absoluteStart", "startPosition.tick"];
+  for (const path of masterBarPaths) {
+    const tick = tryReadTickAtPath(masterBar, path);
+    if (tick !== null) {
+      return {
+        tick,
+        sourcePath: `masterBars.${path}`,
+      };
+    }
+  }
+
+  const primaryTrackBar = score.tracks?.[0]?.staves?.[0]?.bars?.[barIndex];
+  const trackBarPaths = ["startTick", "start", "tick", "playbackStart", "absoluteStart", "startPosition.tick"];
+  for (const path of trackBarPaths) {
+    const tick = tryReadTickAtPath(primaryTrackBar, path);
+    if (tick !== null) {
+      return {
+        tick,
+        sourcePath: `tracks[0].staves[0].bars.${path}`,
+      };
+    }
+  }
+
+  return {
+    tick: null,
+    sourcePath: null,
+  };
+}
+
 function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StaveProfile): alphaTab.json.SettingsJson {
   return {
     core: {
@@ -485,10 +558,13 @@ export async function createGpRenderer(
     isPlaying: null,
     positionLabel: null,
     currentBar: null,
+    currentTick: null,
     playerPositionPayloadShape: null,
     playerStatePayloadShape: null,
     currentBarSourcePath: null,
   };
+  let tickBarRanges: TickBarRange[] = [];
+  let tickLookupSourcePath: string | null = null;
   let hasLoggedPlayerPositionPayloadShape = false;
   let hasLoggedPlayerStatePayloadShape = false;
   let playbackCapabilityMessage: string | null = null;
@@ -561,10 +637,13 @@ export async function createGpRenderer(
       isPlaying: null,
       positionLabel: null,
       currentBar: null,
+      currentTick: null,
       playerPositionPayloadShape: null,
       playerStatePayloadShape: null,
       currentBarSourcePath: null,
     };
+    tickBarRanges = [];
+    tickLookupSourcePath = null;
     emitPlaybackRuntimeInfo();
   };
 
@@ -616,47 +695,78 @@ export async function createGpRenderer(
     return [...rootKeys, ...nestedKeys].join(", ");
   };
 
-  const extractCurrentBarFromPositionPayload = (
-    payload: unknown,
-  ): {
-    currentBar: number | null;
-    sourcePath: string | null;
-  } => {
-    const knownBarPaths = [
-      "currentBar",
-      "bar",
-      "barIndex",
-      "masterBarIndex",
-      "barNumber",
-      "barNo",
-      "position.bar",
-      "position.barIndex",
-      "position.masterBarIndex",
-      "currentBeat.bar",
-      "currentBeat.barIndex",
-      "currentBeat.voice.bar.index",
-      "currentBeat.voice.bar.masterBar.index",
-      "currentBeat.voice.bar.masterBarIndex",
-      "currentBeat.masterBar.index",
-      "tickLookup.masterBar.index",
-      "tickPosition.masterBar.index",
-    ] as const;
+  const buildTickToBarRanges = (score: AlphaTabScore): void => {
+    const totalBars = score.masterBars?.length ?? 0;
+    if (totalBars <= 0) {
+      tickBarRanges = [];
+      tickLookupSourcePath = null;
+      return;
+    }
 
-    for (const path of knownBarPaths) {
-      const candidate = readNumberAtPath(payload, path);
-      if (candidate === null) {
+    const starts: Array<{ tick: number; barIndex: number; sourcePath: string }> = [];
+    for (let barIndex = 0; barIndex < totalBars; barIndex += 1) {
+      const resolvedStart = resolveBarStartTick(score, barIndex);
+      if (resolvedStart.tick === null || !resolvedStart.sourcePath) {
+        tickBarRanges = [];
+        tickLookupSourcePath = null;
+        return;
+      }
+
+      starts.push({
+        tick: resolvedStart.tick,
+        barIndex,
+        sourcePath: resolvedStart.sourcePath,
+      });
+    }
+
+    const ranges: TickBarRange[] = [];
+    for (let index = 0; index < starts.length; index += 1) {
+      const current = starts[index];
+      if (!current) {
         continue;
       }
 
+      const next = starts[index + 1];
+      const endTickExclusive = next ? next.tick : Number.POSITIVE_INFINITY;
+      ranges.push({
+        startTick: current.tick,
+        endTickExclusive,
+        barNumber: current.barIndex + 1,
+      });
+    }
+
+    tickBarRanges = ranges;
+    tickLookupSourcePath = starts[0]?.sourcePath ?? null;
+  };
+
+  const extractCurrentTickFromPositionPayload = (payload: unknown): number | null => {
+    const knownTickPaths = ["currentTick", "tick", "positionTick", "playbackTick", "position.currentTick"] as const;
+    for (const path of knownTickPaths) {
+      const candidate = readNumberAtPath(payload, path);
+      if (candidate !== null) {
+        return candidate;
+      }
+    }
+
+    return null;
+  };
+
+  const resolveCurrentBarFromTick = (currentTick: number): { currentBar: number | null; sourcePath: string | null } => {
+    const matchedRange = tickBarRanges.find(
+      (range) => currentTick >= range.startTick && currentTick < range.endTickExclusive,
+    );
+    if (!matchedRange) {
       return {
-        currentBar: candidate >= 0 ? candidate + 1 : candidate,
-        sourcePath: path,
+        currentBar: null,
+        sourcePath: tickLookupSourcePath ? `tickLookup:${tickLookupSourcePath}` : "tickLookup:unavailable",
       };
     }
 
     return {
-      currentBar: null,
-      sourcePath: null,
+      currentBar: matchedRange.barNumber,
+      sourcePath: tickLookupSourcePath
+        ? `tickLookup:${tickLookupSourcePath}[${matchedRange.startTick}-${matchedRange.endTickExclusive === Number.POSITIVE_INFINITY ? "∞" : matchedRange.endTickExclusive}]`
+        : "tickLookup:resolved",
     };
   };
 
@@ -936,14 +1046,16 @@ export async function createGpRenderer(
           hasLoggedPlayerPositionPayloadShape = true;
           console.info("[songStep] alphaTab playerPositionChanged payload shape:", describePayloadShape(positionPayload));
         }
-        const currentBarTelemetry = extractCurrentBarFromPositionPayload(positionPayload);
+        const currentTick = extractCurrentTickFromPositionPayload(positionPayload);
+        const currentBarFromTick = currentTick === null ? { currentBar: null, sourcePath: "tickLookup:no-currentTick" } : resolveCurrentBarFromTick(currentTick);
         const playerPositionPayloadShape = describePayloadShape(positionPayload);
 
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
           positionLabel: extractPositionLabelFromPayload(positionPayload),
-          currentBar: currentBarTelemetry.currentBar,
-          currentBarSourcePath: currentBarTelemetry.sourcePath,
+          currentTick,
+          currentBar: currentBarFromTick.currentBar,
+          currentBarSourcePath: currentBarFromTick.sourcePath,
           playerPositionPayloadShape,
         };
         emitPlaybackRuntimeInfo();
@@ -956,6 +1068,7 @@ export async function createGpRenderer(
       }
 
       applyTrackNamePolicies(score);
+      buildTickToBarRanges(score);
       lastLoadedScoreTracks = score.tracks ?? [];
       lastKnownMasterBarCount = score.masterBars?.length ?? lastKnownMasterBarCount;
       scoreRuntimeInfo = {
@@ -967,6 +1080,10 @@ export async function createGpRenderer(
       hooks.onTracksLoaded(toTrackInfoList(lastLoadedScoreTracks));
       emitScoreRuntimeInfo();
       hooks.onScoreOverviewRuntimeInfo(toScoreOverviewRuntimeInfo(score));
+      playbackRuntimeInfo = {
+        ...playbackRuntimeInfo,
+        currentBarSourcePath: tickLookupSourcePath ? `tickLookup:${tickLookupSourcePath}` : null,
+      };
       emitPlaybackRuntimeInfo();
       emitDebugInfo();
     });
