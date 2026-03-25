@@ -201,10 +201,9 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
 function updateArrangementOverview(state: AppState, rootElement: HTMLElement): void {
   const rowsContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-rows]");
   const markersContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-markers]");
-  const barHeaderContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-bar-header]");
   const emptyState = rootElement.querySelector<HTMLElement>("[data-arrangement-empty]");
 
-  if (!rowsContainer || !markersContainer || !barHeaderContainer || !emptyState) {
+  if (!rowsContainer || !markersContainer || !emptyState) {
     return;
   }
 
@@ -212,7 +211,7 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   if (!overview || overview.trackRows.length === 0 || overview.totalBars <= 0) {
     rowsContainer.innerHTML = "";
     markersContainer.innerHTML = "";
-    barHeaderContainer.innerHTML = "";
+    markersContainer.style.height = "16px";
     emptyState.style.display = "block";
     return;
   }
@@ -235,22 +234,32 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   markersContainer.innerHTML = overview.sectionMarkers
     .map((marker) => {
       const positionPercent = overview.totalBars > 1 ? (marker.barIndex / (overview.totalBars - 1)) * 100 : 0;
-      return `<span class="arrangementMarker" style="left:${positionPercent}%">${marker.label}</span>`;
+      return `<span class="arrangementMarker" data-measure-only="true" style="left:${positionPercent}%">${marker.label}</span>`;
     })
     .join("");
 
-  const barHeaderIndices = new Set<number>([0, overview.totalBars - 1]);
-  for (let barIndex = 3; barIndex < overview.totalBars; barIndex += 4) {
-    barHeaderIndices.add(barIndex);
-  }
+  const markerNodes = Array.from(markersContainer.querySelectorAll<HTMLElement>("[data-measure-only='true']"));
+  const laneEndPercents: number[] = [];
+  const laneHeightPx = 18;
+  const lanePaddingPx = 8;
+  const markerAreaWidthPx = Math.max(markersContainer.clientWidth, 1);
 
-  barHeaderContainer.innerHTML = Array.from(barHeaderIndices)
-    .sort((left, right) => left - right)
-    .map((barIndex) => {
-      const positionPercent = overview.totalBars > 1 ? (barIndex / (overview.totalBars - 1)) * 100 : 0;
-      return `<span class="arrangementBarHeaderLabel" style="left:${positionPercent}%">${barIndex + 1}</span>`;
-    })
-    .join("");
+  markerNodes.forEach((markerNode) => {
+    const leftPercent = Number(markerNode.style.left.replace("%", "")) || 0;
+    const markerWidthPercent = ((markerNode.offsetWidth + lanePaddingPx) / markerAreaWidthPx) * 100;
+
+    let laneIndex = laneEndPercents.findIndex((laneEndPercent) => leftPercent >= laneEndPercent);
+    if (laneIndex < 0) {
+      laneIndex = laneEndPercents.length;
+      laneEndPercents.push(0);
+    }
+
+    laneEndPercents[laneIndex] = leftPercent + markerWidthPercent;
+    markerNode.style.top = `${laneIndex * laneHeightPx}px`;
+    markerNode.dataset.measureOnly = "false";
+  });
+
+  markersContainer.style.height = `${Math.max(laneEndPercents.length, 1) * laneHeightPx}px`;
 }
 
 function updateProjectStatusBanner(rootElement: HTMLElement, message: string): void {
