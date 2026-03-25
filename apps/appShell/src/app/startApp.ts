@@ -15,6 +15,7 @@ import {
   createProjectFromSource,
   pickAndLoadProjectFromDisk,
   pickGpSourceFile,
+  saveProjectAsToDisk,
   saveProjectToDisk,
 } from "../features/projectPersistence/projectPersistence";
 import { renderProjectScreen } from "../features/projectScreen/renderProjectScreen";
@@ -34,6 +35,14 @@ interface AppState {
   selectionFired: boolean;
   gpRenderer: GpRendererController | null;
   gpRenderDebugInfo: GpRenderDebugInfo | null;
+  scoreTitle: string | null;
+  totalBars: number | null;
+  tempoBpm: number | null;
+  playbackPositionLabel: string | null;
+  playbackCurrentBar: number | null;
+  playbackIsPlaying: boolean | null;
+  mutedTrackIndexes: number[];
+  soloTrackIndexes: number[];
 }
 
 function updateDebugField(rootElement: HTMLElement, fieldName: string, value: string): void {
@@ -130,6 +139,14 @@ export function startApp(rootElement: HTMLElement): void {
     selectionFired: false,
     gpRenderer: null,
     gpRenderDebugInfo: null,
+    scoreTitle: null,
+    totalBars: null,
+    tempoBpm: null,
+    playbackPositionLabel: null,
+    playbackCurrentBar: null,
+    playbackIsPlaying: null,
+    mutedTrackIndexes: [],
+    soloTrackIndexes: [],
   };
 
   const cleanupRenderer = (): void => {
@@ -176,6 +193,14 @@ export function startApp(rootElement: HTMLElement): void {
           state.selectedTrackIndex = project.viewState.selectedTrackIndex;
           state.requestedTrackIndex = null;
           state.gpRenderDebugInfo = null;
+          state.scoreTitle = null;
+          state.totalBars = null;
+          state.tempoBpm = null;
+          state.playbackPositionLabel = null;
+          state.playbackCurrentBar = null;
+          state.playbackIsPlaying = null;
+          state.mutedTrackIndexes = [];
+          state.soloTrackIndexes = [];
           state.lastClickedTrackIndex = null;
           state.clickCounter = 0;
           state.lastClickTimestampIso = null;
@@ -206,6 +231,14 @@ export function startApp(rootElement: HTMLElement): void {
             state.selectedTrackIndex = project.viewState.selectedTrackIndex;
             state.requestedTrackIndex = null;
             state.gpRenderDebugInfo = null;
+            state.scoreTitle = null;
+            state.totalBars = null;
+            state.tempoBpm = null;
+            state.playbackPositionLabel = null;
+            state.playbackCurrentBar = null;
+            state.playbackIsPlaying = null;
+            state.mutedTrackIndexes = [];
+            state.soloTrackIndexes = [];
             state.lastClickedTrackIndex = null;
             state.clickCounter = 0;
             state.lastClickTimestampIso = null;
@@ -235,6 +268,15 @@ export function startApp(rootElement: HTMLElement): void {
         selectionFired: state.selectionFired,
         confirmedActiveTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
         debugInfo: state.gpRenderDebugInfo,
+        scoreTitle: state.scoreTitle,
+        sourceFileName: state.currentProject.sourceFile.fileName,
+        playbackPositionLabel: state.playbackPositionLabel,
+        currentBar: state.playbackCurrentBar,
+        totalBars: state.totalBars,
+        tempoBpm: state.tempoBpm,
+        playbackIsPlaying: state.playbackIsPlaying,
+        mutedTrackIndexes: state.mutedTrackIndexes,
+        soloTrackIndexes: state.soloTrackIndexes,
         onTrackSelectionChange: (trackIndex: number) => {
           state.requestedTrackIndex = trackIndex;
           state.lastClickedTrackIndex = trackIndex;
@@ -275,11 +317,43 @@ export function startApp(rootElement: HTMLElement): void {
 
           render();
         },
+        onSaveProjectAs: async () => {
+          if (!state.currentProject) {
+            return;
+          }
+
+          const result = await saveProjectAsToDisk(state.currentProject);
+          if (!result.saved) {
+            state.projectStatusMessage = "Save As cancelled.";
+            render();
+            return;
+          }
+
+          state.projectStatusMessage = `Project saved as ${result.fileName}.`;
+          render();
+        },
+        onToggleTrackMute: (trackIndex) => {
+          const isMuted = state.mutedTrackIndexes.includes(trackIndex);
+          state.mutedTrackIndexes = isMuted
+            ? state.mutedTrackIndexes.filter((value) => value !== trackIndex)
+            : [...state.mutedTrackIndexes, trackIndex];
+          render();
+        },
+        onToggleTrackSolo: (trackIndex) => {
+          const isSolo = state.soloTrackIndexes.includes(trackIndex);
+          state.soloTrackIndexes = isSolo
+            ? state.soloTrackIndexes.filter((value) => value !== trackIndex)
+            : [...state.soloTrackIndexes, trackIndex];
+          render();
+        },
         onPlay: () => {
-          alert("Playback engine is not connected yet. This is a placeholder.");
+          state.gpRenderer?.play();
         },
         onPause: () => {
-          alert("Playback engine is not connected yet. This is a placeholder.");
+          state.gpRenderer?.pause();
+        },
+        onStop: () => {
+          state.gpRenderer?.stop();
         },
       });
 
@@ -319,6 +393,18 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "last-click-timestamp", state.lastClickTimestampIso ?? "-");
           updateDebugField(rootElement, "selection-fired", state.selectionFired ? "yes" : "no");
           updateTrackStripActive(rootElement, debugInfo.confirmedActiveTrackIndex);
+        },
+        onScoreRuntimeInfo: (info) => {
+          state.scoreTitle = info.scoreTitle;
+          state.totalBars = info.totalBars;
+          state.tempoBpm = info.tempoBpm;
+          render();
+        },
+        onPlaybackRuntimeInfo: (info) => {
+          state.playbackIsPlaying = info.isPlaying;
+          state.playbackPositionLabel = info.positionLabel;
+          state.playbackCurrentBar = info.currentBar;
+          render();
         },
         onActiveTrackConfirmed: (trackIndex) => {
           state.selectedTrackIndex = trackIndex;

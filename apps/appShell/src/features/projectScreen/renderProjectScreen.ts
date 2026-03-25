@@ -12,11 +12,24 @@ export interface ProjectScreenActions {
   selectionFired: boolean;
   confirmedActiveTrackIndex: number | null;
   debugInfo: GpRenderDebugInfo | null;
+  scoreTitle: string | null;
+  sourceFileName: string;
+  playbackPositionLabel: string | null;
+  currentBar: number | null;
+  totalBars: number | null;
+  tempoBpm: number | null;
+  playbackIsPlaying: boolean | null;
+  mutedTrackIndexes: number[];
+  soloTrackIndexes: number[];
   onTrackSelectionChange: (trackIndex: number) => void;
+  onToggleTrackMute: (trackIndex: number) => void;
+  onToggleTrackSolo: (trackIndex: number) => void;
   onBackToHome: () => void;
   onSaveProject: () => Promise<void>;
+  onSaveProjectAs: () => Promise<void>;
   onPlay: () => void;
   onPause: () => void;
+  onStop: () => void;
 }
 
 function renderDebugValue(value: string | number | null): string {
@@ -40,7 +53,12 @@ function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"] | un
     .join("\n");
 }
 
-function renderTrackStrip(tracks: GpTrackInfo[], confirmedActiveTrackIndex: number | null): string {
+function renderTrackStrip(
+  tracks: GpTrackInfo[],
+  confirmedActiveTrackIndex: number | null,
+  mutedTrackIndexes: number[],
+  soloTrackIndexes: number[],
+): string {
   if (tracks.length === 0) {
     return '<p class="helperText">Loading tracks...</p>';
   }
@@ -57,16 +75,8 @@ function renderTrackStrip(tracks: GpTrackInfo[], confirmedActiveTrackIndex: numb
             <span class="trackStateBadge" data-track-state-badge="true">${isActive ? "Active" : "Idle"}</span>
           </div>
           <div class="trackControlRow" aria-label="Track controls for ${track.name}">
-            <button class="secondaryButton trackControlButton" type="button" data-stop-track-select="true">S</button>
-            <button class="secondaryButton trackControlButton" type="button" data-stop-track-select="true">M</button>
-            <label class="trackControlLabel">
-              Vol
-              <input class="trackControlRange" type="range" min="0" max="100" value="80" data-stop-track-select="true" />
-            </label>
-            <label class="trackControlLabel">
-              Bal
-              <input class="trackControlRange" type="range" min="-50" max="50" value="0" data-stop-track-select="true" />
-            </label>
+            <button class="secondaryButton trackControlButton ${soloTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-solo" data-track-index="${track.index}">S</button>
+            <button class="secondaryButton trackControlButton ${mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}">M</button>
           </div>
         </article>
       `;
@@ -90,11 +100,13 @@ export function renderProjectScreen(
       <header class="appHeader projectHeader">
         <div>
           <h1 class="appTitle">${project.title}</h1>
-          <p class="appSubtitle">Source file: ${project.sourceFile.fileName}</p>
+          <p class="appSubtitle">Source file: ${actions.sourceFileName}</p>
+          <p class="appSubtitle">Score title: ${renderDebugValue(actions.scoreTitle)}</p>
         </div>
         <div class="projectTopActions">
           <button class="secondaryButton" type="button" data-action="back-home">Main Menu</button>
           <button class="primaryButton" type="button" data-action="save-project">Save Project</button>
+          <button class="secondaryButton" type="button" data-action="save-project-as">Save As</button>
         </div>
       </header>
 
@@ -174,24 +186,44 @@ export function renderProjectScreen(
         <div id="gpRenderHost" class="gpRenderHost" aria-label="GP tablature render area"></div>
 
         <div class="trackStrip" aria-label="Track strip" data-action="track-strip">
-          ${renderTrackStrip(actions.tracks, actions.confirmedActiveTrackIndex)}
+          ${renderTrackStrip(
+            actions.tracks,
+            actions.confirmedActiveTrackIndex,
+            actions.mutedTrackIndexes,
+            actions.soloTrackIndexes,
+          )}
         </div>
       </section>
 
       <section class="homeCard">
-        <h2 class="sectionTitle">Playback controls</h2>
+        <h2 class="sectionTitle">Player</h2>
         <div class="homeActions" aria-label="Playback controls">
           <button class="primaryButton" type="button" data-action="play">Play</button>
           <button class="secondaryButton" type="button" data-action="pause">Pause</button>
+          <button class="secondaryButton" type="button" data-action="stop">Stop</button>
         </div>
-        <p class="helperText">Playback is currently a placeholder in MVP 0.1.</p>
+        <dl class="playerInfoGrid">
+          <dt>Playback state</dt>
+          <dd>${actions.playbackIsPlaying === null ? "-" : actions.playbackIsPlaying ? "playing" : "paused/stopped"}</dd>
+          <dt>Playback position</dt>
+          <dd>${renderDebugValue(actions.playbackPositionLabel)}</dd>
+          <dt>Current bar</dt>
+          <dd>${renderDebugValue(actions.currentBar)}</dd>
+          <dt>Total bars</dt>
+          <dd>${renderDebugValue(actions.totalBars)}</dd>
+          <dt>Tempo</dt>
+          <dd>${actions.tempoBpm === null ? "-" : `${actions.tempoBpm} BPM`}</dd>
+        </dl>
+        <p class="helperText">Mute/Solo are UI state only in this step.</p>
       </section>
     </main>
   `;
 
   const saveProjectButton = container.querySelector<HTMLButtonElement>('[data-action="save-project"]');
+  const saveProjectAsButton = container.querySelector<HTMLButtonElement>('[data-action="save-project-as"]');
   const playButton = container.querySelector<HTMLButtonElement>('[data-action="play"]');
   const pauseButton = container.querySelector<HTMLButtonElement>('[data-action="pause"]');
+  const stopButton = container.querySelector<HTMLButtonElement>('[data-action="stop"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
   const trackStrip = container.querySelector<HTMLElement>('[data-action="track-strip"]');
 
@@ -215,6 +247,25 @@ export function renderProjectScreen(
   };
 
   trackStrip?.addEventListener("click", (event) => {
+    const targetElement = event.target instanceof Element ? event.target : null;
+    const trackActionButton = targetElement?.closest<HTMLElement>("[data-track-action]");
+    if (trackActionButton) {
+      const trackIndex = Number(trackActionButton.dataset.trackIndex);
+      if (Number.isNaN(trackIndex)) {
+        return;
+      }
+
+      if (trackActionButton.dataset.trackAction === "toggle-mute") {
+        actions.onToggleTrackMute(trackIndex);
+        return;
+      }
+
+      if (trackActionButton.dataset.trackAction === "toggle-solo") {
+        actions.onToggleTrackSolo(trackIndex);
+        return;
+      }
+    }
+
     handleTrackSelection(event.target);
   });
 
@@ -233,7 +284,9 @@ export function renderProjectScreen(
   });
 
   saveProjectButton?.addEventListener("click", actions.onSaveProject);
+  saveProjectAsButton?.addEventListener("click", actions.onSaveProjectAs);
   playButton?.addEventListener("click", actions.onPlay);
   pauseButton?.addEventListener("click", actions.onPause);
+  stopButton?.addEventListener("click", actions.onStop);
   backHomeButton?.addEventListener("click", actions.onBackToHome);
 }

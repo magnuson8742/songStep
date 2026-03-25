@@ -317,6 +317,11 @@ select {
   padding: 6px 10px;
 }
 
+.trackControlButton.isTrackToggleOn {
+  border-color: rgba(120, 183, 255, 0.9);
+  background: rgba(87, 143, 221, 0.35);
+}
+
 .trackControlLabel {
   display: flex;
   align-items: center;
@@ -327,6 +332,23 @@ select {
 
 .trackControlRange {
   width: 100%;
+}
+
+.playerInfoGrid {
+  margin: 12px 0 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+
+.playerInfoGrid dt {
+  color: #9fb0c7;
+}
+
+.playerInfoGrid dd {
+  margin: 0;
+  font-weight: 600;
 }
 
 .trackStripItem {

@@ -22,6 +22,7 @@ interface AlphaTabApi {
 }
 
 interface AlphaTabScore {
+  title?: string;
   tracks: AlphaTabTrack[];
   masterBars?: unknown[];
   stylesheet?: {
@@ -118,15 +119,32 @@ export interface GpRenderDebugInfo {
   renderedTracks: GpTrackRuntimeInfo[];
 }
 
+export interface GpScoreRuntimeInfo {
+  scoreTitle: string | null;
+  totalBars: number | null;
+  tempoBpm: number | null;
+}
+
+export interface GpPlaybackRuntimeInfo {
+  isPlaying: boolean | null;
+  positionLabel: string | null;
+  currentBar: number | null;
+}
+
 export interface GpRendererHooks {
   onTracksLoaded: (tracks: GpTrackInfo[]) => void;
   onDebugInfo: (debugInfo: GpRenderDebugInfo) => void;
   onActiveTrackConfirmed: (trackIndex: number) => void;
+  onScoreRuntimeInfo: (info: GpScoreRuntimeInfo) => void;
+  onPlaybackRuntimeInfo: (info: GpPlaybackRuntimeInfo) => void;
   onRenderError: (message: string) => void;
 }
 
 export interface GpRendererController {
   selectTrack: (trackIndex: number) => void;
+  play: () => void;
+  pause: () => void;
+  stop: () => void;
   destroy: () => void;
 }
 
@@ -231,11 +249,6 @@ function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StavePr
     },
     display: {
       staveProfile,
-    },
-    notation: {
-      elements: {
-        trackNames: true,
-      },
     },
     player: {
       enablePlayer: false,
@@ -342,6 +355,16 @@ export async function createGpRenderer(
   let isPercussionTrack = false;
   let effectiveStaveProfile: StaveProfile = "Tab";
   let lastKnownMasterBarCount = 0;
+  let scoreRuntimeInfo: GpScoreRuntimeInfo = {
+    scoreTitle: null,
+    totalBars: null,
+    tempoBpm: null,
+  };
+  let playbackRuntimeInfo: GpPlaybackRuntimeInfo = {
+    isPlaying: null,
+    positionLabel: null,
+    currentBar: null,
+  };
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -392,6 +415,19 @@ export async function createGpRenderer(
   const destroyActiveRenderer = (): void => {
     activeApi?.destroy?.();
     activeApi = null;
+  };
+
+  const emitScoreRuntimeInfo = (): void => {
+    hooks.onScoreRuntimeInfo(scoreRuntimeInfo);
+  };
+
+  const emitPlaybackRuntimeInfo = (): void => {
+    hooks.onPlaybackRuntimeInfo(playbackRuntimeInfo);
+  };
+
+  const getApiPlayer = (): { play?: () => void; pause?: () => void; stop?: () => void } | null => {
+    const candidate = activeApi as unknown as { player?: { play?: () => void; pause?: () => void; stop?: () => void } };
+    return candidate.player ?? null;
   };
 
   const clearRenderTimeout = (): void => {
@@ -545,8 +581,15 @@ export async function createGpRenderer(
       applyTrackNamePolicies(score);
       lastLoadedScoreTracks = score.tracks ?? [];
       lastKnownMasterBarCount = score.masterBars?.length ?? lastKnownMasterBarCount;
+      scoreRuntimeInfo = {
+        scoreTitle: score.title?.trim() || null,
+        totalBars: score.masterBars?.length ?? null,
+        tempoBpm: null,
+      };
       lastRendererErrorStage = "load";
       hooks.onTracksLoaded(toTrackInfoList(lastLoadedScoreTracks));
+      emitScoreRuntimeInfo();
+      emitPlaybackRuntimeInfo();
       emitDebugInfo();
     });
 
@@ -647,6 +690,50 @@ export async function createGpRenderer(
         const message = error instanceof Error ? error.message : "Could not switch GP track.";
         hooks.onRenderError(message);
       });
+    },
+    play: () => {
+      const player = getApiPlayer();
+      if (!player?.play) {
+        hooks.onRenderError("Playback is not available in the current renderer mode.");
+        return;
+      }
+
+      player.play();
+      playbackRuntimeInfo = {
+        ...playbackRuntimeInfo,
+        isPlaying: true,
+      };
+      emitPlaybackRuntimeInfo();
+    },
+    pause: () => {
+      const player = getApiPlayer();
+      if (!player?.pause) {
+        hooks.onRenderError("Playback is not available in the current renderer mode.");
+        return;
+      }
+
+      player.pause();
+      playbackRuntimeInfo = {
+        ...playbackRuntimeInfo,
+        isPlaying: false,
+      };
+      emitPlaybackRuntimeInfo();
+    },
+    stop: () => {
+      const player = getApiPlayer();
+      if (!player?.stop) {
+        hooks.onRenderError("Playback is not available in the current renderer mode.");
+        return;
+      }
+
+      player.stop();
+      playbackRuntimeInfo = {
+        ...playbackRuntimeInfo,
+        isPlaying: false,
+        positionLabel: null,
+        currentBar: null,
+      };
+      emitPlaybackRuntimeInfo();
     },
     destroy: () => {
       activeSessionToken += 1;
