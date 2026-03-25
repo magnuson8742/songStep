@@ -207,6 +207,8 @@ export function renderProjectScreen(
           <dd data-player-field="playback-state">${actions.playbackIsPlaying === null ? "-" : actions.playbackIsPlaying ? "playing" : "paused/stopped"}</dd>
           <dt>Playback position</dt>
           <dd data-player-field="playback-position">${renderDebugValue(actions.playbackPositionLabel)}</dd>
+          <dt>Active track</dt>
+          <dd data-player-field="active-track-name">${renderDebugValue(actions.confirmedActiveTrackIndex === null ? null : actions.tracks.find((track) => track.index === actions.confirmedActiveTrackIndex)?.name ?? null)}</dd>
           <dt>Current bar</dt>
           <dd data-player-field="current-bar">${renderDebugValue(actions.currentBar)}</dd>
           <dt>Total bars</dt>

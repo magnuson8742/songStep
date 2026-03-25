@@ -23,8 +23,9 @@ interface AlphaTabApi {
 
 interface AlphaTabScore {
   title?: string;
+  tempo?: number;
   tracks: AlphaTabTrack[];
-  masterBars?: unknown[];
+  masterBars?: AlphaTabMasterBar[];
   stylesheet?: {
     singleTrackTrackNamePolicy?: string;
     firstSystemTrackNameMode?: string;
@@ -46,6 +47,13 @@ interface AlphaTabStaff {
 
 interface AlphaTabBar {
   voices?: AlphaTabVoice[];
+}
+
+interface AlphaTabMasterBar {
+  tempo?: number;
+  tempoAutomation?: {
+    value?: number;
+  };
 }
 
 interface AlphaTabVoice {
@@ -238,6 +246,29 @@ function toTrackRuntimeInfoList(tracks: AlphaTabTrack[], score: AlphaTabScore | 
       firstNonEmptyBarIndex: signature.firstNonEmptyBarIndex,
     };
   });
+}
+
+function toSafeTempoBpm(rawValue: unknown): number | null {
+  if (typeof rawValue !== "number" || !Number.isFinite(rawValue) || rawValue <= 0) {
+    return null;
+  }
+
+  return Math.round(rawValue);
+}
+
+function extractTempoBpm(score: AlphaTabScore): number | null {
+  const fromScore = toSafeTempoBpm(score.tempo);
+  if (fromScore !== null) {
+    return fromScore;
+  }
+
+  const firstMasterBar = score.masterBars?.[0];
+  const fromMasterBarTempo = toSafeTempoBpm(firstMasterBar?.tempo);
+  if (fromMasterBarTempo !== null) {
+    return fromMasterBarTempo;
+  }
+
+  return toSafeTempoBpm(firstMasterBar?.tempoAutomation?.value);
 }
 
 function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StaveProfile): alphaTab.json.SettingsJson {
@@ -579,7 +610,7 @@ export async function createGpRenderer(
       scoreRuntimeInfo = {
         scoreTitle: score.title?.trim() || null,
         totalBars: score.masterBars?.length ?? null,
-        tempoBpm: null,
+        tempoBpm: extractTempoBpm(score),
       };
       lastRendererErrorStage = "load";
       hooks.onTracksLoaded(toTrackInfoList(lastLoadedScoreTracks));

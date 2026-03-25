@@ -41,6 +41,7 @@ interface AppState {
   playbackPositionLabel: string | null;
   playbackCurrentBar: number | null;
   playbackIsPlaying: boolean | null;
+  activeTrackName: string | null;
   mutedTrackIndexes: number[];
   soloTrackIndexes: number[];
 }
@@ -131,6 +132,7 @@ function updatePlayerRuntimeFields(state: AppState, rootElement: HTMLElement): v
   };
 
   setPlayerField("score-title", renderPlayerFieldValue(state.scoreTitle));
+  setPlayerField("active-track-name", renderPlayerFieldValue(state.activeTrackName));
   setPlayerField(
     "playback-state",
     state.playbackIsPlaying === null ? "-" : state.playbackIsPlaying ? "playing" : "paused/stopped",
@@ -210,6 +212,7 @@ export function startApp(rootElement: HTMLElement): void {
     playbackPositionLabel: null,
     playbackCurrentBar: null,
     playbackIsPlaying: null,
+    activeTrackName: null,
     mutedTrackIndexes: [],
     soloTrackIndexes: [],
   };
@@ -264,6 +267,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackPositionLabel = null;
           state.playbackCurrentBar = null;
           state.playbackIsPlaying = null;
+          state.activeTrackName = null;
           state.mutedTrackIndexes = [];
           state.soloTrackIndexes = [];
           state.lastClickedTrackIndex = null;
@@ -302,6 +306,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackPositionLabel = null;
             state.playbackCurrentBar = null;
             state.playbackIsPlaying = null;
+            state.activeTrackName = null;
             state.mutedTrackIndexes = [];
             state.soloTrackIndexes = [];
             state.lastClickedTrackIndex = null;
@@ -460,7 +465,9 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onDebugInfo: (debugInfo) => {
           state.gpRenderDebugInfo = debugInfo;
+          state.activeTrackName = debugInfo.confirmedActiveTrackName ?? null;
           updateProjectDebugInfoPanel(rootElement, debugInfo);
+          updatePlayerRuntimeFields(state, rootElement);
           updateDebugField(rootElement, "requested-track-index", String(state.requestedTrackIndex ?? "-"));
           updateDebugField(rootElement, "last-clicked-track-index", String(state.lastClickedTrackIndex ?? "-"));
           updateDebugField(rootElement, "click-counter", String(state.clickCounter));
@@ -487,6 +494,7 @@ export function startApp(rootElement: HTMLElement): void {
           if (state.currentProject) {
             state.currentProject.viewState.selectedTrackIndex = trackIndex;
           }
+          state.activeTrackName = state.gpTracks.find((track) => track.index === trackIndex)?.name ?? state.activeTrackName;
 
           updateTrackStripActive(rootElement, trackIndex);
           updateDebugField(rootElement, "selected-track-index", String(trackIndex));
