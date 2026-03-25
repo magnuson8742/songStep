@@ -403,6 +403,8 @@ function updateRenderHostDomDiagnostics(state: AppState, rootElement: HTMLElemen
     `rect=${renderHost.querySelectorAll("rect").length}`,
     `line=${renderHost.querySelectorAll("line").length}`,
     `text=${renderHost.querySelectorAll("text").length}`,
+    `div=${renderHost.querySelectorAll("div").length}`,
+    `span=${renderHost.querySelectorAll("span").length}`,
     `class=${renderHost.querySelectorAll("[class]").length}`,
     `id=${renderHost.querySelectorAll("[id]").length}`,
   ].join(", ");
@@ -419,17 +421,34 @@ function updateRenderHostDomDiagnostics(state: AppState, rootElement: HTMLElemen
 
 function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): void {
   if (!ENABLE_CUSTOM_PLAYHEAD) {
+    const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+    if (renderHost) {
+      updateRenderHostDomDiagnostics(state, rootElement, renderHost);
+      const diagnosticCandidates = [
+        { source: "candidates:data-bar-index", count: renderHost.querySelectorAll("[data-bar-index]").length },
+        { source: "candidates:g[class*=bar]", count: renderHost.querySelectorAll("g[class*='bar']").length },
+        { source: "candidates:text[class*=bar]", count: renderHost.querySelectorAll("text[class*='bar']").length },
+        { source: "candidates:[class*=measure]", count: renderHost.querySelectorAll("[class*='measure']").length },
+        { source: "candidates:[id*=measure]", count: renderHost.querySelectorAll("[id*='measure']").length },
+      ] as const;
+      state.playbackAnchorStrategyAttempts = diagnosticCandidates
+        .map((candidate) => `${candidate.source} => ${candidate.count}`)
+        .join(" | ");
+      updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+    } else {
+      state.playbackAnchorStrategyAttempts = "diagnostics:no-render-host";
+      updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+      updateDebugField(rootElement, "render-host-has-svg", "-");
+      updateDebugField(rootElement, "render-host-child-tags", "-");
+      updateDebugField(rootElement, "render-host-tag-class", "-");
+      updateDebugField(rootElement, "render-host-element-counts", "-");
+    }
+
     state.playbackBarAnchors = [];
     state.playbackBarAnchorCount = 0;
-    state.playbackBarAnchorSource = "disabled";
-    state.playbackAnchorStrategyAttempts = "disabled";
+    state.playbackBarAnchorSource = "diagnostics-only";
     updateDebugField(rootElement, "playback-bar-anchor-count", "0");
-    updateDebugField(rootElement, "playback-bar-anchor-source", "disabled");
-    updateDebugField(rootElement, "playback-anchor-strategy-attempts", "disabled");
-    updateDebugField(rootElement, "render-host-has-svg", "-");
-    updateDebugField(rootElement, "render-host-child-tags", "-");
-    updateDebugField(rootElement, "render-host-tag-class", "-");
-    updateDebugField(rootElement, "render-host-element-counts", "-");
+    updateDebugField(rootElement, "playback-bar-anchor-source", "diagnostics-only");
     return;
   }
 
@@ -1158,7 +1177,6 @@ export function startApp(rootElement: HTMLElement): void {
           });
           updateArrangementOverview(state, rootElement);
           updateTrackControlVisualState(state, rootElement);
-          rebuildPlaybackBarAnchors(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
         },
         onPlaybackRuntimeInfo: (info) => {
