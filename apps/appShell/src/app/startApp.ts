@@ -30,6 +30,8 @@ interface PlaybackBarAnchor {
   height: number;
 }
 
+const ENABLE_CUSTOM_PLAYHEAD = false;
+
 interface AppState {
   currentView: AppView;
   currentProject: SongStepProject | null;
@@ -129,10 +131,10 @@ function updateProjectDebugInfoPanel(rootElement: HTMLElement, debugInfo: GpRend
   updateDebugField(rootElement, "current-bar-source-path", "-");
   updateDebugField(rootElement, "current-tick", "-");
   updateDebugField(rootElement, "playback-follow-target-found", "no");
-  updateDebugField(rootElement, "playback-follow-source", "-");
+  updateDebugField(rootElement, "playback-follow-source", ENABLE_CUSTOM_PLAYHEAD ? "-" : "disabled");
   updateDebugField(rootElement, "playback-bar-anchor-count", "0");
-  updateDebugField(rootElement, "playback-bar-anchor-source", "-");
-  updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
+  updateDebugField(rootElement, "playback-bar-anchor-source", ENABLE_CUSTOM_PLAYHEAD ? "-" : "disabled");
+  updateDebugField(rootElement, "playback-anchor-strategy-attempts", ENABLE_CUSTOM_PLAYHEAD ? "-" : "disabled");
   updateDebugField(rootElement, "render-host-has-svg", "no");
   updateDebugField(rootElement, "render-host-child-tags", "-");
   updateDebugField(rootElement, "render-host-tag-class", "-");
@@ -416,6 +418,21 @@ function updateRenderHostDomDiagnostics(state: AppState, rootElement: HTMLElemen
 }
 
 function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): void {
+  if (!ENABLE_CUSTOM_PLAYHEAD) {
+    state.playbackBarAnchors = [];
+    state.playbackBarAnchorCount = 0;
+    state.playbackBarAnchorSource = "disabled";
+    state.playbackAnchorStrategyAttempts = "disabled";
+    updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+    updateDebugField(rootElement, "playback-bar-anchor-source", "disabled");
+    updateDebugField(rootElement, "playback-anchor-strategy-attempts", "disabled");
+    updateDebugField(rootElement, "render-host-has-svg", "-");
+    updateDebugField(rootElement, "render-host-child-tags", "-");
+    updateDebugField(rootElement, "render-host-tag-class", "-");
+    updateDebugField(rootElement, "render-host-element-counts", "-");
+    return;
+  }
+
   const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
   if (!renderHost) {
     state.playbackBarAnchors = [];
@@ -538,6 +555,11 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
 }
 
 function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLElement): void {
+  if (!ENABLE_CUSTOM_PLAYHEAD) {
+    hidePlaybackPlayhead(rootElement, state);
+    return;
+  }
+
   if (state.playbackCurrentBar === null || state.playbackCurrentBar <= 0) {
     hidePlaybackPlayhead(rootElement, state);
     return;
@@ -609,6 +631,13 @@ function resolvePlaybackFollowTarget(renderHost: HTMLElement): { targetElement: 
 }
 
 function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElement): void {
+  if (!ENABLE_CUSTOM_PLAYHEAD) {
+    state.playbackFollowTargetFound = false;
+    state.playbackFollowSource = "disabled";
+    updatePlaybackFollowDiagnostics(rootElement, false, "disabled");
+    return;
+  }
+
   const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
   if (!renderHost) {
     return;
