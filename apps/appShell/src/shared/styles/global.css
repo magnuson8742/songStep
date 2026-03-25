@@ -193,6 +193,7 @@ select {
 }
 
 .gpRenderHost {
+  position: relative;
   min-height: 420px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
@@ -200,4 +201,327 @@ select {
   color: #111;
   overflow: auto;
   padding: 8px;
+}
+
+.playbackPlayhead {
+  position: absolute;
+  width: 2px;
+  min-height: 28px;
+  background: linear-gradient(180deg, rgba(255, 116, 116, 0.96) 0%, rgba(255, 182, 99, 0.96) 100%);
+  box-shadow: 0 0 8px rgba(255, 107, 107, 0.75);
+  pointer-events: none;
+  z-index: 5;
+  display: none;
+}
+
+.gpRenderFallbackMessage {
+  min-height: 380px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 20px;
+  border: 1px dashed rgba(153, 50, 50, 0.45);
+  border-radius: 8px;
+  color: #6e1e1e;
+  background: rgba(255, 241, 241, 0.85);
+  font-weight: 600;
+}
+
+.trackDebugCard {
+  margin-bottom: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(17, 24, 33, 0.55);
+  padding: 10px 12px;
+}
+
+.trackDebugTitle {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #d5e2f5;
+}
+
+.trackDebugGrid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+
+.trackDebugGrid dt {
+  color: #9fb0c7;
+}
+
+.trackDebugGrid dd {
+  margin: 0;
+  color: #f3f5f7;
+  font-weight: 600;
+}
+
+.trackDebugLists {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.trackDebugListBlock {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(9, 14, 20, 0.5);
+  padding: 8px;
+}
+
+.trackDebugListTitle {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #b9c8dd;
+}
+
+.trackDebugPre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  color: #f0f4fa;
+}
+
+.trackStrip {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.trackStripItem {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(10, 14, 20, 0.65);
+}
+
+.trackStripItem.isActiveTrack {
+  border-color: rgba(120, 176, 255, 0.8);
+  box-shadow: 0 0 0 1px rgba(120, 176, 255, 0.3) inset;
+}
+
+.trackSelectButton {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: #e6eef9;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 0 8px;
+}
+
+.trackControlRow {
+  display: grid;
+  grid-template-columns: auto auto 1fr 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.trackControlButton {
+  min-width: 36px;
+  padding: 6px 10px;
+}
+
+.trackControlButton.isTrackToggleOn {
+  border-color: rgba(120, 183, 255, 0.9);
+  background: rgba(87, 143, 221, 0.35);
+}
+
+.trackControlLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #c3d1e6;
+  font-size: 12px;
+}
+
+.trackControlRange {
+  width: 100%;
+}
+
+.trackControlValue {
+  min-width: 24px;
+  text-align: right;
+  font-size: 11px;
+  color: #d5e0ef;
+}
+
+.trackBalanceControl {
+  justify-content: space-between;
+}
+
+.trackBalanceKnob {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  appearance: none;
+  background: radial-gradient(circle, rgba(24, 35, 51, 0.95) 40%, rgba(17, 24, 36, 0.92) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.arrangementOverview {
+  --arrangement-track-label-width: 120px;
+  --arrangement-track-gap: 8px;
+  --arrangement-bar-count: 1;
+  --arrangement-grid-width: 19px;
+  margin-top: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(9, 14, 20, 0.5);
+  padding: 10px;
+  overflow-x: auto;
+}
+
+.arrangementBarHeader {
+  position: relative;
+  margin-left: calc(var(--arrangement-track-label-width) + var(--arrangement-track-gap));
+  width: var(--arrangement-grid-width);
+  min-height: 16px;
+  margin-bottom: 6px;
+}
+
+.arrangementBarHeaderLabel {
+  position: absolute;
+  top: 0;
+  font-size: 10px;
+  line-height: 1.3;
+  color: rgba(183, 200, 223, 0.9);
+  white-space: nowrap;
+}
+
+.arrangementRows {
+  display: grid;
+  gap: 6px;
+}
+
+.arrangementRow {
+  display: grid;
+  grid-template-columns: var(--arrangement-track-label-width) 1fr;
+  gap: var(--arrangement-track-gap);
+  align-items: center;
+}
+
+.arrangementTrackLabel {
+  font-size: 12px;
+  color: #ced9ea;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arrangementBarRow {
+  display: grid;
+  width: var(--arrangement-grid-width);
+  grid-template-columns: repeat(var(--arrangement-bar-count), minmax(16px, 1fr));
+  gap: 3px;
+}
+
+.arrangementBarCell {
+  height: 20px;
+  border-radius: 2px;
+}
+
+.arrangementBarCell.isBarActive {
+  background: #6ea6ff;
+}
+
+.arrangementBarCell.isBarEmpty {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.arrangementBarCell.isPlaybackCurrentBar {
+  box-shadow: inset 0 0 0 2px rgba(255, 213, 102, 0.95);
+  filter: brightness(1.12);
+}
+
+.arrangementMarkers {
+  position: relative;
+  margin-left: calc(var(--arrangement-track-label-width) + var(--arrangement-track-gap));
+  width: var(--arrangement-grid-width);
+  margin-top: 8px;
+  min-height: 16px;
+}
+
+.arrangementMarker {
+  position: absolute;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #b7c8df;
+  white-space: nowrap;
+}
+
+.playerInfoGrid {
+  margin: 12px 0 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+
+.playerInfoGrid dt {
+  color: #9fb0c7;
+}
+
+.playerInfoGrid dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.trackStripItem {
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.trackStripItem:hover {
+  border-color: rgba(132, 182, 255, 0.55);
+}
+
+
+.trackStripItem.isActiveTrack {
+  border-color: rgba(110, 183, 255, 1);
+  background: linear-gradient(180deg, rgba(31, 57, 93, 0.86) 0%, rgba(19, 34, 56, 0.82) 100%);
+  box-shadow:
+    0 0 0 1px rgba(110, 183, 255, 0.45) inset,
+    0 0 14px rgba(93, 162, 255, 0.28);
+}
+
+.trackTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.trackTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #e4edf9;
+}
+
+.trackStripItem.isActiveTrack .trackTitle {
+  color: #f3f9ff;
+}
+
+.trackStateBadge {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #d8e5f7;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.trackStripItem.isActiveTrack .trackStateBadge {
+  border-color: rgba(120, 183, 255, 0.8);
+  background: rgba(87, 143, 221, 0.3);
 }
