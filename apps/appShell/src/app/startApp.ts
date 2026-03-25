@@ -432,6 +432,36 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       source: "dom:[data-bar-index]",
       resolveAnchors: () => Array.from(renderHost.querySelectorAll<HTMLElement>("[data-bar-index]")),
     },
+    {
+      source: "geometry:svg-line-vertical",
+      resolveAnchors: () =>
+        Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line")).filter((line) => {
+          const x1 = Number(line.getAttribute("x1"));
+          const y1 = Number(line.getAttribute("y1"));
+          const x2 = Number(line.getAttribute("x2"));
+          const y2 = Number(line.getAttribute("y2"));
+          if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+            return false;
+          }
+
+          const verticalDelta = Math.abs(y2 - y1);
+          const horizontalDelta = Math.abs(x2 - x1);
+          return verticalDelta >= 18 && horizontalDelta <= 1.2;
+        }),
+    },
+    {
+      source: "geometry:svg-rect-vertical",
+      resolveAnchors: () =>
+        Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect")).filter((rect) => {
+          const width = Number(rect.getAttribute("width"));
+          const height = Number(rect.getAttribute("height"));
+          if (!Number.isFinite(width) || !Number.isFinite(height)) {
+            return false;
+          }
+
+          return width >= 0.6 && width <= 6 && height >= 18;
+        }),
+    },
   ] as const;
   const renderHostRect = renderHost.getBoundingClientRect();
   const totalBars = state.totalBars ?? 0;
