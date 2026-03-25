@@ -219,6 +219,7 @@ export function renderProjectScreen(
         <p class="helperText">Read-only map: colored bars have note content, gray bars are empty.</p>
         <div class="arrangementOverview" data-arrangement-overview="true">
           <p class="helperText" data-arrangement-empty>${actions.scoreOverview ? "" : "Overview loads with score runtime data."}</p>
+          <div class="arrangementBarHeader" data-arrangement-bar-header></div>
           <div class="arrangementRows" data-arrangement-rows></div>
           <div class="arrangementMarkers" data-arrangement-markers></div>
         </div>
@@ -334,6 +335,32 @@ export function renderProjectScreen(
       }
 
       actions.onTrackBalanceChange(trackIndex, Number(targetElement.value));
+    }
+  });
+
+  trackStrip?.addEventListener("dblclick", (event) => {
+    const targetElement = event.target instanceof HTMLInputElement ? event.target : null;
+    if (!targetElement) {
+      return;
+    }
+
+    if (targetElement.dataset.trackAction === "set-volume") {
+      const trackIndex = Number(targetElement.dataset.trackVolumeIndex);
+      if (Number.isNaN(trackIndex)) {
+        return;
+      }
+
+      actions.onTrackVolumeChange(trackIndex, 80);
+      return;
+    }
+
+    if (targetElement.dataset.trackAction === "set-balance") {
+      const trackIndex = Number(targetElement.dataset.trackBalanceIndex);
+      if (Number.isNaN(trackIndex)) {
+        return;
+      }
+
+      actions.onTrackBalanceChange(trackIndex, 0);
     }
   });
 

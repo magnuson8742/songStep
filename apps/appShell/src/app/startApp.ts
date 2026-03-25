@@ -22,6 +22,8 @@ import {
 import { renderProjectScreen } from "../features/projectScreen/renderProjectScreen";
 
 type AppView = "home" | "newProject" | "openProject" | "project";
+const TRACK_VOLUME_DEFAULT = 80;
+const TRACK_BALANCE_DEFAULT = 0;
 
 interface AppState {
   currentView: AppView;
@@ -174,7 +176,7 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
       return;
     }
 
-    const value = state.trackVolumeByIndex[trackIndex] ?? 80;
+    const value = state.trackVolumeByIndex[trackIndex] ?? TRACK_VOLUME_DEFAULT;
     input.value = String(value);
     const valueLabel = rootElement.querySelector<HTMLElement>(`[data-track-volume-value="${trackIndex}"]`);
     if (valueLabel) {
@@ -189,7 +191,7 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
       return;
     }
 
-    const value = state.trackBalanceByIndex[trackIndex] ?? 0;
+    const value = state.trackBalanceByIndex[trackIndex] ?? TRACK_BALANCE_DEFAULT;
     input.value = String(value);
     const valueLabel = rootElement.querySelector<HTMLElement>(`[data-track-balance-value="${trackIndex}"]`);
     if (valueLabel) {
@@ -201,9 +203,10 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
 function updateArrangementOverview(state: AppState, rootElement: HTMLElement): void {
   const rowsContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-rows]");
   const markersContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-markers]");
+  const barHeaderContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-bar-header]");
   const emptyState = rootElement.querySelector<HTMLElement>("[data-arrangement-empty]");
 
-  if (!rowsContainer || !markersContainer || !emptyState) {
+  if (!rowsContainer || !markersContainer || !emptyState || !barHeaderContainer) {
     return;
   }
 
@@ -211,6 +214,7 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   if (!overview || overview.trackRows.length === 0 || overview.totalBars <= 0) {
     rowsContainer.innerHTML = "";
     markersContainer.innerHTML = "";
+    barHeaderContainer.innerHTML = "";
     emptyState.style.display = "block";
     return;
   }
@@ -234,6 +238,19 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
     .map((marker) => {
       const positionPercent = overview.totalBars > 1 ? (marker.barIndex / (overview.totalBars - 1)) * 100 : 0;
       return `<span class="arrangementMarker" style="left:${positionPercent}%">${marker.label}</span>`;
+    })
+    .join("");
+
+  const barLabelIndices = new Set<number>([0, overview.totalBars - 1]);
+  for (let barIndex = 3; barIndex < overview.totalBars; barIndex += 4) {
+    barLabelIndices.add(barIndex);
+  }
+
+  barHeaderContainer.innerHTML = Array.from(barLabelIndices)
+    .sort((left, right) => left - right)
+    .map((barIndex) => {
+      const positionPercent = overview.totalBars > 1 ? (barIndex / (overview.totalBars - 1)) * 100 : 0;
+      return `<span class="arrangementBarHeaderLabel" style="left:${positionPercent}%">${barIndex + 1}</span>`;
     })
     .join("");
 }
@@ -586,10 +603,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.scoreOverview = info;
           info.trackRows.forEach((row) => {
             if (state.trackVolumeByIndex[row.trackIndex] === undefined) {
-              state.trackVolumeByIndex[row.trackIndex] = 80;
+              state.trackVolumeByIndex[row.trackIndex] = TRACK_VOLUME_DEFAULT;
             }
             if (state.trackBalanceByIndex[row.trackIndex] === undefined) {
-              state.trackBalanceByIndex[row.trackIndex] = 0;
+              state.trackBalanceByIndex[row.trackIndex] = TRACK_BALANCE_DEFAULT;
             }
           });
           updateArrangementOverview(state, rootElement);

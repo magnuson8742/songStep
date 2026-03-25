@@ -368,6 +368,20 @@ select {
   gap: 6px;
 }
 
+.arrangementBarHeader {
+  position: relative;
+  min-height: 14px;
+  margin-bottom: 6px;
+}
+
+.arrangementBarHeaderLabel {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: #9fb2cd;
+  white-space: nowrap;
+}
+
 .arrangementRow {
   display: grid;
   grid-template-columns: 120px 1fr;
@@ -386,12 +400,12 @@ select {
 .arrangementBarRow {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(8px, 1fr);
-  gap: 2px;
+  grid-auto-columns: minmax(12px, 1fr);
+  gap: 3px;
 }
 
 .arrangementBarCell {
-  height: 10px;
+  height: 14px;
   border-radius: 2px;
 }
 
