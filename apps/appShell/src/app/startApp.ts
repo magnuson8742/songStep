@@ -199,16 +199,18 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
 }
 
 function updateArrangementOverview(state: AppState, rootElement: HTMLElement): void {
+  const barHeaderContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-bar-header]");
   const rowsContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-rows]");
   const markersContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-markers]");
   const emptyState = rootElement.querySelector<HTMLElement>("[data-arrangement-empty]");
 
-  if (!rowsContainer || !markersContainer || !emptyState) {
+  if (!barHeaderContainer || !rowsContainer || !markersContainer || !emptyState) {
     return;
   }
 
   const overview = state.scoreOverview;
   if (!overview || overview.trackRows.length === 0 || overview.totalBars <= 0) {
+    barHeaderContainer.innerHTML = "";
     rowsContainer.innerHTML = "";
     markersContainer.innerHTML = "";
     markersContainer.style.height = "16px";
@@ -217,6 +219,18 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   }
 
   emptyState.style.display = "none";
+  const barLabels = new Set<number>([0, overview.totalBars - 1]);
+  for (let barIndex = 3; barIndex < overview.totalBars; barIndex += 4) {
+    barLabels.add(barIndex);
+  }
+  barHeaderContainer.innerHTML = Array.from(barLabels)
+    .sort((leftBar, rightBar) => leftBar - rightBar)
+    .map((barIndex) => {
+      const positionPercent = overview.totalBars > 1 ? (barIndex / (overview.totalBars - 1)) * 100 : 0;
+      return `<span class="arrangementBarHeaderLabel" style="left:${positionPercent}%">${barIndex + 1}</span>`;
+    })
+    .join("");
+
   rowsContainer.innerHTML = overview.trackRows
     .map((row) => {
       const barCells = row.barActivity
