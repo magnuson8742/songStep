@@ -567,14 +567,40 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       }
     }
 
-    const rowBoundCandidates = Array.from(renderHost.querySelectorAll<SVGGraphicsElement>("svg line, svg rect, svg text, svg path"))
-      .map((node) => node.getBoundingClientRect())
-      .filter((rect) => rect.width >= 2 || rect.height >= 6)
-      .map((rect) => ({
-        top: rect.top - renderHostRect.top + renderHost.scrollTop,
-        bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
-        right: rect.right - renderHostRect.left + renderHost.scrollLeft,
-      }));
+    const horizontalLineCandidates = Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line"))
+      .filter((line) => {
+        const x1 = Number(line.getAttribute("x1"));
+        const y1 = Number(line.getAttribute("y1"));
+        const x2 = Number(line.getAttribute("x2"));
+        const y2 = Number(line.getAttribute("y2"));
+        if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+          return false;
+        }
+
+        const horizontalSpan = Math.abs(x2 - x1);
+        const verticalDelta = Math.abs(y2 - y1);
+        return horizontalSpan >= 36 && verticalDelta <= 1.2;
+      })
+      .map((line) => line.getBoundingClientRect())
+      .filter((rect) => rect.width >= 24);
+
+    const horizontalRectCandidates = Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect"))
+      .filter((rect) => {
+        const width = Number(rect.getAttribute("width"));
+        const height = Number(rect.getAttribute("height"));
+        if (!Number.isFinite(width) || !Number.isFinite(height)) {
+          return false;
+        }
+
+        return width >= 24 && height > 0 && height <= 4;
+      })
+      .map((rect) => rect.getBoundingClientRect());
+
+    const rowBoundCandidates = [...horizontalLineCandidates, ...horizontalRectCandidates].map((rect) => ({
+      top: rect.top - renderHostRect.top + renderHost.scrollTop,
+      bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
+      right: rect.right - renderHostRect.left + renderHost.scrollLeft,
+    }));
 
     rowSummaries.forEach((row) => {
       const rowTop = row.yMin - 8;

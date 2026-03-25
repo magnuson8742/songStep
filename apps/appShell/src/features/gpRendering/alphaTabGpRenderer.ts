@@ -436,7 +436,7 @@ function resolveBarStartTick(
 }
 
 function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StaveProfile): alphaTab.json.SettingsJson {
-  return {
+  const settings: alphaTab.json.SettingsJson = {
     core: {
       fontDirectory: BRAVURA_FONT_DIRECTORY,
       enableLazyLoading,
@@ -450,6 +450,25 @@ function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StavePr
       soundFont: SONIVOX_SOUND_FONT_PATH,
     },
   };
+
+  const unsafeSettings = settings as unknown as {
+    player?: Record<string, unknown>;
+    display?: Record<string, unknown>;
+  };
+  unsafeSettings.player = {
+    ...(unsafeSettings.player ?? {}),
+    enableCursor: false,
+    followCursor: false,
+    autoScroll: false,
+    scrollMode: "off",
+  };
+  unsafeSettings.display = {
+    ...(unsafeSettings.display ?? {}),
+    followCursor: false,
+    autoScroll: false,
+  };
+
+  return settings;
 }
 
 function createAlphaTabApi(container: HTMLElement, renderPlan: RenderPlan): AlphaTabApi {
@@ -545,6 +564,7 @@ export async function createGpRenderer(
   let activeSessionToken = 0;
   let activeRenderTimeoutId: number | null = null;
   let pendingScrollSnapshot: RenderViewportScrollSnapshot | null = null;
+  let playbackScrollLockSnapshot: RenderViewportScrollSnapshot | null = null;
   let currentRenderMode: RenderMode = "string-tab";
   let heavyTrackDetected = false;
   let heavyTrackReason: string | null = null;
@@ -650,6 +670,7 @@ export async function createGpRenderer(
     };
     tickBarRanges = [];
     tickLookupSourcePath = null;
+    playbackScrollLockSnapshot = null;
     emitPlaybackRuntimeInfo();
   };
 
@@ -1041,6 +1062,12 @@ export async function createGpRenderer(
 
         const normalizedState = normalizePlaybackState(statePayload);
         const playerStatePayloadShape = describePayloadShape(statePayload);
+        if (normalizedState === "playing") {
+          playbackScrollLockSnapshot = captureRenderViewportScroll();
+        }
+        if (normalizedState === "paused" || normalizedState === "stopped") {
+          playbackScrollLockSnapshot = null;
+        }
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
           isPlaying:
@@ -1074,6 +1101,9 @@ export async function createGpRenderer(
               }
             : resolveCurrentBarFromTick(currentTick);
         const playerPositionPayloadShape = describePayloadShape(positionPayload);
+        if (playbackScrollLockSnapshot) {
+          restoreRenderViewportScroll(playbackScrollLockSnapshot);
+        }
 
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
@@ -1228,6 +1258,7 @@ export async function createGpRenderer(
         return;
       }
 
+      playbackScrollLockSnapshot = captureRenderViewportScroll();
       const playbackApi = activeApi as AlphaTabApi & { play: () => void };
       playbackApi.play();
     },
@@ -1242,6 +1273,7 @@ export async function createGpRenderer(
         return;
       }
 
+      playbackScrollLockSnapshot = null;
       const playbackApi = activeApi as AlphaTabApi & { pause: () => void };
       playbackApi.pause();
     },
@@ -1256,6 +1288,7 @@ export async function createGpRenderer(
         return;
       }
 
+      playbackScrollLockSnapshot = null;
       const playbackApi = activeApi as AlphaTabApi & { stop: () => void };
       playbackApi.stop();
     },
@@ -1264,6 +1297,7 @@ export async function createGpRenderer(
       clearRenderTimeout();
       rendererBusy = false;
       pendingRequestedTrackIndex = null;
+      playbackScrollLockSnapshot = null;
       destroyActiveRenderer();
       clearRenderHost(container);
     },
