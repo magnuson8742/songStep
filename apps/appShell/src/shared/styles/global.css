@@ -214,6 +214,15 @@ select {
   display: none;
 }
 
+.playbackBarHighlight {
+  position: absolute;
+  border-radius: 3px;
+  background: rgba(255, 235, 120, 0.28);
+  pointer-events: none;
+  z-index: 4;
+  display: none;
+}
+
 .gpRenderFallbackMessage {
   min-height: 380px;
   display: flex;

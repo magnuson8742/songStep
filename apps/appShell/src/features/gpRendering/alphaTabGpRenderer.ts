@@ -170,6 +170,8 @@ export interface GpPlaybackRuntimeInfo {
   positionLabel: string | null;
   currentBar: number | null;
   currentTick: number | null;
+  currentBarStartTick: number | null;
+  currentBarEndTickExclusive: number | null;
   playerPositionPayloadShape: string | null;
   playerStatePayloadShape: string | null;
   currentBarSourcePath: string | null;
@@ -559,6 +561,8 @@ export async function createGpRenderer(
     positionLabel: null,
     currentBar: null,
     currentTick: null,
+    currentBarStartTick: null,
+    currentBarEndTickExclusive: null,
     playerPositionPayloadShape: null,
     playerStatePayloadShape: null,
     currentBarSourcePath: null,
@@ -638,6 +642,8 @@ export async function createGpRenderer(
       positionLabel: null,
       currentBar: null,
       currentTick: null,
+      currentBarStartTick: null,
+      currentBarEndTickExclusive: null,
       playerPositionPayloadShape: null,
       playerStatePayloadShape: null,
       currentBarSourcePath: null,
@@ -751,19 +757,30 @@ export async function createGpRenderer(
     return null;
   };
 
-  const resolveCurrentBarFromTick = (currentTick: number): { currentBar: number | null; sourcePath: string | null } => {
+  const resolveCurrentBarFromTick = (
+    currentTick: number,
+  ): {
+    currentBar: number | null;
+    currentBarStartTick: number | null;
+    currentBarEndTickExclusive: number | null;
+    sourcePath: string | null;
+  } => {
     const matchedRange = tickBarRanges.find(
       (range) => currentTick >= range.startTick && currentTick < range.endTickExclusive,
     );
     if (!matchedRange) {
       return {
         currentBar: null,
+        currentBarStartTick: null,
+        currentBarEndTickExclusive: null,
         sourcePath: tickLookupSourcePath ? `tickLookup:${tickLookupSourcePath}` : "tickLookup:unavailable",
       };
     }
 
     return {
       currentBar: matchedRange.barNumber,
+      currentBarStartTick: matchedRange.startTick,
+      currentBarEndTickExclusive: Number.isFinite(matchedRange.endTickExclusive) ? matchedRange.endTickExclusive : null,
       sourcePath: tickLookupSourcePath
         ? `tickLookup:${tickLookupSourcePath}[${matchedRange.startTick}-${matchedRange.endTickExclusive === Number.POSITIVE_INFINITY ? "∞" : matchedRange.endTickExclusive}]`
         : "tickLookup:resolved",
@@ -1047,7 +1064,15 @@ export async function createGpRenderer(
           console.info("[songStep] alphaTab playerPositionChanged payload shape:", describePayloadShape(positionPayload));
         }
         const currentTick = extractCurrentTickFromPositionPayload(positionPayload);
-        const currentBarFromTick = currentTick === null ? { currentBar: null, sourcePath: "tickLookup:no-currentTick" } : resolveCurrentBarFromTick(currentTick);
+        const currentBarFromTick =
+          currentTick === null
+            ? {
+                currentBar: null,
+                currentBarStartTick: null,
+                currentBarEndTickExclusive: null,
+                sourcePath: "tickLookup:no-currentTick",
+              }
+            : resolveCurrentBarFromTick(currentTick);
         const playerPositionPayloadShape = describePayloadShape(positionPayload);
 
         playbackRuntimeInfo = {
@@ -1055,6 +1080,8 @@ export async function createGpRenderer(
           positionLabel: extractPositionLabelFromPayload(positionPayload),
           currentTick,
           currentBar: currentBarFromTick.currentBar,
+          currentBarStartTick: currentBarFromTick.currentBarStartTick,
+          currentBarEndTickExclusive: currentBarFromTick.currentBarEndTickExclusive,
           currentBarSourcePath: currentBarFromTick.sourcePath,
           playerPositionPayloadShape,
         };

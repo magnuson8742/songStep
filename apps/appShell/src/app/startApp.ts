@@ -25,7 +25,8 @@ type AppView = "home" | "newProject" | "openProject" | "project";
 
 interface PlaybackBarAnchor {
   barNumber: number;
-  x: number;
+  startX: number;
+  endX: number;
   y: number;
   height: number;
 }
@@ -51,6 +52,8 @@ interface AppState {
   playbackPositionLabel: string | null;
   playbackCurrentBar: number | null;
   playbackCurrentTick: number | null;
+  playbackCurrentBarStartTick: number | null;
+  playbackCurrentBarEndTickExclusive: number | null;
   playbackIsPlaying: boolean | null;
   playerPositionPayloadShape: string | null;
   playerStatePayloadShape: string | null;
@@ -369,10 +372,32 @@ function ensurePlaybackPlayheadElement(rootElement: HTMLElement): HTMLElement | 
   return playhead;
 }
 
+function ensurePlaybackHighlightElement(rootElement: HTMLElement): HTMLElement | null {
+  const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+  if (!renderHost) {
+    return null;
+  }
+
+  let highlight = renderHost.querySelector<HTMLElement>("[data-playback-highlight='true']");
+  if (!highlight) {
+    highlight = document.createElement("div");
+    highlight.className = "playbackBarHighlight";
+    highlight.dataset.playbackHighlight = "true";
+    highlight.setAttribute("aria-hidden", "true");
+    renderHost.append(highlight);
+  }
+
+  return highlight;
+}
+
 function hidePlaybackPlayhead(rootElement: HTMLElement, state: AppState): void {
   const playhead = rootElement.querySelector<HTMLElement>("[data-playback-playhead='true']");
   if (playhead) {
     playhead.style.display = "none";
+  }
+  const highlight = rootElement.querySelector<HTMLElement>("[data-playback-highlight='true']");
+  if (highlight) {
+    highlight.style.display = "none";
   }
 
   state.playbackPlayheadVisible = false;
@@ -511,12 +536,42 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       continue;
     }
 
-    state.playbackBarAnchors = limitedAnchors.map((anchor, index) => ({
-      barNumber: index + 1,
-      x: anchor.x,
-      y: anchor.y,
-      height: anchor.height,
-    }));
+    const sameSystemGaps: number[] = [];
+    for (let index = 0; index < limitedAnchors.length - 1; index += 1) {
+      const currentAnchor = limitedAnchors[index];
+      const nextAnchor = limitedAnchors[index + 1];
+      if (!currentAnchor || !nextAnchor) {
+        continue;
+      }
+
+      if (Math.abs(currentAnchor.y - nextAnchor.y) > 10) {
+        continue;
+      }
+
+      const gap = nextAnchor.x - currentAnchor.x;
+      if (gap > 12) {
+        sameSystemGaps.push(gap);
+      }
+    }
+
+    const sortedGaps = [...sameSystemGaps].sort((left, right) => left - right);
+    const medianGap = sortedGaps.length > 0 ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 72;
+    const fallbackGap = Math.min(Math.max(medianGap, 32), 220);
+
+    state.playbackBarAnchors = limitedAnchors.map((anchor, index) => {
+      const nextAnchor = limitedAnchors[index + 1];
+      const sameSystemNext =
+        nextAnchor && Math.abs(nextAnchor.y - anchor.y) <= 10 && nextAnchor.x > anchor.x + 8 ? nextAnchor : null;
+      const fallbackEndX = anchor.x + fallbackGap;
+      const endX = sameSystemNext ? Math.max(anchor.x + 12, sameSystemNext.x - 2) : fallbackEndX;
+      return {
+        barNumber: index + 1,
+        startX: anchor.x,
+        endX,
+        y: anchor.y,
+        height: anchor.height,
+      };
+    });
     state.playbackBarAnchorCount = state.playbackBarAnchors.length;
     state.playbackBarAnchorSource = strategy.source;
     state.playbackAnchorStrategyAttempts = strategyAttempts.join(" | ");
@@ -601,13 +656,42 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
     return;
   }
 
+  const barTickSpan =
+    state.playbackCurrentBarStartTick !== null && state.playbackCurrentBarEndTickExclusive !== null
+      ? state.playbackCurrentBarEndTickExclusive - state.playbackCurrentBarStartTick
+      : null;
+  if (
+    state.playbackCurrentTick === null ||
+    state.playbackCurrentBarStartTick === null ||
+    state.playbackCurrentBarEndTickExclusive === null ||
+    barTickSpan === null ||
+    barTickSpan <= 0
+  ) {
+    hidePlaybackPlayhead(rootElement, state);
+    return;
+  }
+
   const playhead = ensurePlaybackPlayheadElement(rootElement);
-  if (!playhead) {
+  const highlight = ensurePlaybackHighlightElement(rootElement);
+  if (!playhead || !highlight) {
     state.playbackPlayheadVisible = false;
     return;
   }
 
-  playhead.style.left = `${anchor.x}px`;
+  const barStartTick = state.playbackCurrentBarStartTick;
+  const barEndTickExclusive = state.playbackCurrentBarEndTickExclusive;
+  const normalizedProgress = (state.playbackCurrentTick - barStartTick) / (barEndTickExclusive - barStartTick);
+  const clampedProgress = Math.min(Math.max(normalizedProgress, 0), 1);
+  const regionWidth = Math.max(anchor.endX - anchor.startX, 8);
+  const playheadX = anchor.startX + regionWidth * clampedProgress;
+
+  highlight.style.left = `${anchor.startX}px`;
+  highlight.style.top = `${anchor.y}px`;
+  highlight.style.width = `${regionWidth}px`;
+  highlight.style.height = `${Math.max(anchor.height, 28)}px`;
+  highlight.style.display = "block";
+
+  playhead.style.left = `${playheadX}px`;
   playhead.style.top = `${anchor.y}px`;
   playhead.style.height = `${Math.max(anchor.height, 28)}px`;
   playhead.style.display = "block";
@@ -679,6 +763,8 @@ export function startApp(rootElement: HTMLElement): void {
     playbackPositionLabel: null,
     playbackCurrentBar: null,
     playbackCurrentTick: null,
+    playbackCurrentBarStartTick: null,
+    playbackCurrentBarEndTickExclusive: null,
     playbackIsPlaying: null,
     playerPositionPayloadShape: null,
     playerStatePayloadShape: null,
@@ -755,6 +841,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackPositionLabel = null;
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
+          state.playbackCurrentBarStartTick = null;
+          state.playbackCurrentBarEndTickExclusive = null;
           state.playbackIsPlaying = null;
           state.playerPositionPayloadShape = null;
           state.playerStatePayloadShape = null;
@@ -815,6 +903,8 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackPositionLabel = null;
             state.playbackCurrentBar = null;
             state.playbackCurrentTick = null;
+            state.playbackCurrentBarStartTick = null;
+            state.playbackCurrentBarEndTickExclusive = null;
             state.playbackIsPlaying = null;
             state.playerPositionPayloadShape = null;
             state.playerStatePayloadShape = null;
@@ -894,6 +984,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.requestedTrackIndex = trackIndex;
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
+          state.playbackCurrentBarStartTick = null;
+          state.playbackCurrentBarEndTickExclusive = null;
           state.playerPositionPayloadShape = null;
           state.playerStatePayloadShape = null;
           state.currentBarSourcePath = null;
@@ -1012,6 +1104,8 @@ export function startApp(rootElement: HTMLElement): void {
 
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
+          state.playbackCurrentBarStartTick = null;
+          state.playbackCurrentBarEndTickExclusive = null;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.playbackPlayheadVisible = false;
@@ -1099,6 +1193,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackPositionLabel = info.positionLabel;
           state.playbackCurrentBar = info.currentBar;
           state.playbackCurrentTick = info.currentTick;
+          state.playbackCurrentBarStartTick = info.currentBarStartTick;
+          state.playbackCurrentBarEndTickExclusive = info.currentBarEndTickExclusive;
           state.playerPositionPayloadShape = info.playerPositionPayloadShape;
           state.playerStatePayloadShape = info.playerStatePayloadShape;
           state.currentBarSourcePath = info.currentBarSourcePath;
@@ -1131,6 +1227,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.projectStatusMessage = message;
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
+          state.playbackCurrentBarStartTick = null;
+          state.playbackCurrentBarEndTickExclusive = null;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.playbackPlayheadVisible = false;
@@ -1151,6 +1249,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.selectedTrackIndex = trackIndex;
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
+          state.playbackCurrentBarStartTick = null;
+          state.playbackCurrentBarEndTickExclusive = null;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.playbackPlayheadVisible = false;
