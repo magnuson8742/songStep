@@ -1344,6 +1344,34 @@ function seekToBarAndApplyNavigationSelection(
   return true;
 }
 
+function tryCompletePendingOverviewNavigationAfterRender(
+  state: AppState,
+  rootElement: HTMLElement,
+  confirmedTrackIndex: number | null,
+  rendererStage: string | null,
+): void {
+  if (state.pendingOverviewNavigationBar === null || state.pendingOverviewNavigationTrackIndex === null) {
+    return;
+  }
+  if (!state.gpRenderer) {
+    return;
+  }
+  if (rendererStage !== "renderFinished") {
+    return;
+  }
+  if (confirmedTrackIndex === null || confirmedTrackIndex !== state.pendingOverviewNavigationTrackIndex) {
+    return;
+  }
+
+  const pendingBar = state.pendingOverviewNavigationBar;
+  state.pendingOverviewNavigationBar = null;
+  state.pendingOverviewNavigationTrackIndex = null;
+  const seekSucceeded = seekToBarAndApplyNavigationSelection(state, rootElement, confirmedTrackIndex, pendingBar);
+  if (!seekSucceeded) {
+    clearNavigationSelectionState(state, rootElement);
+  }
+}
+
 function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): void {
   const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
   if (!renderHost) {
@@ -1903,6 +1931,12 @@ export function startApp(rootElement: HTMLElement): void {
           if (debugInfo.lastRendererErrorStage === "renderFinished") {
             schedulePlaybackBarAnchorRebuild(state, rootElement);
           }
+          tryCompletePendingOverviewNavigationAfterRender(
+            state,
+            rootElement,
+            debugInfo.confirmedActiveTrackIndex,
+            debugInfo.lastRendererErrorStage,
+          );
         },
         onScoreRuntimeInfo: (info) => {
           state.scoreTitle = info.scoreTitle;
@@ -2000,8 +2034,6 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
         },
         onActiveTrackConfirmed: (trackIndex) => {
-          const pendingOverviewBar = state.pendingOverviewNavigationBar;
-          const pendingOverviewTrackIndex = state.pendingOverviewNavigationTrackIndex;
           state.selectedTrackIndex = trackIndex;
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
@@ -2035,15 +2067,6 @@ export function startApp(rootElement: HTMLElement): void {
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
-
-          if (pendingOverviewTrackIndex === trackIndex && pendingOverviewBar !== null) {
-            const seekSucceeded = seekToBarAndApplyNavigationSelection(state, rootElement, trackIndex, pendingOverviewBar);
-            state.pendingOverviewNavigationBar = null;
-            state.pendingOverviewNavigationTrackIndex = null;
-            if (!seekSucceeded) {
-              clearNavigationSelectionState(state, rootElement);
-            }
-          }
         },
         onRenderError: (message) => {
           state.projectStatusMessage = message;
