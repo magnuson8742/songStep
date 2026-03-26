@@ -772,6 +772,18 @@ select {
   overflow-x: auto;
 }
 
+.playerDockRightTopHeader,
+.playerDockRightMiddle {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.playerDockRightTopHeader::-webkit-scrollbar,
+.playerDockRightMiddle::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 .playerDockRightTopHeader {
   border: 1px solid rgba(173, 196, 226, 0.2);
   border-bottom: none;

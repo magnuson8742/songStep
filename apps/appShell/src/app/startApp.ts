@@ -37,6 +37,7 @@ const DEFAULT_BOTTOM_DOCK_HEIGHT_PX = 280;
 const MIN_BOTTOM_DOCK_HEIGHT_PX = 180;
 const MAX_BOTTOM_DOCK_HEIGHT_PX = 520;
 const ARRANGEMENT_BAR_WIDTH_PX = 24;
+const ARRANGEMENT_BAR_GAP_PX = 4;
 
 interface AppState {
   currentView: AppView;
@@ -307,7 +308,8 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
 
   emptyState.style.display = "none";
   const arrangementBarCount = Math.max(overview.totalBars, 1);
-  const arrangementGridWidthPx = arrangementBarCount * ARRANGEMENT_BAR_WIDTH_PX;
+  const arrangementGridWidthPx =
+    arrangementBarCount * ARRANGEMENT_BAR_WIDTH_PX + Math.max(arrangementBarCount - 1, 0) * ARRANGEMENT_BAR_GAP_PX;
   overviewContainers.forEach((container) => {
     container.style.setProperty("--arrangement-bar-count", String(arrangementBarCount));
     container.style.setProperty("--arrangement-grid-width", `${arrangementGridWidthPx}px`);
