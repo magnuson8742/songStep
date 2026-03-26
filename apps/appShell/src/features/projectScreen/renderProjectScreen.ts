@@ -102,12 +102,10 @@ function renderTrackStrip(
             <button class="secondaryButton trackControlButton ${soloTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-solo" data-track-index="${track.index}">S</button>
             <button class="secondaryButton trackControlButton ${mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}">M</button>
             <label class="trackControlLabel trackControlLabelCompact">
-              <span class="trackControlLabelName">Vol</span>
               <input class="trackControlRange" type="range" min="0" max="100" value="${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}" data-stop-track-select="true" data-track-action="set-volume" data-track-volume-index="${track.index}" />
               <span class="trackControlValue" data-track-volume-value="${track.index}">${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}</span>
             </label>
             <label class="trackControlLabel trackControlLabelCompact">
-              <span class="trackControlLabelName">Bal</span>
               <input class="trackControlRange" type="range" min="-50" max="50" value="${trackBalanceByIndex[track.index] ?? DEFAULT_TRACK_BALANCE}" data-stop-track-select="true" data-track-action="set-balance" data-track-balance-index="${track.index}" />
               <span class="trackControlValue" data-track-balance-value="${track.index}">${trackBalanceByIndex[track.index] ?? DEFAULT_TRACK_BALANCE}</span>
             </label>
@@ -226,52 +224,57 @@ export function renderProjectScreen(
           <div class="playerDockLeftHeader">Tracks / Controls</div>
           <div class="playerDockRightHeader">Timeline</div>
         </div>
-        <div class="playerDockRowsViewport">
-          <div class="playerDockLeftRows" aria-label="Track and control column">
-            <div class="playerDockTopBandLeft" aria-hidden="true"></div>
-            <div class="playerDockRowsBandLeft">
-              <div class="trackStrip trackStripDock" aria-label="Track strip" data-action="track-strip">
-                ${renderTrackStrip(
-                  actions.tracks,
-                  actions.confirmedActiveTrackIndex,
-                  actions.mutedTrackIndexes,
-                  actions.soloTrackIndexes,
-                  actions.trackVolumeByIndex,
-                  actions.trackBalanceByIndex,
-                )}
-                <article class="trackStripItem masterTrackRow" data-stop-track-select="true" aria-label="Master row placeholder">
-                  <div class="trackControlRow trackControlRowCompact masterTrackControlRow">
-                    <span class="trackNameCompact">Master</span>
-                    <label class="trackControlLabel trackControlLabelCompact">
-                      <span class="trackControlLabelName">Vol</span>
-                      <input class="trackControlRange" type="range" min="0" max="100" value="${actions.masterVolume}" data-stop-track-select="true" data-master-action="set-volume" />
-                      <span class="trackControlValue" data-master-volume-value="true">${actions.masterVolume}</span>
-                    </label>
-                    <label class="trackControlLabel trackControlLabelCompact">
-                      <span class="trackControlLabelName">Bal</span>
-                      <input class="trackControlRange" type="range" min="-50" max="50" value="${actions.masterBalance}" data-stop-track-select="true" data-master-action="set-balance" />
-                      <span class="trackControlValue" data-master-balance-value="true">${actions.masterBalance}</span>
-                    </label>
-                  </div>
-                </article>
-              </div>
-            </div>
-            <div class="playerDockBottomBandLeft" aria-hidden="true"></div>
+        <div class="playerDockTopBand">
+          <div class="playerDockLeftTopHeader">
+            <span class="playerDockLeftHeaderName">Name</span>
+            <span class="playerDockLeftHeaderVolume">Volume</span>
+            <span class="playerDockLeftHeaderBalance">Balance</span>
           </div>
-          <div class="playerDockRightRows">
-            <div class="timelineViewport">
-              <div class="arrangementOverview arrangementOverviewDock" data-arrangement-overview="true">
-                <p class="helperText" data-arrangement-empty>${actions.scoreOverview ? "" : "Overview loads with score runtime data."}</p>
-                <div class="playerDockTopBandRight">
-                  <div class="arrangementBarHeader" data-arrangement-bar-header></div>
-                </div>
-                <div class="playerDockRowsBandRight">
-                  <div class="arrangementRows" data-arrangement-rows></div>
-                </div>
-                <div class="playerDockBottomBandRight">
-                  <div class="arrangementMarkers" data-arrangement-markers></div>
-                </div>
+          <div class="playerDockRightTopHeader" data-dock-horizontal-sync="true">
+            <div class="arrangementOverview arrangementOverviewDock" data-arrangement-overview="true">
+              <div class="arrangementBarHeader" data-arrangement-bar-header></div>
+            </div>
+          </div>
+        </div>
+        <div class="playerDockMiddleScroll" data-dock-middle-scroll="true">
+          <div class="playerDockLeftMiddle" data-action="left-controls">
+            <div class="trackStrip trackStripDock" aria-label="Track strip" data-action="track-strip">
+              ${renderTrackStrip(
+                actions.tracks,
+                actions.confirmedActiveTrackIndex,
+                actions.mutedTrackIndexes,
+                actions.soloTrackIndexes,
+                actions.trackVolumeByIndex,
+                actions.trackBalanceByIndex,
+              )}
+            </div>
+          </div>
+          <div class="playerDockRightMiddle timelineViewport" data-dock-horizontal-sync="true">
+            <div class="arrangementOverview arrangementOverviewDock" data-arrangement-overview="true">
+              <p class="helperText" data-arrangement-empty>${actions.scoreOverview ? "" : "Overview loads with score runtime data."}</p>
+              <div class="arrangementRows" data-arrangement-rows></div>
+            </div>
+          </div>
+        </div>
+        <div class="playerDockBottomBand">
+          <div class="playerDockLeftBottomFooter" data-action="left-controls">
+            <article class="trackStripItem masterTrackRow" data-stop-track-select="true" aria-label="Master row placeholder">
+              <div class="trackControlRow trackControlRowCompact masterTrackControlRow">
+                <span class="trackNameCompact">Master</span>
+                <label class="trackControlLabel trackControlLabelCompact">
+                  <input class="trackControlRange" type="range" min="0" max="100" value="${actions.masterVolume}" data-stop-track-select="true" data-master-action="set-volume" />
+                  <span class="trackControlValue" data-master-volume-value="true">${actions.masterVolume}</span>
+                </label>
+                <label class="trackControlLabel trackControlLabelCompact">
+                  <input class="trackControlRange" type="range" min="-50" max="50" value="${actions.masterBalance}" data-stop-track-select="true" data-master-action="set-balance" />
+                  <span class="trackControlValue" data-master-balance-value="true">${actions.masterBalance}</span>
+                </label>
               </div>
+            </article>
+          </div>
+          <div class="playerDockRightBottomFooter" data-dock-horizontal-sync="true">
+            <div class="arrangementOverview arrangementOverviewDock" data-arrangement-overview="true">
+              <div class="arrangementMarkers" data-arrangement-markers></div>
             </div>
           </div>
         </div>
@@ -285,7 +288,7 @@ export function renderProjectScreen(
   const stopButton = container.querySelector<HTMLButtonElement>('[data-action="stop"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
   const openDebugWindowButton = container.querySelector<HTMLButtonElement>('[data-action="open-debug-window"]');
-  const trackStrip = container.querySelector<HTMLElement>('[data-action="track-strip"]');
+  const leftControls = container.querySelectorAll<HTMLElement>('[data-action="left-controls"]');
 
   const handleTrackSelection = (eventTarget: EventTarget | null): void => {
     const targetElement = eventTarget instanceof Element ? eventTarget : null;
@@ -306,7 +309,7 @@ export function renderProjectScreen(
     actions.onTrackSelectionChange(trackIndex);
   };
 
-  trackStrip?.addEventListener("click", (event) => {
+  leftControls.forEach((leftControl) => leftControl.addEventListener("click", (event) => {
     const targetElement = event.target instanceof Element ? event.target : null;
     const trackActionButton = targetElement?.closest<HTMLElement>("[data-track-action]");
     if (trackActionButton) {
@@ -338,9 +341,9 @@ export function renderProjectScreen(
     }
 
     handleTrackSelection(event.target);
-  });
+  }));
 
-  trackStrip?.addEventListener("input", (event) => {
+  leftControls.forEach((leftControl) => leftControl.addEventListener("input", (event) => {
     const targetElement = event.target instanceof HTMLInputElement ? event.target : null;
     if (!targetElement) {
       return;
@@ -374,9 +377,9 @@ export function renderProjectScreen(
     if (targetElement.dataset.masterAction === "set-balance") {
       actions.onMasterBalanceChange(Number(targetElement.value));
     }
-  });
+  }));
 
-  trackStrip?.addEventListener("keydown", (event) => {
+  leftControls.forEach((leftControl) => leftControl.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") {
       return;
     }
@@ -388,9 +391,9 @@ export function renderProjectScreen(
 
     event.preventDefault();
     handleTrackSelection(event.target);
-  });
+  }));
 
-  trackStrip?.addEventListener("dblclick", (event) => {
+  leftControls.forEach((leftControl) => leftControl.addEventListener("dblclick", (event) => {
     const targetElement = event.target instanceof HTMLInputElement ? event.target : null;
     if (!targetElement) {
       return;
@@ -424,7 +427,7 @@ export function renderProjectScreen(
     if (targetElement.dataset.masterAction === "set-balance") {
       actions.onMasterBalanceChange(DEFAULT_TRACK_BALANCE);
     }
-  });
+  }));
 
   saveProjectAsButton?.addEventListener("click", actions.onSaveProjectAs);
   playButton?.addEventListener("click", actions.onPlay);

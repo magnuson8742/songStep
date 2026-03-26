@@ -281,20 +281,22 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
 }
 
 function updateArrangementOverview(state: AppState, rootElement: HTMLElement): void {
-  const overviewContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-overview='true']");
+  const overviewContainers = Array.from(rootElement.querySelectorAll<HTMLElement>("[data-arrangement-overview='true']"));
   const barHeaderContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-bar-header]");
   const rowsContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-rows]");
   const markersContainer = rootElement.querySelector<HTMLElement>("[data-arrangement-markers]");
   const emptyState = rootElement.querySelector<HTMLElement>("[data-arrangement-empty]");
 
-  if (!overviewContainer || !barHeaderContainer || !rowsContainer || !markersContainer || !emptyState) {
+  if (overviewContainers.length === 0 || !barHeaderContainer || !rowsContainer || !markersContainer || !emptyState) {
     return;
   }
 
   const overview = state.scoreOverview;
   if (!overview || overview.trackRows.length === 0 || overview.totalBars <= 0) {
-    overviewContainer.style.removeProperty("--arrangement-bar-count");
-    overviewContainer.style.removeProperty("--arrangement-grid-width");
+    overviewContainers.forEach((container) => {
+      container.style.removeProperty("--arrangement-bar-count");
+      container.style.removeProperty("--arrangement-grid-width");
+    });
     barHeaderContainer.innerHTML = "";
     rowsContainer.innerHTML = "";
     markersContainer.innerHTML = "";
@@ -306,8 +308,10 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   emptyState.style.display = "none";
   const arrangementBarCount = Math.max(overview.totalBars, 1);
   const arrangementGridWidthPx = arrangementBarCount * ARRANGEMENT_BAR_WIDTH_PX;
-  overviewContainer.style.setProperty("--arrangement-bar-count", String(arrangementBarCount));
-  overviewContainer.style.setProperty("--arrangement-grid-width", `${arrangementGridWidthPx}px`);
+  overviewContainers.forEach((container) => {
+    container.style.setProperty("--arrangement-bar-count", String(arrangementBarCount));
+    container.style.setProperty("--arrangement-grid-width", `${arrangementGridWidthPx}px`);
+  });
   const barLabels = new Set<number>([0, overview.totalBars - 1]);
   for (let barIndex = 3; barIndex < overview.totalBars; barIndex += 4) {
     barLabels.add(barIndex);
@@ -1115,6 +1119,31 @@ function setupBottomDockResize(rootElement: HTMLElement, state: AppState): void 
   });
 }
 
+function setupBottomDockHorizontalSync(rootElement: HTMLElement): void {
+  const scrollers = Array.from(rootElement.querySelectorAll<HTMLElement>("[data-dock-horizontal-sync='true']"));
+  if (scrollers.length < 2) {
+    return;
+  }
+
+  let syncing = false;
+  scrollers.forEach((scroller) => {
+    scroller.addEventListener("scroll", () => {
+      if (syncing) {
+        return;
+      }
+      syncing = true;
+      const { scrollLeft } = scroller;
+      scrollers.forEach((otherScroller) => {
+        if (otherScroller === scroller) {
+          return;
+        }
+        otherScroller.scrollLeft = scrollLeft;
+      });
+      syncing = false;
+    });
+  });
+}
+
 export function startApp(rootElement: HTMLElement): void {
   const state: AppState = {
     currentView: "home",
@@ -1513,6 +1542,7 @@ export function startApp(rootElement: HTMLElement): void {
         },
       });
       setupBottomDockResize(rootElement, state);
+      setupBottomDockHorizontalSync(rootElement);
 
       const gpRenderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
       if (!gpRenderHost) {
