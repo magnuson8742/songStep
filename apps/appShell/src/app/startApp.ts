@@ -86,6 +86,9 @@ interface AppState {
   selectionDivergenceSuppressTicks: number;
   pendingOverviewNavigationBar: number | null;
   pendingOverviewNavigationTrackIndex: number | null;
+  desiredTrackSwitchTick: number | null;
+  desiredTrackSwitchBar: number | null;
+  desiredTrackSwitchSourceTrackIndex: number | null;
   playbackAnchorRebuildToken: number;
   playbackAnchorRebuildScheduled: boolean;
   activeTrackName: string | null;
@@ -1513,6 +1516,9 @@ export function startApp(rootElement: HTMLElement): void {
     selectionDivergenceSuppressTicks: 0,
     pendingOverviewNavigationBar: null,
     pendingOverviewNavigationTrackIndex: null,
+    desiredTrackSwitchTick: null,
+    desiredTrackSwitchBar: null,
+    desiredTrackSwitchSourceTrackIndex: null,
     playbackAnchorRebuildToken: 0,
     playbackAnchorRebuildScheduled: false,
     activeTrackName: null,
@@ -1531,6 +1537,9 @@ export function startApp(rootElement: HTMLElement): void {
     invalidatePlaybackBarAnchorRebuild(state);
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
+    state.desiredTrackSwitchTick = null;
+    state.desiredTrackSwitchBar = null;
+    state.desiredTrackSwitchSourceTrackIndex = null;
     if (!state.gpRenderer) {
       return;
     }
@@ -1728,6 +1737,10 @@ export function startApp(rootElement: HTMLElement): void {
         mutedTrackIndexes: state.mutedTrackIndexes,
         soloTrackIndexes: state.soloTrackIndexes,
         onTrackSelectionChange: (trackIndex: number) => {
+          const preservedTick = state.selectedNavigationTick ?? state.playbackCurrentTick ?? state.playbackCurrentBarStartTick;
+          state.desiredTrackSwitchTick = preservedTick;
+          state.desiredTrackSwitchBar = state.selectedNavigationBar ?? state.playbackCurrentBar;
+          state.desiredTrackSwitchSourceTrackIndex = state.selectedTrackIndex;
           state.requestedTrackIndex = trackIndex;
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
@@ -1760,7 +1773,7 @@ export function startApp(rootElement: HTMLElement): void {
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
-          state.gpRenderer?.selectTrack(trackIndex);
+          state.gpRenderer?.selectTrack(trackIndex, preservedTick);
         },
         onBackToHome: () => {
           state.currentView = "home";
@@ -1934,6 +1947,27 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onTrackRenderCommitted: (trackIndex) => {
           tryCompletePendingOverviewNavigationAfterRender(state, rootElement, trackIndex);
+          if (
+            state.pendingOverviewNavigationBar === null &&
+            state.pendingOverviewNavigationTrackIndex === null &&
+            state.desiredTrackSwitchTick !== null &&
+            state.gpRenderer &&
+            trackIndex === state.selectedTrackIndex
+          ) {
+            const seekSucceeded = state.gpRenderer.seekToTick(state.desiredTrackSwitchTick);
+            if (seekSucceeded) {
+              applyNavigationSelection(
+                state,
+                rootElement,
+                state.desiredTrackSwitchBar ?? (state.playbackCurrentBar ?? 1),
+                state.desiredTrackSwitchTick,
+                trackIndex,
+              );
+            }
+            state.desiredTrackSwitchTick = null;
+            state.desiredTrackSwitchBar = null;
+            state.desiredTrackSwitchSourceTrackIndex = null;
+          }
         },
         onScoreRuntimeInfo: (info) => {
           state.scoreTitle = info.scoreTitle;
@@ -2073,6 +2107,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.projectStatusMessage = message;
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
+          state.desiredTrackSwitchTick = null;
+          state.desiredTrackSwitchBar = null;
+          state.desiredTrackSwitchSourceTrackIndex = null;
           invalidatePlaybackBarAnchorRebuild(state);
           hidePlaybackPlayhead(rootElement, state);
           render();
