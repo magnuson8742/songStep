@@ -50,6 +50,9 @@ export interface ProjectScreenActions {
   onStop: () => void;
 }
 
+const DEFAULT_TRACK_VOLUME = 80;
+const DEFAULT_TRACK_BALANCE = 0;
+
 function renderDebugValue(value: string | number | null): string {
   if (value === null || value === "") {
     return "-";
@@ -57,9 +60,6 @@ function renderDebugValue(value: string | number | null): string {
 
   return String(value);
 }
-
-const DEFAULT_TRACK_VOLUME = 80;
-const DEFAULT_TRACK_BALANCE = 0;
 
 function formatRuntimeTrackList(debugRows: GpRenderDebugInfo["scoreTracks"] | undefined): string {
   if (!debugRows || debugRows.length === 0) {
@@ -117,188 +117,162 @@ function renderTrackStrip(
     .join("");
 }
 
+function openDebugWindow(actions: ProjectScreenActions): void {
+  const debugInfo = actions.debugInfo;
+  const debugWindow = window.open("", "songstep-debug-window", "width=980,height=760,resizable,scrollbars");
+  if (!debugWindow) {
+    return;
+  }
+
+  const rows: Array<[string, string]> = [
+    ["Selected track index", renderDebugValue(actions.selectedTrackIndex)],
+    ["Requested track index", renderDebugValue(actions.requestedTrackIndex)],
+    ["Last clicked track", renderDebugValue(actions.lastClickedTrackIndex)],
+    ["Click counter", renderDebugValue(actions.clickCounter)],
+    ["Last click timestamp", renderDebugValue(actions.lastClickTimestampIso)],
+    ["Selection fired", actions.selectionFired ? "yes" : "no"],
+    ["Confirmed active track", renderDebugValue(debugInfo?.confirmedActiveTrackName ?? null)],
+    ["Confirmed active track index", renderDebugValue(debugInfo?.confirmedActiveTrackIndex ?? null)],
+    ["Renderer busy", debugInfo?.rendererBusy ? "yes" : "no"],
+    ["Render cycle counter", renderDebugValue(debugInfo?.renderCycleCounter ?? 0)],
+    ["Render mode", renderDebugValue(debugInfo?.renderMode ?? null)],
+    ["Current bar source", renderDebugValue(actions.currentBarSourcePath)],
+    ["Current tick", renderDebugValue(actions.currentTick)],
+    ["Anchor count", renderDebugValue(actions.playbackBarAnchorCount)],
+    ["Anchor source", renderDebugValue(actions.playbackBarAnchorSource)],
+    ["Anchor attempts", renderDebugValue(actions.playbackAnchorStrategyAttempts)],
+    ["Render host has svg", actions.renderHostHasSvg ? "yes" : "no"],
+  ];
+
+  debugWindow.document.title = "SongStep Debug";
+  debugWindow.document.body.innerHTML = `
+    <main style="font-family: Inter, sans-serif; margin:0; padding:16px; background:#10141c; color:#e8eef9;">
+      <h1 style="margin:0 0 12px;">SongStep Debug</h1>
+      <dl style="display:grid; grid-template-columns:1fr auto; gap:6px 12px; margin:0;">
+        ${rows.map(([label, value]) => `<dt style="color:#9fb1cc;">${label}</dt><dd style="margin:0;font-weight:600;">${value}</dd>`).join("")}
+      </dl>
+      <h2 style="margin:16px 0 8px;">Loaded score tracks</h2>
+      <pre style="background:#0b0f16;border:1px solid #2a3446;padding:10px;overflow:auto;">${formatRuntimeTrackList(debugInfo?.scoreTracks)}</pre>
+      <h2 style="margin:16px 0 8px;">Currently rendered api.tracks</h2>
+      <pre style="background:#0b0f16;border:1px solid #2a3446;padding:10px;overflow:auto;">${formatRuntimeTrackList(debugInfo?.renderedTracks)}</pre>
+    </main>
+  `;
+}
+
 export function renderProjectScreen(
   container: HTMLElement,
   project: SongStepProject,
   actions: ProjectScreenActions,
 ): void {
   const statusBanner = actions.statusMessage
-    ? `<p class="statusBanner" role="status" data-status-banner="true">${actions.statusMessage}</p>`
+    ? `<p class="statusBanner playerStatusBanner" role="status" data-status-banner="true">${actions.statusMessage}</p>`
     : "";
 
-  const debugInfo = actions.debugInfo;
-
   container.innerHTML = `
-    <main class="appShell">
-      <header class="appHeader projectHeader">
-        <div>
-          <h1 class="appTitle">${project.title}</h1>
-          <p class="appSubtitle">Source file: ${actions.sourceFileName}</p>
-          <p class="appSubtitle">Score title: <span data-player-field="score-title">${renderDebugValue(actions.scoreTitle)}</span></p>
-        </div>
-        <div class="projectTopActions">
-          <button class="secondaryButton" type="button" data-action="back-home">Main Menu</button>
-          <button class="primaryButton" type="button" data-action="save-project">Save Project</button>
-          <button class="secondaryButton" type="button" data-action="save-project-as">Save As</button>
+    <main class="playerLayoutShell">
+      <header class="playerMenuBar">
+        <div class="playerMenuGroup">
+          <details class="playerMenuDetails">
+            <summary>File</summary>
+            <button type="button" class="playerMenuItem" data-action="save-project-as">Save Project As</button>
+            <button type="button" class="playerMenuItem" data-action="back-home">Main Menu</button>
+          </details>
+          <details class="playerMenuDetails">
+            <summary>Debug</summary>
+            <button type="button" class="playerMenuItem" data-action="open-debug-window">Open Debug Window</button>
+          </details>
         </div>
       </header>
 
-      ${statusBanner}
-
-      <section class="homeCard">
-        <div class="projectSectionHeader">
-          <h2 class="sectionTitle">Tab area</h2>
-          <p class="helperText">Active track follows renderer-confirmed runtime state.</p>
+      <section class="playerTopHeader">
+        <div class="playerTopHeaderMain">
+          <div class="playerTopMeta">
+            <h1 class="playerTopTitle">${project.title}</h1>
+            <p class="appSubtitle">Source: ${actions.sourceFileName}</p>
+          </div>
+          <div class="playerTransport">
+            <button class="primaryButton" type="button" data-action="play">Play</button>
+            <button class="secondaryButton" type="button" data-action="pause">Pause</button>
+            <button class="secondaryButton" type="button" data-action="stop">Stop</button>
+          </div>
         </div>
+        <dl class="playerTopInfo">
+          <dt>Song</dt>
+          <dd data-player-field="score-title">${renderDebugValue(actions.scoreTitle)}</dd>
+          <dt>Active track</dt>
+          <dd data-player-field="active-track-name">${renderDebugValue(actions.confirmedActiveTrackIndex === null ? null : actions.tracks.find((track) => track.index === actions.confirmedActiveTrackIndex)?.name ?? null)}</dd>
+          <dt>Bar</dt>
+          <dd data-player-field="current-bar">${renderDebugValue(actions.currentBar)} / <span data-player-field="total-bars">${renderDebugValue(actions.totalBars)}</span></dd>
+          <dt>Time</dt>
+          <dd data-player-field="playback-position">${renderDebugValue(actions.playbackPositionLabel)}</dd>
+          <dt>BPM</dt>
+          <dd data-player-field="tempo">${actions.tempoBpm === null ? "-" : `${actions.tempoBpm} BPM`}</dd>
+          <dt>State</dt>
+          <dd data-player-field="playback-state">${actions.playbackIsPlaying === null ? "-" : actions.playbackIsPlaying ? "playing" : "paused/stopped"}</dd>
+        </dl>
+        ${statusBanner}
+      </section>
 
-        <div class="trackDebugCard" aria-label="Track switch debug info">
-          <h3 class="trackDebugTitle">Track switch debug</h3>
-          <dl class="trackDebugGrid">
-            <dt>Selected track index (state)</dt>
-            <dd data-debug-field="selected-track-index">${renderDebugValue(actions.selectedTrackIndex)}</dd>
-            <dt>Requested track index</dt>
-            <dd data-debug-field="requested-track-index">${renderDebugValue(actions.requestedTrackIndex)}</dd>
-            <dt>Last clicked track index</dt>
-            <dd data-debug-field="last-clicked-track-index">${renderDebugValue(actions.lastClickedTrackIndex)}</dd>
-            <dt>Click counter</dt>
-            <dd data-debug-field="click-counter">${renderDebugValue(actions.clickCounter)}</dd>
-            <dt>Last click timestamp</dt>
-            <dd data-debug-field="last-click-timestamp">${renderDebugValue(actions.lastClickTimestampIso)}</dd>
-            <dt>onTrackSelectionChange fired</dt>
-            <dd data-debug-field="selection-fired">${actions.selectionFired ? "yes" : "no"}</dd>
-            <dt>Confirmed active track name</dt>
-            <dd data-debug-field="confirmed-active-track-name">${renderDebugValue(debugInfo?.confirmedActiveTrackName ?? null)}</dd>
-            <dt>Confirmed active track index</dt>
-            <dd data-debug-field="confirmed-active-track-index">${renderDebugValue(debugInfo?.confirmedActiveTrackIndex ?? null)}</dd>
-            <dt>Confirmed active track position</dt>
-            <dd data-debug-field="confirmed-active-track-position">${renderDebugValue(debugInfo?.confirmedActiveTrackPosition ?? null)}</dd>
-            <dt>Renderer busy</dt>
-            <dd data-debug-field="renderer-busy">${debugInfo?.rendererBusy ? "yes" : "no"}</dd>
-            <dt>Pending requested track index</dt>
-            <dd data-debug-field="pending-requested-track-index">${renderDebugValue(debugInfo?.pendingRequestedTrackIndex ?? null)}</dd>
-            <dt>Render cycle counter</dt>
-            <dd data-debug-field="render-cycle-counter">${renderDebugValue(debugInfo?.renderCycleCounter ?? 0)}</dd>
-            <dt>Last render started</dt>
-            <dd data-debug-field="last-render-started-at">${renderDebugValue(debugInfo?.lastRenderStartedAtIso ?? null)}</dd>
-            <dt>Last render finished</dt>
-            <dd data-debug-field="last-render-finished-at">${renderDebugValue(debugInfo?.lastRenderFinishedAtIso ?? null)}</dd>
-            <dt>Last failed requested track index</dt>
-            <dd data-debug-field="last-failed-requested-track-index">${renderDebugValue(debugInfo?.lastFailedRequestedTrackIndex ?? null)}</dd>
-            <dt>Last renderer error stage</dt>
-            <dd data-debug-field="last-renderer-error-stage">${renderDebugValue(debugInfo?.lastRendererErrorStage ?? null)}</dd>
-            <dt>Render timeout hit</dt>
-            <dd data-debug-field="render-timeout-hit">${debugInfo ? (debugInfo.renderTimeoutHit ? "yes" : "no") : "-"}</dd>
-            <dt>Last successful confirmed track index</dt>
-            <dd data-debug-field="last-successful-confirmed-track-index">${renderDebugValue(debugInfo?.lastSuccessfulConfirmedTrackIndex ?? null)}</dd>
-            <dt>Render mode</dt>
-            <dd data-debug-field="render-mode">${renderDebugValue(debugInfo?.renderMode ?? null)}</dd>
-            <dt>Is percussion</dt>
-            <dd data-debug-field="is-percussion">${debugInfo ? (debugInfo.isPercussion ? "yes" : "no") : "-"}</dd>
-            <dt>Effective stave profile</dt>
-            <dd data-debug-field="effective-stave-profile">${renderDebugValue(debugInfo?.effectiveStaveProfile ?? null)}</dd>
-            <dt>Heavy track detected</dt>
-            <dd data-debug-field="heavy-track-detected">${debugInfo ? (debugInfo.heavyTrackDetected ? "yes" : "no") : "-"}</dd>
-            <dt>Heavy track reason</dt>
-            <dd data-debug-field="heavy-track-reason">${renderDebugValue(debugInfo?.heavyTrackReason ?? null)}</dd>
-            <dt>api.score?.tracks.length</dt>
-            <dd data-debug-field="score-track-count">${renderDebugValue(debugInfo?.scoreTrackCount ?? null)}</dd>
-            <dt>playerPosition payload keys</dt>
-            <dd data-debug-field="player-position-payload-shape">${renderDebugValue(actions.playerPositionPayloadShape)}</dd>
-            <dt>playerState payload keys</dt>
-            <dd data-debug-field="player-state-payload-shape">${renderDebugValue(actions.playerStatePayloadShape)}</dd>
-            <dt>currentBar source path</dt>
-            <dd data-debug-field="current-bar-source-path">${renderDebugValue(actions.currentBarSourcePath)}</dd>
-            <dt>currentTick</dt>
-            <dd data-debug-field="current-tick">${renderDebugValue(actions.currentTick)}</dd>
-            <dt>playback follow target</dt>
-            <dd data-debug-field="playback-follow-target-found">${actions.playbackFollowTargetFound ? "yes" : "no"}</dd>
-            <dt>playback follow source</dt>
-            <dd data-debug-field="playback-follow-source">${renderDebugValue(actions.playbackFollowSource)}</dd>
-            <dt>playback bar anchors</dt>
-            <dd data-debug-field="playback-bar-anchor-count">${renderDebugValue(actions.playbackBarAnchorCount)}</dd>
-            <dt>playback bar anchor source</dt>
-            <dd data-debug-field="playback-bar-anchor-source">${renderDebugValue(actions.playbackBarAnchorSource)}</dd>
-            <dt>anchor strategy attempts</dt>
-            <dd data-debug-field="playback-anchor-strategy-attempts">${renderDebugValue(actions.playbackAnchorStrategyAttempts)}</dd>
-            <dt>render host has svg</dt>
-            <dd data-debug-field="render-host-has-svg">${actions.renderHostHasSvg ? "yes" : "no"}</dd>
-            <dt>render host child tags</dt>
-            <dd data-debug-field="render-host-child-tags">${renderDebugValue(actions.renderHostChildTags)}</dd>
-            <dt>render host tag/class</dt>
-            <dd data-debug-field="render-host-tag-class">${renderDebugValue(actions.renderHostTopTagClassCombos)}</dd>
-            <dt>render host element counts</dt>
-            <dd data-debug-field="render-host-element-counts">${renderDebugValue(actions.renderHostElementCounts)}</dd>
-          </dl>
+      <section class="playerTabViewportShell">
+        <div class="playerTabViewport">
+          <div id="gpRenderHost" class="gpRenderHost" aria-label="GP tablature render area"></div>
+        </div>
+      </section>
 
-          <div class="trackDebugLists">
-            <div class="trackDebugListBlock">
-              <h4 class="trackDebugListTitle">Loaded score tracks</h4>
-              <pre class="trackDebugPre" data-debug-field="score-tracks">${formatRuntimeTrackList(debugInfo?.scoreTracks)}</pre>
-            </div>
-            <div class="trackDebugListBlock">
-              <h4 class="trackDebugListTitle">Currently rendered api.tracks</h4>
-              <pre class="trackDebugPre" data-debug-field="rendered-tracks">${formatRuntimeTrackList(debugInfo?.renderedTracks)}</pre>
-            </div>
+      <section class="playerBottomDock">
+        <div class="playerDockLeft" aria-label="Track and control column">
+          <div class="trackStrip trackStripDock" aria-label="Track strip" data-action="track-strip">
+            ${renderTrackStrip(
+              actions.tracks,
+              actions.confirmedActiveTrackIndex,
+              actions.mutedTrackIndexes,
+              actions.soloTrackIndexes,
+              actions.trackVolumeByIndex,
+              actions.trackBalanceByIndex,
+            )}
+            <article class="trackStripItem masterTrackRow" data-stop-track-select="true" aria-label="Master row placeholder">
+              <div class="trackTitleRow">
+                <h3 class="trackTitle">Master</h3>
+                <span class="trackStateBadge">Master</span>
+              </div>
+              <div class="trackControlRow">
+                <button class="secondaryButton trackControlButton" type="button" disabled>S</button>
+                <button class="secondaryButton trackControlButton" type="button" disabled>M</button>
+                <label class="trackControlLabel">
+                  Vol
+                  <input class="trackControlRange" type="range" min="0" max="100" value="100" disabled />
+                  <span class="trackControlValue">100</span>
+                </label>
+                <label class="trackControlLabel trackBalanceControl">
+                  Bal
+                  <input class="trackBalanceKnob" type="range" min="-50" max="50" value="0" disabled />
+                  <span class="trackControlValue">0</span>
+                </label>
+              </div>
+            </article>
           </div>
         </div>
 
-        <div id="gpRenderHost" class="gpRenderHost" aria-label="GP tablature render area"></div>
-
-        <div class="trackStrip" aria-label="Track strip" data-action="track-strip">
-          ${renderTrackStrip(
-            actions.tracks,
-            actions.confirmedActiveTrackIndex,
-            actions.mutedTrackIndexes,
-            actions.soloTrackIndexes,
-            actions.trackVolumeByIndex,
-            actions.trackBalanceByIndex,
-          )}
+        <div class="playerDockRight">
+          <div class="timelineViewport">
+            <div class="arrangementOverview arrangementOverviewDock" data-arrangement-overview="true">
+              <p class="helperText" data-arrangement-empty>${actions.scoreOverview ? "" : "Overview loads with score runtime data."}</p>
+              <div class="arrangementBarHeader" data-arrangement-bar-header></div>
+              <div class="arrangementRows" data-arrangement-rows></div>
+              <div class="arrangementMarkers" data-arrangement-markers></div>
+            </div>
+          </div>
         </div>
-      </section>
-
-      <section class="homeCard">
-        <h2 class="sectionTitle">Arrangement overview</h2>
-        <p class="helperText">Read-only map: colored bars have note content, gray bars are empty.</p>
-        <div class="arrangementOverview" data-arrangement-overview="true">
-          <p class="helperText" data-arrangement-empty>${actions.scoreOverview ? "" : "Overview loads with score runtime data."}</p>
-          <div class="arrangementBarHeader" data-arrangement-bar-header></div>
-          <div class="arrangementRows" data-arrangement-rows></div>
-          <div class="arrangementMarkers" data-arrangement-markers></div>
-        </div>
-      </section>
-
-      <section class="homeCard">
-        <h2 class="sectionTitle">Player</h2>
-        <div class="homeActions" aria-label="Playback controls">
-          <button class="primaryButton" type="button" data-action="play">Play</button>
-          <button class="secondaryButton" type="button" data-action="pause">Pause</button>
-          <button class="secondaryButton" type="button" data-action="stop">Stop</button>
-        </div>
-        <dl class="playerInfoGrid">
-          <dt>Playback state</dt>
-          <dd data-player-field="playback-state">${actions.playbackIsPlaying === null ? "-" : actions.playbackIsPlaying ? "playing" : "paused/stopped"}</dd>
-          <dt>Playback position</dt>
-          <dd data-player-field="playback-position">${renderDebugValue(actions.playbackPositionLabel)}</dd>
-          <dt>Active track</dt>
-          <dd data-player-field="active-track-name">${renderDebugValue(actions.confirmedActiveTrackIndex === null ? null : actions.tracks.find((track) => track.index === actions.confirmedActiveTrackIndex)?.name ?? null)}</dd>
-          <dt>Current bar</dt>
-          <dd data-player-field="current-bar">${renderDebugValue(actions.currentBar)}</dd>
-          <dt>Total bars</dt>
-          <dd data-player-field="total-bars">${renderDebugValue(actions.totalBars)}</dd>
-          <dt>Tempo</dt>
-          <dd data-player-field="tempo">${actions.tempoBpm === null ? "-" : `${actions.tempoBpm} BPM`}</dd>
-        </dl>
-        <p class="helperText">Mute/Solo are UI state only in this step.</p>
       </section>
     </main>
   `;
 
-  const saveProjectButton = container.querySelector<HTMLButtonElement>('[data-action="save-project"]');
   const saveProjectAsButton = container.querySelector<HTMLButtonElement>('[data-action="save-project-as"]');
   const playButton = container.querySelector<HTMLButtonElement>('[data-action="play"]');
   const pauseButton = container.querySelector<HTMLButtonElement>('[data-action="pause"]');
   const stopButton = container.querySelector<HTMLButtonElement>('[data-action="stop"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
+  const openDebugWindowButton = container.querySelector<HTMLButtonElement>('[data-action="open-debug-window"]');
   const trackStrip = container.querySelector<HTMLElement>('[data-action="track-strip"]');
 
   const handleTrackSelection = (eventTarget: EventTarget | null): void => {
@@ -420,10 +394,10 @@ export function renderProjectScreen(
     }
   });
 
-  saveProjectButton?.addEventListener("click", actions.onSaveProject);
   saveProjectAsButton?.addEventListener("click", actions.onSaveProjectAs);
   playButton?.addEventListener("click", actions.onPlay);
   pauseButton?.addEventListener("click", actions.onPause);
   stopButton?.addEventListener("click", actions.onStop);
   backHomeButton?.addEventListener("click", actions.onBackToHome);
+  openDebugWindowButton?.addEventListener("click", () => openDebugWindow(actions));
 }

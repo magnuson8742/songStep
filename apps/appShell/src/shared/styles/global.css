@@ -534,3 +534,165 @@ select {
   border-color: rgba(120, 183, 255, 0.8);
   background: rgba(87, 143, 221, 0.3);
 }
+
+.playerLayoutShell {
+  display: grid;
+  grid-template-rows: auto auto minmax(240px, 1fr) 280px;
+  height: 100vh;
+  overflow: hidden;
+  background: #0f131b;
+}
+
+.playerMenuBar {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(7, 10, 16, 0.9);
+}
+
+.playerMenuGroup {
+  display: flex;
+  gap: 12px;
+}
+
+.playerMenuDetails {
+  position: relative;
+}
+
+.playerMenuDetails > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: #d8e3f8;
+}
+
+.playerMenuDetails[open] {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.playerMenuItem {
+  display: block;
+  width: 170px;
+  margin-top: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(12, 19, 31, 0.92);
+  color: #dce7fb;
+  border-radius: 8px;
+  padding: 7px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.playerTopHeader {
+  padding: 8px 14px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(14, 20, 31, 0.95);
+}
+
+.playerTopHeaderMain {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.playerTopTitle {
+  margin: 0;
+  font-size: 22px;
+}
+
+.playerTransport {
+  display: flex;
+  gap: 8px;
+}
+
+.playerTopInfo {
+  margin: 8px 0 0;
+  display: grid;
+  grid-template-columns: repeat(6, auto 1fr);
+  gap: 4px 10px;
+  font-size: 13px;
+}
+
+.playerTopInfo dt {
+  color: #9cb0cd;
+}
+
+.playerTopInfo dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.playerStatusBanner {
+  margin-top: 8px;
+}
+
+.playerTabViewportShell {
+  min-height: 0;
+  padding: 0 10px 10px;
+}
+
+.playerTabViewport {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(14, 20, 30, 0.66);
+  padding: 8px;
+}
+
+.playerTabViewport .gpRenderHost {
+  min-height: 620px;
+  height: auto;
+  overflow: visible;
+}
+
+.playerBottomDock {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  min-height: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(10, 14, 21, 0.95);
+}
+
+.playerDockLeft {
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px;
+}
+
+.trackStripDock {
+  max-height: none;
+  overflow: visible;
+}
+
+.masterTrackRow {
+  opacity: 0.8;
+}
+
+.playerDockRight {
+  min-width: 0;
+  min-height: 0;
+  padding: 8px;
+}
+
+.timelineViewport {
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(17, 24, 35, 0.55);
+}
+
+.arrangementOverviewDock {
+  min-width: 1100px;
+  height: 100%;
+  margin: 0;
+}
