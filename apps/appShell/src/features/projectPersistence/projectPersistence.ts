@@ -232,6 +232,10 @@ export async function saveProjectToDisk(project: SongStepProject): Promise<SaveP
   };
 }
 
+export async function saveProjectAsToDisk(project: SongStepProject): Promise<SaveProjectResult> {
+  return saveProjectToDisk(project);
+}
+
 
 
 function normalizeViewState(project: SongStepProject): SongStepProject {
