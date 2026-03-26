@@ -6,10 +6,15 @@ interface AlphaTabApi {
   load: (scoreData: unknown, trackIndexes?: number[]) => boolean;
   score?: AlphaTabScore;
   tracks?: AlphaTabTrack[];
-  play?: () => void;
+  play?: () => boolean;
   pause?: () => void;
   stop?: () => void;
   destroy?: () => void;
+  isReadyForPlayback?: boolean;
+  tickPosition?: number;
+  playerReady?: {
+    on: (handler: () => void) => void;
+  };
   playerStateChanged?: {
     on: (handler: (state: unknown) => void) => void;
   };
@@ -555,12 +560,6 @@ function waitForAnimationFrame(): Promise<void> {
   });
 }
 
-function waitForTimeout(delayMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, delayMs);
-  });
-}
-
 export async function createGpRenderer(
   container: HTMLElement,
   sourceFile: SourceFileData,
@@ -619,29 +618,6 @@ export async function createGpRenderer(
   let activeZoomReloadContext: ZoomReloadContext | null = null;
   let pendingQueuedZoomReloadToken: number | null = null;
   let zoomReloadTokenCounter = 0;
-
-  const resumePlaybackAfterZoomReload = async (
-    api: AlphaTabApi,
-    resumeContext: ZoomReloadContext,
-    sessionToken: number,
-  ): Promise<void> => {
-    await waitForTimeout(60);
-    if (sessionToken !== activeSessionToken) {
-      return;
-    }
-    if (!activeZoomReloadContext || activeZoomReloadContext.token !== resumeContext.token) {
-      return;
-    }
-    if (!resumeContext.snapshot.wasPlaying || !isPlaybackApiAvailable(api)) {
-      activeZoomReloadContext = null;
-      return;
-    }
-
-    tryRestorePlaybackPosition(api, resumeContext.snapshot.currentTick);
-    const playbackApi = api as AlphaTabApi & { play: () => void };
-    playbackApi.play();
-    activeZoomReloadContext = null;
-  };
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -999,6 +975,93 @@ export async function createGpRenderer(
     }
   };
 
+  const restorePlaybackTickForZoomResume = (api: AlphaTabApi, tick: number | null): void => {
+    if (tick === null) {
+      return;
+    }
+    if (typeof api.tickPosition === "number") {
+      api.tickPosition = tick;
+      return;
+    }
+    tryRestorePlaybackPosition(api, tick);
+  };
+
+  const tryStartPlaybackForZoomResume = (api: AlphaTabApi, tick: number | null): boolean => {
+    if (typeof api.play !== "function") {
+      return false;
+    }
+    restorePlaybackTickForZoomResume(api, tick);
+    return api.play() === true;
+  };
+
+  const finalizeZoomPlaybackResume = (
+    api: AlphaTabApi,
+    resumeContext: ZoomReloadContext,
+    sessionToken: number,
+    playbackAvailable: boolean,
+  ): void => {
+    if (sessionToken !== activeSessionToken) {
+      return;
+    }
+    if (!activeZoomReloadContext || activeZoomReloadContext.token !== resumeContext.token) {
+      return;
+    }
+    if (activeApi !== api) {
+      return;
+    }
+    if (!resumeContext.snapshot.wasPlaying || !playbackAvailable || isPercussionTrack) {
+      activeZoomReloadContext = null;
+      return;
+    }
+
+    if (api.isReadyForPlayback === true) {
+      if (tryStartPlaybackForZoomResume(api, resumeContext.snapshot.currentTick)) {
+        activeZoomReloadContext = null;
+        return;
+      }
+    }
+
+    if (!api.playerReady) {
+      hooks.onRuntimeNotice("Playback could not resume after zoom because the player is not ready.");
+      activeZoomReloadContext = null;
+      return;
+    }
+
+    let handled = false;
+    api.playerReady.on(() => {
+      if (handled) {
+        return;
+      }
+      handled = true;
+      if (sessionToken !== activeSessionToken) {
+        return;
+      }
+      if (!activeZoomReloadContext || activeZoomReloadContext.token !== resumeContext.token) {
+        return;
+      }
+      if (activeApi !== api) {
+        return;
+      }
+      if (!isPlaybackApiAvailable(api) || isPercussionTrack) {
+        activeZoomReloadContext = null;
+        return;
+      }
+      if (api.isReadyForPlayback !== true) {
+        hooks.onRuntimeNotice("Playback could not resume after zoom because the player never became ready.");
+        activeZoomReloadContext = null;
+        return;
+      }
+
+      if (tryStartPlaybackForZoomResume(api, resumeContext.snapshot.currentTick)) {
+        activeZoomReloadContext = null;
+        return;
+      }
+
+      hooks.onRuntimeNotice("Playback could not resume after zoom.");
+      activeZoomReloadContext = null;
+    });
+  };
+
   const isPercussionTrackFromRuntime = (track: AlphaTabTrack): boolean => {
     if (track.isPercussion === true) {
       return true;
@@ -1290,7 +1353,7 @@ export async function createGpRenderer(
         sessionZoomReloadToken === activeZoomReloadContext.token
       ) {
         const resumeContext = activeZoomReloadContext;
-        void resumePlaybackAfterZoomReload(api, resumeContext, sessionToken);
+        finalizeZoomPlaybackResume(api, resumeContext, sessionToken, playbackAvailable);
       }
     });
 
@@ -1412,7 +1475,7 @@ export async function createGpRenderer(
       }
 
       playbackScrollLockSnapshot = captureRenderViewportScroll();
-      const playbackApi = activeApi as AlphaTabApi & { play: () => void };
+      const playbackApi = activeApi as AlphaTabApi & { play: () => boolean };
       playbackApi.play();
     },
     pause: () => {
