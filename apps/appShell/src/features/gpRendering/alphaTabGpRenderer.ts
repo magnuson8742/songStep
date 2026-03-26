@@ -10,11 +10,13 @@ interface AlphaTabApi {
   pause?: () => void;
   stop?: () => void;
   destroy?: () => void;
-  isReadyForPlayback?: boolean;
-  tickPosition?: number;
-  playerReady?: {
-    on: (handler: () => void) => void;
+  settings?: {
+    display?: {
+      scale?: number;
+    };
   };
+  updateSettings?: () => void;
+  render?: () => void;
   playerStateChanged?: {
     on: (handler: (state: unknown) => void) => void;
   };
@@ -253,20 +255,6 @@ interface TickBarRange {
   startTick: number;
   endTickExclusive: number;
   barNumber: number;
-}
-
-interface ZoomPlaybackResumeSnapshot {
-  wasPlaying: boolean;
-  currentTick: number | null;
-}
-
-interface ZoomReloadContext {
-  token: number;
-  snapshot: ZoomPlaybackResumeSnapshot;
-}
-
-interface ReloadOptions {
-  zoomReloadToken?: number | null;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -615,9 +603,8 @@ export async function createGpRenderer(
   let hasLoggedPlayerStatePayloadShape = false;
   let playbackCapabilityMessage: string | null = null;
   let zoomPercent = Math.max(50, Math.min(200, initialZoomPercent));
-  let activeZoomReloadContext: ZoomReloadContext | null = null;
-  let pendingQueuedZoomReloadToken: number | null = null;
-  let zoomReloadTokenCounter = 0;
+  let pendingZoomPercent: number | null = null;
+  let zoomRerenderInFlight = false;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -931,135 +918,59 @@ export async function createGpRenderer(
     container.scrollTop = snapshot.top;
   };
 
-  const tryRestorePlaybackPosition = (api: AlphaTabApi, tick: number | null): void => {
-    if (tick === null) {
-      return;
-    }
-    const unsafeApi = api as unknown as {
-      seek?: (nextTick: number) => void;
-      setPlaybackPosition?: (nextTick: number) => void;
-      setPosition?: (nextTick: number) => void;
-      player?: {
-        seek?: (nextTick: number) => void;
-        setPosition?: (nextTick: number) => void;
-        tickPosition?: number;
-      };
-      tickPosition?: number;
-    };
-    if (typeof unsafeApi.seek === "function") {
-      unsafeApi.seek(tick);
-      return;
-    }
-    if (typeof unsafeApi.setPlaybackPosition === "function") {
-      unsafeApi.setPlaybackPosition(tick);
-      return;
-    }
-    if (typeof unsafeApi.setPosition === "function") {
-      unsafeApi.setPosition(tick);
-      return;
-    }
-    if (typeof unsafeApi.player?.seek === "function") {
-      unsafeApi.player.seek(tick);
-      return;
-    }
-    if (typeof unsafeApi.player?.setPosition === "function") {
-      unsafeApi.player.setPosition(tick);
-      return;
-    }
-    if (typeof unsafeApi.player?.tickPosition === "number") {
-      unsafeApi.player.tickPosition = tick;
-      return;
-    }
-    if (typeof unsafeApi.tickPosition === "number") {
-      unsafeApi.tickPosition = tick;
-    }
-  };
-
-  const restorePlaybackTickForZoomResume = (api: AlphaTabApi, tick: number | null): void => {
-    if (tick === null) {
-      return;
-    }
-    if (typeof api.tickPosition === "number") {
-      api.tickPosition = tick;
-      return;
-    }
-    tryRestorePlaybackPosition(api, tick);
-  };
-
-  const tryStartPlaybackForZoomResume = (api: AlphaTabApi, tick: number | null): boolean => {
-    if (typeof api.play !== "function") {
+  const applyZoomByRerenderingActiveApi = (nextZoomPercent: number): boolean => {
+    if (!activeApi) {
       return false;
     }
-    restorePlaybackTickForZoomResume(api, tick);
-    return api.play() === true;
-  };
-
-  const finalizeZoomPlaybackResume = (
-    api: AlphaTabApi,
-    resumeContext: ZoomReloadContext,
-    sessionToken: number,
-    playbackAvailable: boolean,
-  ): void => {
-    if (sessionToken !== activeSessionToken) {
-      return;
-    }
-    if (!activeZoomReloadContext || activeZoomReloadContext.token !== resumeContext.token) {
-      return;
-    }
-    if (activeApi !== api) {
-      return;
-    }
-    if (!resumeContext.snapshot.wasPlaying || !playbackAvailable || isPercussionTrack) {
-      activeZoomReloadContext = null;
-      return;
+    const api = activeApi;
+    if (typeof api.updateSettings !== "function" || typeof api.render !== "function") {
+      return false;
     }
 
-    if (api.isReadyForPlayback === true) {
-      if (tryStartPlaybackForZoomResume(api, resumeContext.snapshot.currentTick)) {
-        activeZoomReloadContext = null;
-        return;
-      }
+    const renderedTrack = api.tracks?.[0];
+    if (renderedTrack && renderedTrack.index !== confirmedActiveTrackIndex) {
+      return false;
     }
 
-    if (!api.playerReady) {
-      hooks.onRuntimeNotice("Playback could not resume after zoom because the player is not ready.");
-      activeZoomReloadContext = null;
-      return;
+    if (rendererBusy || zoomRerenderInFlight) {
+      pendingZoomPercent = nextZoomPercent;
+      return true;
     }
 
-    let handled = false;
-    api.playerReady.on(() => {
-      if (handled) {
-        return;
-      }
-      handled = true;
-      if (sessionToken !== activeSessionToken) {
-        return;
-      }
-      if (!activeZoomReloadContext || activeZoomReloadContext.token !== resumeContext.token) {
-        return;
-      }
-      if (activeApi !== api) {
-        return;
-      }
-      if (!isPlaybackApiAvailable(api) || isPercussionTrack) {
-        activeZoomReloadContext = null;
-        return;
-      }
-      if (api.isReadyForPlayback !== true) {
-        hooks.onRuntimeNotice("Playback could not resume after zoom because the player never became ready.");
-        activeZoomReloadContext = null;
-        return;
-      }
+    if (!api.settings) {
+      api.settings = {};
+    }
+    if (!api.settings.display) {
+      api.settings.display = {};
+    }
+    api.settings.display.scale = nextZoomPercent / 100;
 
-      if (tryStartPlaybackForZoomResume(api, resumeContext.snapshot.currentTick)) {
-        activeZoomReloadContext = null;
-        return;
-      }
+    pendingScrollSnapshot = captureRenderViewportScroll();
+    rendererBusy = true;
+    zoomRerenderInFlight = true;
+    renderCycleCounter += 1;
+    lastRenderStartedAtIso = new Date().toISOString();
+    lastRenderFinishedAtIso = null;
+    renderTimeoutHit = false;
+    lastRendererErrorStage = "zoom-rerender";
+    scheduleRenderTimeout(activeSessionToken, confirmedActiveTrackIndex);
+    emitDebugInfo();
 
-      hooks.onRuntimeNotice("Playback could not resume after zoom.");
-      activeZoomReloadContext = null;
-    });
+    try {
+      api.updateSettings();
+      api.render();
+    } catch (error: unknown) {
+      clearRenderTimeout();
+      rendererBusy = false;
+      zoomRerenderInFlight = false;
+      lastRenderFinishedAtIso = new Date().toISOString();
+      lastRendererErrorStage = "zoom-rerender-error";
+      pendingScrollSnapshot = null;
+      emitDebugInfo();
+      hooks.onRenderError(error instanceof Error ? error.message : "Could not apply GP zoom.");
+    }
+
+    return true;
   };
 
   const isPercussionTrackFromRuntime = (track: AlphaTabTrack): boolean => {
@@ -1136,6 +1047,7 @@ export async function createGpRenderer(
       lastRendererErrorStage = "renderFinished-timeout";
       lastFailedRequestedTrackIndex = timedOutTrackIndex;
       rendererBusy = false;
+      zoomRerenderInFlight = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       destroyActiveRenderer();
       if (currentRenderMode === "string-heavy-safe" || currentRenderMode === "percussion-heavy-safe") {
@@ -1155,8 +1067,7 @@ export async function createGpRenderer(
     }, RENDER_TIMEOUT_MS);
   };
 
-  const switchTrackByReload = async (nextTrackIndex: number, options?: ReloadOptions): Promise<void> => {
-    const zoomReloadToken = options?.zoomReloadToken ?? null;
+  const switchTrackByReload = async (nextTrackIndex: number): Promise<void> => {
     requestedTrackIndex = nextTrackIndex;
     const renderPlan = buildRenderPlan(nextTrackIndex);
     currentRenderMode = renderPlan.mode;
@@ -1167,14 +1078,12 @@ export async function createGpRenderer(
 
     if (rendererBusy) {
       pendingRequestedTrackIndex = nextTrackIndex;
-      if (zoomReloadToken !== null) {
-        pendingQueuedZoomReloadToken = zoomReloadToken;
-      }
       emitDebugInfo();
       return;
     }
 
     rendererBusy = true;
+    zoomRerenderInFlight = false;
     pendingRequestedTrackIndex = null;
     renderCycleCounter += 1;
     lastRenderStartedAtIso = new Date().toISOString();
@@ -1188,7 +1097,6 @@ export async function createGpRenderer(
     const sessionToken = activeSessionToken + 1;
     activeSessionToken = sessionToken;
     pendingScrollSnapshot = captureRenderViewportScroll();
-    const sessionZoomReloadToken = zoomReloadToken;
 
     destroyActiveRenderer();
     clearRenderHost(container);
@@ -1331,6 +1239,7 @@ export async function createGpRenderer(
 
       clearRenderTimeout();
       rendererBusy = false;
+      zoomRerenderInFlight = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       lastRendererErrorStage = "renderFinished";
       if (pendingScrollSnapshot) {
@@ -1340,20 +1249,15 @@ export async function createGpRenderer(
       emitDebugInfo();
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
-      const queuedZoomReloadToken = pendingQueuedZoomReloadToken;
       pendingRequestedTrackIndex = null;
-      pendingQueuedZoomReloadToken = null;
       if (queuedTrackIndex !== null) {
-        void switchTrackByReload(queuedTrackIndex, { zoomReloadToken: queuedZoomReloadToken });
+        void switchTrackByReload(queuedTrackIndex);
         return;
       }
-      if (
-        sessionZoomReloadToken !== null &&
-        activeZoomReloadContext &&
-        sessionZoomReloadToken === activeZoomReloadContext.token
-      ) {
-        const resumeContext = activeZoomReloadContext;
-        finalizeZoomPlaybackResume(api, resumeContext, sessionToken, playbackAvailable);
+      if (activeApi === api && pendingZoomPercent !== null) {
+        const queuedZoomPercent = pendingZoomPercent;
+        pendingZoomPercent = null;
+        applyZoomByRerenderingActiveApi(queuedZoomPercent);
       }
     });
 
@@ -1366,6 +1270,7 @@ export async function createGpRenderer(
       lastRendererErrorStage = "error-event";
       lastFailedRequestedTrackIndex = nextTrackIndex;
       rendererBusy = false;
+      zoomRerenderInFlight = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       destroyActiveRenderer();
       if (currentRenderMode === "string-heavy-safe" || currentRenderMode === "percussion-heavy-safe") {
@@ -1378,13 +1283,9 @@ export async function createGpRenderer(
       emitDebugInfo();
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
-      const queuedZoomReloadToken = pendingQueuedZoomReloadToken;
       pendingRequestedTrackIndex = null;
-      pendingQueuedZoomReloadToken = null;
       if (queuedTrackIndex !== null) {
-        void switchTrackByReload(queuedTrackIndex, { zoomReloadToken: queuedZoomReloadToken });
-      } else if (sessionZoomReloadToken !== null && activeZoomReloadContext?.token === sessionZoomReloadToken) {
-        activeZoomReloadContext = null;
+        void switchTrackByReload(queuedTrackIndex);
       }
     });
 
@@ -1395,6 +1296,7 @@ export async function createGpRenderer(
       lastRendererErrorStage = "load";
       lastFailedRequestedTrackIndex = nextTrackIndex;
       rendererBusy = false;
+      zoomRerenderInFlight = false;
       lastRenderFinishedAtIso = new Date().toISOString();
       destroyActiveRenderer();
       if (currentRenderMode === "string-heavy-safe" || currentRenderMode === "percussion-heavy-safe") {
@@ -1405,13 +1307,9 @@ export async function createGpRenderer(
       }
       emitDebugInfo();
       const queuedTrackIndex = pendingRequestedTrackIndex;
-      const queuedZoomReloadToken = pendingQueuedZoomReloadToken;
       pendingRequestedTrackIndex = null;
-      pendingQueuedZoomReloadToken = null;
       if (queuedTrackIndex !== null) {
-        void switchTrackByReload(queuedTrackIndex, { zoomReloadToken: queuedZoomReloadToken });
-      } else if (sessionZoomReloadToken !== null && activeZoomReloadContext?.token === sessionZoomReloadToken) {
-        activeZoomReloadContext = null;
+        void switchTrackByReload(queuedTrackIndex);
       }
       throw new Error("GP renderer rejected the source data.");
     }
@@ -1434,31 +1332,11 @@ export async function createGpRenderer(
       if (normalizedZoom === zoomPercent) {
         return;
       }
-      const wasPlayingSnapshot = playbackRuntimeInfo.isPlaying === true && !isPercussionTrack;
-      if (!activeZoomReloadContext) {
-        activeZoomReloadContext = {
-          token: (zoomReloadTokenCounter += 1),
-          snapshot: {
-            wasPlaying: wasPlayingSnapshot,
-            currentTick: playbackRuntimeInfo.currentTick,
-          },
-        };
-      } else if (wasPlayingSnapshot) {
-        activeZoomReloadContext.snapshot = {
-          wasPlaying: true,
-          currentTick: playbackRuntimeInfo.currentTick ?? activeZoomReloadContext.snapshot.currentTick,
-        };
-      }
-      const zoomReloadToken = activeZoomReloadContext.token;
-      pendingQueuedZoomReloadToken = zoomReloadToken;
       zoomPercent = normalizedZoom;
-      void switchTrackByReload(confirmedActiveTrackIndex, { zoomReloadToken }).catch((error: unknown) => {
-        if (activeZoomReloadContext?.token === zoomReloadToken) {
-          activeZoomReloadContext = null;
-        }
-        if (pendingQueuedZoomReloadToken === zoomReloadToken) {
-          pendingQueuedZoomReloadToken = null;
-        }
+      if (applyZoomByRerenderingActiveApi(normalizedZoom)) {
+        return;
+      }
+      void switchTrackByReload(confirmedActiveTrackIndex).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : "Could not apply GP zoom.";
         hooks.onRenderError(message);
       });
@@ -1512,9 +1390,9 @@ export async function createGpRenderer(
       activeSessionToken += 1;
       clearRenderTimeout();
       rendererBusy = false;
+      zoomRerenderInFlight = false;
       pendingRequestedTrackIndex = null;
-      pendingQueuedZoomReloadToken = null;
-      activeZoomReloadContext = null;
+      pendingZoomPercent = null;
       playbackScrollLockSnapshot = null;
       destroyActiveRenderer();
       clearRenderHost(container);
