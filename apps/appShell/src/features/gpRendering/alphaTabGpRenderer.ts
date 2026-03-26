@@ -255,6 +255,15 @@ interface ZoomPlaybackResumeSnapshot {
   currentTick: number | null;
 }
 
+interface ZoomReloadContext {
+  token: number;
+  snapshot: ZoomPlaybackResumeSnapshot;
+}
+
+interface ReloadOptions {
+  zoomReloadToken?: number | null;
+}
+
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -601,7 +610,9 @@ export async function createGpRenderer(
   let hasLoggedPlayerStatePayloadShape = false;
   let playbackCapabilityMessage: string | null = null;
   let zoomPercent = Math.max(50, Math.min(200, initialZoomPercent));
-  let pendingZoomPlaybackResumeSnapshot: ZoomPlaybackResumeSnapshot | null = null;
+  let activeZoomReloadContext: ZoomReloadContext | null = null;
+  let pendingQueuedZoomReloadToken: number | null = null;
+  let zoomReloadTokenCounter = 0;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1052,7 +1063,8 @@ export async function createGpRenderer(
     }, RENDER_TIMEOUT_MS);
   };
 
-  const switchTrackByReload = async (nextTrackIndex: number): Promise<void> => {
+  const switchTrackByReload = async (nextTrackIndex: number, options?: ReloadOptions): Promise<void> => {
+    const zoomReloadToken = options?.zoomReloadToken ?? null;
     requestedTrackIndex = nextTrackIndex;
     const renderPlan = buildRenderPlan(nextTrackIndex);
     currentRenderMode = renderPlan.mode;
@@ -1063,6 +1075,9 @@ export async function createGpRenderer(
 
     if (rendererBusy) {
       pendingRequestedTrackIndex = nextTrackIndex;
+      if (zoomReloadToken !== null) {
+        pendingQueuedZoomReloadToken = zoomReloadToken;
+      }
       emitDebugInfo();
       return;
     }
@@ -1081,6 +1096,7 @@ export async function createGpRenderer(
     const sessionToken = activeSessionToken + 1;
     activeSessionToken = sessionToken;
     pendingScrollSnapshot = captureRenderViewportScroll();
+    const sessionZoomReloadToken = zoomReloadToken;
 
     destroyActiveRenderer();
     clearRenderHost(container);
@@ -1229,18 +1245,27 @@ export async function createGpRenderer(
         restoreRenderViewportScroll(pendingScrollSnapshot);
         pendingScrollSnapshot = null;
       }
-      if (pendingZoomPlaybackResumeSnapshot?.wasPlaying && playbackAvailable) {
-        tryRestorePlaybackPosition(api, pendingZoomPlaybackResumeSnapshot.currentTick);
-        const playbackApi = api as AlphaTabApi & { play: () => void };
-        playbackApi.play();
-      }
-      pendingZoomPlaybackResumeSnapshot = null;
       emitDebugInfo();
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
+      const queuedZoomReloadToken = pendingQueuedZoomReloadToken;
       pendingRequestedTrackIndex = null;
+      pendingQueuedZoomReloadToken = null;
       if (queuedTrackIndex !== null) {
-        void switchTrackByReload(queuedTrackIndex);
+        void switchTrackByReload(queuedTrackIndex, { zoomReloadToken: queuedZoomReloadToken });
+        return;
+      }
+      if (
+        sessionZoomReloadToken !== null &&
+        activeZoomReloadContext &&
+        sessionZoomReloadToken === activeZoomReloadContext.token
+      ) {
+        if (activeZoomReloadContext.snapshot.wasPlaying && playbackAvailable) {
+          tryRestorePlaybackPosition(api, activeZoomReloadContext.snapshot.currentTick);
+          const playbackApi = api as AlphaTabApi & { play: () => void };
+          playbackApi.play();
+        }
+        activeZoomReloadContext = null;
       }
     });
 
@@ -1265,9 +1290,13 @@ export async function createGpRenderer(
       emitDebugInfo();
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
+      const queuedZoomReloadToken = pendingQueuedZoomReloadToken;
       pendingRequestedTrackIndex = null;
+      pendingQueuedZoomReloadToken = null;
       if (queuedTrackIndex !== null) {
-        void switchTrackByReload(queuedTrackIndex);
+        void switchTrackByReload(queuedTrackIndex, { zoomReloadToken: queuedZoomReloadToken });
+      } else if (sessionZoomReloadToken !== null && activeZoomReloadContext?.token === sessionZoomReloadToken) {
+        activeZoomReloadContext = null;
       }
     });
 
@@ -1288,9 +1317,13 @@ export async function createGpRenderer(
       }
       emitDebugInfo();
       const queuedTrackIndex = pendingRequestedTrackIndex;
+      const queuedZoomReloadToken = pendingQueuedZoomReloadToken;
       pendingRequestedTrackIndex = null;
+      pendingQueuedZoomReloadToken = null;
       if (queuedTrackIndex !== null) {
-        void switchTrackByReload(queuedTrackIndex);
+        void switchTrackByReload(queuedTrackIndex, { zoomReloadToken: queuedZoomReloadToken });
+      } else if (sessionZoomReloadToken !== null && activeZoomReloadContext?.token === sessionZoomReloadToken) {
+        activeZoomReloadContext = null;
       }
       throw new Error("GP renderer rejected the source data.");
     }
@@ -1313,13 +1346,31 @@ export async function createGpRenderer(
       if (normalizedZoom === zoomPercent) {
         return;
       }
-      pendingZoomPlaybackResumeSnapshot = {
-        wasPlaying: playbackRuntimeInfo.isPlaying === true && !isPercussionTrack,
-        currentTick: playbackRuntimeInfo.currentTick,
-      };
+      const wasPlayingSnapshot = playbackRuntimeInfo.isPlaying === true && !isPercussionTrack;
+      if (!activeZoomReloadContext) {
+        activeZoomReloadContext = {
+          token: (zoomReloadTokenCounter += 1),
+          snapshot: {
+            wasPlaying: wasPlayingSnapshot,
+            currentTick: playbackRuntimeInfo.currentTick,
+          },
+        };
+      } else if (wasPlayingSnapshot) {
+        activeZoomReloadContext.snapshot = {
+          wasPlaying: true,
+          currentTick: playbackRuntimeInfo.currentTick ?? activeZoomReloadContext.snapshot.currentTick,
+        };
+      }
+      const zoomReloadToken = activeZoomReloadContext.token;
+      pendingQueuedZoomReloadToken = zoomReloadToken;
       zoomPercent = normalizedZoom;
-      void switchTrackByReload(confirmedActiveTrackIndex).catch((error: unknown) => {
-        pendingZoomPlaybackResumeSnapshot = null;
+      void switchTrackByReload(confirmedActiveTrackIndex, { zoomReloadToken }).catch((error: unknown) => {
+        if (activeZoomReloadContext?.token === zoomReloadToken) {
+          activeZoomReloadContext = null;
+        }
+        if (pendingQueuedZoomReloadToken === zoomReloadToken) {
+          pendingQueuedZoomReloadToken = null;
+        }
         const message = error instanceof Error ? error.message : "Could not apply GP zoom.";
         hooks.onRenderError(message);
       });
@@ -1374,6 +1425,8 @@ export async function createGpRenderer(
       clearRenderTimeout();
       rendererBusy = false;
       pendingRequestedTrackIndex = null;
+      pendingQueuedZoomReloadToken = null;
+      activeZoomReloadContext = null;
       playbackScrollLockSnapshot = null;
       destroyActiveRenderer();
       clearRenderHost(container);
