@@ -20,6 +20,10 @@ interface AlphaTabApi {
   postRenderFinished?: {
     on: (handler: () => void) => void;
   };
+  playerReady?: {
+    on: (handler: () => void) => void;
+  };
+  isReadyForPlayback?: boolean;
   playerState?: number | string | null;
   tickPosition?: number;
   playerStateChanged?: {
@@ -287,6 +291,13 @@ interface InPlaceZoomPlaybackContext {
   token: number;
   wasPlaying: boolean;
   tick: number | null;
+}
+
+interface PendingProgrammaticSeek {
+  tick: number;
+  trackIndex: number;
+  sessionToken: number;
+  retryCount: number;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -639,6 +650,7 @@ export async function createGpRenderer(
   let zoomRerenderInFlight = false;
   let inPlaceZoomPlaybackContext: InPlaceZoomPlaybackContext | null = null;
   let inPlaceZoomTokenCounter = 0;
+  let pendingProgrammaticSeek: PendingProgrammaticSeek | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1135,23 +1147,38 @@ export async function createGpRenderer(
       tickPosition?: number;
     };
 
+    let didApplyTick = false;
     if (typeof unsafeApi.seek === "function") {
       unsafeApi.seek(tick);
+      didApplyTick = true;
     } else if (typeof unsafeApi.setPlaybackPosition === "function") {
       unsafeApi.setPlaybackPosition(tick);
+      didApplyTick = true;
     } else if (typeof unsafeApi.setPosition === "function") {
       unsafeApi.setPosition(tick);
+      didApplyTick = true;
     } else if (typeof unsafeApi.player?.seek === "function") {
       unsafeApi.player.seek(tick);
+      didApplyTick = true;
     } else if (typeof unsafeApi.player?.setPosition === "function") {
       unsafeApi.player.setPosition(tick);
+      didApplyTick = true;
     } else if (typeof unsafeApi.player?.tickPosition === "number") {
       unsafeApi.player.tickPosition = tick;
+      didApplyTick = true;
     } else if (typeof unsafeApi.tickPosition === "number") {
       unsafeApi.tickPosition = tick;
-    } else {
+      didApplyTick = true;
+    }
+    if (!didApplyTick) {
       return false;
     }
+    pendingProgrammaticSeek = {
+      tick,
+      trackIndex: confirmedActiveTrackIndex,
+      sessionToken: activeSessionToken,
+      retryCount: 0,
+    };
 
     const currentBarFromTick = resolveCurrentBarFromTick(tick);
     playbackRuntimeInfo = {
@@ -1263,6 +1290,7 @@ export async function createGpRenderer(
   const switchTrackByReload = async (nextTrackIndex: number): Promise<void> => {
     inPlaceZoomPlaybackContext = null;
     pendingZoomPercent = null;
+    pendingProgrammaticSeek = null;
     requestedTrackIndex = nextTrackIndex;
     const renderPlan = buildRenderPlan(nextTrackIndex);
     currentRenderMode = renderPlan.mode;
@@ -1357,6 +1385,25 @@ export async function createGpRenderer(
           console.info("[songStep] alphaTab playerPositionChanged payload shape:", describePayloadShape(positionPayload));
         }
         const currentTick = extractCurrentTickFromPositionPayload(positionPayload);
+        if (
+          currentTick !== null &&
+          pendingProgrammaticSeek &&
+          pendingProgrammaticSeek.sessionToken === sessionToken &&
+          pendingProgrammaticSeek.trackIndex === confirmedActiveTrackIndex
+        ) {
+          const tickDelta = Math.abs(currentTick - pendingProgrammaticSeek.tick);
+          if (tickDelta <= 1) {
+            pendingProgrammaticSeek = null;
+          } else if (pendingProgrammaticSeek.retryCount < 2 && api.isReadyForPlayback !== false) {
+            pendingProgrammaticSeek.retryCount += 1;
+            const retryTick = pendingProgrammaticSeek.tick;
+            const retryCountSnapshot = pendingProgrammaticSeek.retryCount;
+            seekToTick(retryTick);
+            if (pendingProgrammaticSeek) {
+              pendingProgrammaticSeek.retryCount = retryCountSnapshot;
+            }
+          }
+        }
         const currentBarFromTick =
           currentTick === null
             ? {
@@ -1382,6 +1429,17 @@ export async function createGpRenderer(
           playerPositionPayloadShape,
         };
         emitPlaybackRuntimeInfo();
+      });
+
+      api.playerReady?.on(() => {
+        if (
+          !pendingProgrammaticSeek ||
+          pendingProgrammaticSeek.sessionToken !== sessionToken ||
+          pendingProgrammaticSeek.trackIndex !== confirmedActiveTrackIndex
+        ) {
+          return;
+        }
+        seekToTick(pendingProgrammaticSeek.tick);
       });
     }
 
@@ -1633,6 +1691,7 @@ export async function createGpRenderer(
       }
 
       playbackScrollLockSnapshot = null;
+      pendingProgrammaticSeek = null;
       const playbackApi = activeApi as AlphaTabApi & { stop: () => void };
       playbackApi.stop();
     },
@@ -1644,6 +1703,7 @@ export async function createGpRenderer(
       pendingRequestedTrackIndex = null;
       pendingZoomPercent = null;
       inPlaceZoomPlaybackContext = null;
+      pendingProgrammaticSeek = null;
       playbackScrollLockSnapshot = null;
       destroyActiveRenderer();
       clearRenderHost(container);
