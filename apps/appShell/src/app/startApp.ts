@@ -83,6 +83,7 @@ interface AppState {
   selectedNavigationBar: number | null;
   selectedNavigationTick: number | null;
   selectedNavigationTrackIndex: number | null;
+  selectionDivergenceSuppressTicks: number;
   pendingOverviewNavigationBar: number | null;
   pendingOverviewNavigationTrackIndex: number | null;
   playbackAnchorRebuildToken: number;
@@ -1314,6 +1315,7 @@ function applyNavigationSelection(
   state.selectedNavigationBar = barNumber;
   state.selectedNavigationTick = tick;
   state.selectedNavigationTrackIndex = trackIndex;
+  state.selectionDivergenceSuppressTicks = 8;
   updateArrangementSelectionHighlight(state, rootElement);
   updateNavigationSelectionVisual(state, rootElement);
 }
@@ -1322,6 +1324,7 @@ function clearNavigationSelectionState(state: AppState, rootElement: HTMLElement
   state.selectedNavigationBar = null;
   state.selectedNavigationTick = null;
   state.selectedNavigationTrackIndex = null;
+  state.selectionDivergenceSuppressTicks = 0;
   updateArrangementSelectionHighlight(state, rootElement);
   hideNavigationSelection(rootElement);
 }
@@ -1507,6 +1510,7 @@ export function startApp(rootElement: HTMLElement): void {
     selectedNavigationBar: null,
     selectedNavigationTick: null,
     selectedNavigationTrackIndex: null,
+    selectionDivergenceSuppressTicks: 0,
     pendingOverviewNavigationBar: null,
     pendingOverviewNavigationTrackIndex: null,
     playbackAnchorRebuildToken: 0,
@@ -1971,7 +1975,11 @@ export function startApp(rootElement: HTMLElement): void {
             const sameTrack = state.selectedNavigationTrackIndex === activeTrackIndex;
             const sameBar = info.currentBar !== null && info.currentBar === state.selectedNavigationBar;
             const closeTick = info.currentTick !== null && Math.abs(info.currentTick - state.selectedNavigationTick) <= 1;
-            if (!sameTrack || !sameBar || !closeTick) {
+            if (sameTrack && sameBar && closeTick) {
+              state.selectionDivergenceSuppressTicks = 0;
+            } else if (state.selectionDivergenceSuppressTicks > 0) {
+              state.selectionDivergenceSuppressTicks -= 1;
+            } else if (info.isPlaying === true) {
               clearNavigationSelectionState(state, rootElement);
             }
           }
