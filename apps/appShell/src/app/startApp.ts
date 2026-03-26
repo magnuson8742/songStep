@@ -80,6 +80,9 @@ interface AppState {
   playbackPlayheadVisible: boolean;
   lastPlaybackVisualBarNumber: number | null;
   playbackBarAnchors: PlaybackBarAnchor[];
+  selectedNavigationBar: number | null;
+  selectedNavigationTick: number | null;
+  selectedNavigationTrackIndex: number | null;
   playbackAnchorRebuildToken: number;
   playbackAnchorRebuildScheduled: boolean;
   activeTrackName: string | null;
@@ -377,6 +380,7 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
 
   markersContainer.style.height = `${Math.max(laneEndPercents.length, 1) * laneHeightPx}px`;
   updateArrangementPlaybackHighlight(state, rootElement);
+  updateArrangementSelectionHighlight(state, rootElement);
 }
 
 function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLElement): void {
@@ -402,6 +406,36 @@ function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLEl
   }
 
   activeTrackCell.classList.add("isPlaybackCurrentBar");
+}
+
+function updateArrangementSelectionHighlight(state: AppState, rootElement: HTMLElement): void {
+  const arrangementCells = rootElement.querySelectorAll<HTMLElement>("[data-arrangement-bar-index]");
+  arrangementCells.forEach((cell) => {
+    cell.classList.remove("isSelectedNavigationBar");
+  });
+
+  if (
+    state.selectedNavigationBar === null ||
+    state.selectedNavigationBar <= 0 ||
+    state.selectedNavigationTrackIndex === null
+  ) {
+    return;
+  }
+
+  const selectedBarIndex = state.selectedNavigationBar - 1;
+  const selectedTrackRow = rootElement.querySelector<HTMLElement>(
+    `[data-arrangement-track-index="${state.selectedNavigationTrackIndex}"]`,
+  );
+  if (!selectedTrackRow) {
+    return;
+  }
+
+  const selectedCell = selectedTrackRow.querySelector<HTMLElement>(`[data-arrangement-bar-index="${selectedBarIndex}"]`);
+  if (!selectedCell) {
+    return;
+  }
+
+  selectedCell.classList.add("isSelectedNavigationBar");
 }
 
 function ensurePlaybackPlayheadElement(rootElement: HTMLElement): HTMLElement | null {
@@ -440,6 +474,42 @@ function ensurePlaybackHighlightElement(rootElement: HTMLElement): HTMLElement |
   return highlight;
 }
 
+function ensureNavigationCursorElement(rootElement: HTMLElement): HTMLElement | null {
+  const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+  if (!renderHost) {
+    return null;
+  }
+
+  let cursor = renderHost.querySelector<HTMLElement>("[data-navigation-cursor='true']");
+  if (!cursor) {
+    cursor = document.createElement("div");
+    cursor.className = "navigationSelectionCursor";
+    cursor.dataset.navigationCursor = "true";
+    cursor.setAttribute("aria-hidden", "true");
+    renderHost.append(cursor);
+  }
+
+  return cursor;
+}
+
+function ensureNavigationHighlightElement(rootElement: HTMLElement): HTMLElement | null {
+  const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+  if (!renderHost) {
+    return null;
+  }
+
+  let highlight = renderHost.querySelector<HTMLElement>("[data-navigation-highlight='true']");
+  if (!highlight) {
+    highlight = document.createElement("div");
+    highlight.className = "navigationSelectionHighlight";
+    highlight.dataset.navigationHighlight = "true";
+    highlight.setAttribute("aria-hidden", "true");
+    renderHost.append(highlight);
+  }
+
+  return highlight;
+}
+
 function hidePlaybackPlayhead(rootElement: HTMLElement, state: AppState): void {
   const playhead = rootElement.querySelector<HTMLElement>("[data-playback-playhead='true']");
   if (playhead) {
@@ -452,6 +522,58 @@ function hidePlaybackPlayhead(rootElement: HTMLElement, state: AppState): void {
 
   state.playbackPlayheadVisible = false;
   state.lastPlaybackVisualBarNumber = null;
+}
+
+function hideNavigationSelection(rootElement: HTMLElement): void {
+  const cursor = rootElement.querySelector<HTMLElement>("[data-navigation-cursor='true']");
+  if (cursor) {
+    cursor.style.display = "none";
+  }
+  const highlight = rootElement.querySelector<HTMLElement>("[data-navigation-highlight='true']");
+  if (highlight) {
+    highlight.style.display = "none";
+  }
+}
+
+function updateNavigationSelectionVisual(state: AppState, rootElement: HTMLElement): void {
+  if (state.selectedNavigationBar === null || state.selectedNavigationBar <= 0) {
+    hideNavigationSelection(rootElement);
+    return;
+  }
+
+  const selectedAnchor = state.playbackBarAnchors.find((anchor) => anchor.barNumber === state.selectedNavigationBar);
+  if (!selectedAnchor) {
+    hideNavigationSelection(rootElement);
+    return;
+  }
+
+  const highlight = ensureNavigationHighlightElement(rootElement);
+  const cursor = ensureNavigationCursorElement(rootElement);
+  if (!highlight || !cursor) {
+    return;
+  }
+
+  const regionWidth = Math.max(selectedAnchor.endX - selectedAnchor.startX, 8);
+  let progress = 0;
+  if (state.selectedNavigationTick !== null && state.gpRenderer) {
+    const barTickRange = state.gpRenderer.getBarTickRange(selectedAnchor.barNumber);
+    if (barTickRange && barTickRange.endTickExclusive !== null && barTickRange.endTickExclusive > barTickRange.startTick) {
+      progress = (state.selectedNavigationTick - barTickRange.startTick) / (barTickRange.endTickExclusive - barTickRange.startTick);
+    }
+  }
+  const clampedProgress = Math.min(Math.max(progress, 0), 1);
+  const cursorX = selectedAnchor.startX + regionWidth * clampedProgress;
+
+  highlight.style.left = `${selectedAnchor.startX}px`;
+  highlight.style.top = `${selectedAnchor.y}px`;
+  highlight.style.width = `${regionWidth}px`;
+  highlight.style.height = `${Math.max(selectedAnchor.height, 28)}px`;
+  highlight.style.display = "block";
+
+  cursor.style.left = `${cursorX}px`;
+  cursor.style.top = `${selectedAnchor.y}px`;
+  cursor.style.height = `${Math.max(selectedAnchor.height, 28)}px`;
+  cursor.style.display = "block";
 }
 
 function updateRenderHostDomDiagnostics(state: AppState, rootElement: HTMLElement, renderHost: HTMLElement): void {
@@ -913,6 +1035,7 @@ function schedulePlaybackBarAnchorRebuild(state: AppState, rootElement: HTMLElem
       }
 
       updatePlaybackPlayheadFromRuntime(state, rootElement);
+      updateNavigationSelectionVisual(state, rootElement);
     });
   });
 }
@@ -1179,6 +1302,64 @@ function setupTabViewportZoomWheel(rootElement: HTMLElement, state: AppState): v
   );
 }
 
+function applyNavigationSelection(
+  state: AppState,
+  rootElement: HTMLElement,
+  barNumber: number,
+  tick: number | null,
+  trackIndex: number,
+): void {
+  state.selectedNavigationBar = barNumber;
+  state.selectedNavigationTick = tick;
+  state.selectedNavigationTrackIndex = trackIndex;
+  updateArrangementSelectionHighlight(state, rootElement);
+  updateNavigationSelectionVisual(state, rootElement);
+}
+
+function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): void {
+  const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+  if (!renderHost) {
+    return;
+  }
+
+  renderHost.addEventListener("click", (event) => {
+    if (!state.gpRenderer || state.playbackBarAnchors.length === 0) {
+      return;
+    }
+
+    const hostRect = renderHost.getBoundingClientRect();
+    const clickX = event.clientX - hostRect.left + renderHost.scrollLeft;
+    const clickY = event.clientY - hostRect.top + renderHost.scrollTop;
+    const clickedAnchor = state.playbackBarAnchors.find((anchor) => {
+      const isInsideY = clickY >= anchor.y - 4 && clickY <= anchor.y + Math.max(anchor.height, 28) + 4;
+      const isInsideX = clickX >= anchor.startX && clickX <= anchor.endX;
+      return isInsideX && isInsideY;
+    });
+
+    if (!clickedAnchor) {
+      return;
+    }
+
+    const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+    const clickedSameBar =
+      state.selectedNavigationBar === clickedAnchor.barNumber && state.selectedNavigationTrackIndex === activeTrackIndex;
+    const regionWidth = Math.max(clickedAnchor.endX - clickedAnchor.startX, 1);
+    const clickProgress = (clickX - clickedAnchor.startX) / regionWidth;
+    const targetTick = clickedSameBar
+      ? state.gpRenderer.resolveNearestTickInBar(clickedAnchor.barNumber, clickProgress)
+      : state.gpRenderer.seekToBarStart(clickedAnchor.barNumber);
+    if (targetTick === null && !clickedSameBar) {
+      return;
+    }
+
+    const finalTick = clickedSameBar ? targetTick : targetTick;
+    if (clickedSameBar && finalTick !== null) {
+      state.gpRenderer.seekToTick(finalTick);
+    }
+    applyNavigationSelection(state, rootElement, clickedAnchor.barNumber, finalTick ?? null, activeTrackIndex);
+  });
+}
+
 export function startApp(rootElement: HTMLElement): void {
   const state: AppState = {
     currentView: "home",
@@ -1217,6 +1398,9 @@ export function startApp(rootElement: HTMLElement): void {
     playbackPlayheadVisible: false,
     lastPlaybackVisualBarNumber: null,
     playbackBarAnchors: [],
+    selectedNavigationBar: null,
+    selectedNavigationTick: null,
+    selectedNavigationTrackIndex: null,
     playbackAnchorRebuildToken: 0,
     playbackAnchorRebuildScheduled: false,
     activeTrackName: null,
@@ -1442,6 +1626,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.clickCounter += 1;
           state.lastClickTimestampIso = new Date().toISOString();
           state.selectionFired = true;
+          state.selectedNavigationBar = null;
+          state.selectedNavigationTick = null;
+          state.selectedNavigationTrackIndex = null;
 
           updateDebugField(rootElement, "requested-track-index", String(trackIndex));
           updateDebugField(rootElement, "last-clicked-track-index", String(trackIndex));
@@ -1458,6 +1645,8 @@ export function startApp(rootElement: HTMLElement): void {
           invalidatePlaybackBarAnchorRebuild(state);
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
+          updateArrangementSelectionHighlight(state, rootElement);
+          hideNavigationSelection(rootElement);
           hidePlaybackPlayhead(rootElement, state);
           state.gpRenderer?.selectTrack(trackIndex);
         },
@@ -1582,6 +1771,7 @@ export function startApp(rootElement: HTMLElement): void {
       setupBottomDockResize(rootElement, state);
       setupBottomDockHorizontalSync(rootElement);
       setupTabViewportZoomWheel(rootElement, state);
+      setupNotationBarNavigation(rootElement, state);
 
       const gpRenderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
       if (!gpRenderHost) {
@@ -1683,6 +1873,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "current-tick", state.playbackCurrentTick === null ? "-" : String(state.playbackCurrentTick));
           updateArrangementPlaybackHighlight(state, rootElement);
           updatePlaybackPlayheadFromRuntime(state, rootElement);
+          updateNavigationSelectionVisual(state, rootElement);
           updatePlaybackFollowInRenderHost(state, rootElement);
         },
         onRuntimeNotice: (message) => {
@@ -1705,6 +1896,8 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
+          updateArrangementSelectionHighlight(state, rootElement);
+          hideNavigationSelection(rootElement);
           hidePlaybackPlayhead(rootElement, state);
         },
         onActiveTrackConfirmed: (trackIndex) => {
@@ -1723,6 +1916,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentBarSourcePath = null;
           state.requestedTrackIndex = null;
           state.selectionFired = false;
+          state.selectedNavigationBar = null;
+          state.selectedNavigationTick = null;
+          state.selectedNavigationTrackIndex = null;
           if (state.currentProject) {
             state.currentProject.viewState.selectedTrackIndex = trackIndex;
           }
@@ -1739,6 +1935,8 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
+          updateArrangementSelectionHighlight(state, rootElement);
+          hideNavigationSelection(rootElement);
           hidePlaybackPlayhead(rootElement, state);
         },
         onRenderError: (message) => {

@@ -105,6 +105,14 @@ interface AlphaTabVoice {
 }
 
 interface AlphaTabBeat {
+  start?: number;
+  startTick?: number;
+  tick?: number;
+  playbackStart?: number;
+  absoluteStart?: number;
+  startPosition?: {
+    tick?: number;
+  };
   notes?: AlphaTabNote[];
 }
 
@@ -221,6 +229,10 @@ export interface GpRendererHooks {
 export interface GpRendererController {
   selectTrack: (trackIndex: number) => void;
   setZoom: (zoomPercent: number) => void;
+  seekToTick: (tick: number) => boolean;
+  seekToBarStart: (barNumber: number) => number | null;
+  resolveNearestTickInBar: (barNumber: number, progressInBar: number) => number | null;
+  getBarTickRange: (barNumber: number) => { startTick: number; endTickExclusive: number | null } | null;
   play: () => void;
   pause: () => void;
   stop: () => void;
@@ -994,6 +1006,127 @@ export async function createGpRenderer(
     return true;
   };
 
+  const getBarTickRange = (barNumber: number): { startTick: number; endTickExclusive: number | null } | null => {
+    if (!Number.isFinite(barNumber) || barNumber <= 0) {
+      return null;
+    }
+    const matchedRange = tickBarRanges.find((range) => range.barNumber === barNumber);
+    if (!matchedRange) {
+      return null;
+    }
+
+    return {
+      startTick: matchedRange.startTick,
+      endTickExclusive: Number.isFinite(matchedRange.endTickExclusive) ? matchedRange.endTickExclusive : null,
+    };
+  };
+
+  const resolveBarStartTickForNavigation = (barNumber: number): number | null => {
+    const tickRange = getBarTickRange(barNumber);
+    if (tickRange) {
+      return tickRange.startTick;
+    }
+    const score = activeApi?.score;
+    if (!score) {
+      return null;
+    }
+    return resolveBarStartTick(score, barNumber - 1).tick;
+  };
+
+  const resolveNearestTickInBarForNavigation = (barNumber: number, progressInBar: number): number | null => {
+    const clampedProgress = Math.min(Math.max(progressInBar, 0), 1);
+    const barStartTick = resolveBarStartTickForNavigation(barNumber);
+    if (barStartTick === null) {
+      return null;
+    }
+
+    const score = activeApi?.score;
+    const activeTrackIndex = confirmedActiveTrackIndex;
+    const activeTrack = score?.tracks?.find((track) => track.index === activeTrackIndex) ?? null;
+    const bar = activeTrack?.staves?.[0]?.bars?.[barNumber - 1];
+    const beatTickCandidates = (bar?.voices ?? []).flatMap((voice) =>
+      (voice.beats ?? []).map((beat) => {
+        const beatPaths = ["startTick", "start", "tick", "playbackStart", "absoluteStart", "startPosition.tick"];
+        for (const path of beatPaths) {
+          const tick = tryReadTickAtPath(beat, path);
+          if (tick !== null) {
+            return tick;
+          }
+        }
+        return null;
+      }),
+    );
+
+    const tickRange = getBarTickRange(barNumber);
+    const targetTick =
+      tickRange && tickRange.endTickExclusive !== null
+        ? tickRange.startTick + (tickRange.endTickExclusive - tickRange.startTick) * clampedProgress
+        : barStartTick;
+    const candidateTicks = Array.from(
+      new Set<number>(
+        [barStartTick, ...beatTickCandidates]
+          .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+          .filter((value) => (tickRange?.endTickExclusive ?? Number.POSITIVE_INFINITY) > value && value >= barStartTick),
+      ),
+    ).sort((left, right) => left - right);
+
+    if (candidateTicks.length === 0) {
+      return barStartTick;
+    }
+
+    return candidateTicks.reduce((bestTick, candidateTick) =>
+      Math.abs(candidateTick - targetTick) < Math.abs(bestTick - targetTick) ? candidateTick : bestTick,
+    );
+  };
+
+  const seekToTick = (tick: number): boolean => {
+    if (!activeApi || !Number.isFinite(tick)) {
+      return false;
+    }
+    const api = activeApi;
+    const unsafeApi = api as unknown as {
+      seek?: (nextTick: number) => void;
+      setPlaybackPosition?: (nextTick: number) => void;
+      setPosition?: (nextTick: number) => void;
+      player?: {
+        seek?: (nextTick: number) => void;
+        setPosition?: (nextTick: number) => void;
+        tickPosition?: number;
+      };
+      tickPosition?: number;
+    };
+
+    if (typeof unsafeApi.seek === "function") {
+      unsafeApi.seek(tick);
+    } else if (typeof unsafeApi.setPlaybackPosition === "function") {
+      unsafeApi.setPlaybackPosition(tick);
+    } else if (typeof unsafeApi.setPosition === "function") {
+      unsafeApi.setPosition(tick);
+    } else if (typeof unsafeApi.player?.seek === "function") {
+      unsafeApi.player.seek(tick);
+    } else if (typeof unsafeApi.player?.setPosition === "function") {
+      unsafeApi.player.setPosition(tick);
+    } else if (typeof unsafeApi.player?.tickPosition === "number") {
+      unsafeApi.player.tickPosition = tick;
+    } else if (typeof unsafeApi.tickPosition === "number") {
+      unsafeApi.tickPosition = tick;
+    } else {
+      return false;
+    }
+
+    const currentBarFromTick = resolveCurrentBarFromTick(tick);
+    playbackRuntimeInfo = {
+      ...playbackRuntimeInfo,
+      currentTick: tick,
+      currentBar: currentBarFromTick.currentBar,
+      currentBarStartTick: currentBarFromTick.currentBarStartTick,
+      currentBarEndTickExclusive: currentBarFromTick.currentBarEndTickExclusive,
+      currentBarSourcePath: currentBarFromTick.sourcePath,
+    };
+    emitPlaybackRuntimeInfo();
+    return true;
+  };
+
   const isPercussionTrackFromRuntime = (track: AlphaTabTrack): boolean => {
     if (track.isPercussion === true) {
       return true;
@@ -1405,6 +1538,18 @@ export async function createGpRenderer(
         hooks.onRenderError(message);
       });
     },
+    seekToTick: (tick: number) => seekToTick(tick),
+    seekToBarStart: (barNumber: number) => {
+      const barStartTick = resolveBarStartTickForNavigation(barNumber);
+      if (barStartTick === null) {
+        return null;
+      }
+      const didSeek = seekToTick(barStartTick);
+      return didSeek ? barStartTick : null;
+    },
+    resolveNearestTickInBar: (barNumber: number, progressInBar: number) =>
+      resolveNearestTickInBarForNavigation(barNumber, progressInBar),
+    getBarTickRange: (barNumber: number) => getBarTickRange(barNumber),
     play: () => {
       if (isPercussionTrack) {
         hooks.onRuntimeNotice("Playback is not enabled for percussion tracks yet.");
