@@ -1347,8 +1347,7 @@ function seekToBarAndApplyNavigationSelection(
 function tryCompletePendingOverviewNavigationAfterRender(
   state: AppState,
   rootElement: HTMLElement,
-  confirmedTrackIndex: number | null,
-  rendererStage: string | null,
+  committedTrackIndex: number | null,
 ): void {
   if (state.pendingOverviewNavigationBar === null || state.pendingOverviewNavigationTrackIndex === null) {
     return;
@@ -1356,17 +1355,14 @@ function tryCompletePendingOverviewNavigationAfterRender(
   if (!state.gpRenderer) {
     return;
   }
-  if (rendererStage !== "renderFinished") {
-    return;
-  }
-  if (confirmedTrackIndex === null || confirmedTrackIndex !== state.pendingOverviewNavigationTrackIndex) {
+  if (committedTrackIndex === null || committedTrackIndex !== state.pendingOverviewNavigationTrackIndex) {
     return;
   }
 
   const pendingBar = state.pendingOverviewNavigationBar;
   state.pendingOverviewNavigationBar = null;
   state.pendingOverviewNavigationTrackIndex = null;
-  const seekSucceeded = seekToBarAndApplyNavigationSelection(state, rootElement, confirmedTrackIndex, pendingBar);
+  const seekSucceeded = seekToBarAndApplyNavigationSelection(state, rootElement, committedTrackIndex, pendingBar);
   if (!seekSucceeded) {
     clearNavigationSelectionState(state, rootElement);
   }
@@ -1931,12 +1927,9 @@ export function startApp(rootElement: HTMLElement): void {
           if (debugInfo.lastRendererErrorStage === "renderFinished") {
             schedulePlaybackBarAnchorRebuild(state, rootElement);
           }
-          tryCompletePendingOverviewNavigationAfterRender(
-            state,
-            rootElement,
-            debugInfo.confirmedActiveTrackIndex,
-            debugInfo.lastRendererErrorStage,
-          );
+        },
+        onTrackRenderCommitted: (trackIndex) => {
+          tryCompletePendingOverviewNavigationAfterRender(state, rootElement, trackIndex);
         },
         onScoreRuntimeInfo: (info) => {
           state.scoreTitle = info.scoreTitle;

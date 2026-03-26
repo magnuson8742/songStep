@@ -227,6 +227,7 @@ export interface GpRendererHooks {
   onTracksLoaded: (tracks: GpTrackInfo[]) => void;
   onDebugInfo: (debugInfo: GpRenderDebugInfo) => void;
   onActiveTrackConfirmed: (trackIndex: number) => void;
+  onTrackRenderCommitted: (trackIndex: number) => void;
   onScoreRuntimeInfo: (info: GpScoreRuntimeInfo) => void;
   onScoreOverviewRuntimeInfo: (info: GpScoreOverviewRuntimeInfo) => void;
   onPlaybackRuntimeInfo: (info: GpPlaybackRuntimeInfo) => void;
@@ -1463,6 +1464,8 @@ export async function createGpRenderer(
       if (activeApi !== api) {
         return;
       }
+      const committedTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+      hooks.onTrackRenderCommitted(committedTrackIndex);
       if (!inPlaceZoomPlaybackContext) {
         return;
       }
