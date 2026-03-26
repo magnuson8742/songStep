@@ -534,12 +534,65 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
 
       return Math.abs(anchor.x - previous.x) > 8 || Math.abs(anchor.y - previous.y) > 8;
     });
-    const limitedAnchors = totalBars > 0 ? dedupedAnchors.slice(0, totalBars) : dedupedAnchors;
+    const rowTolerance = 10;
+    const rawRowGroups: Array<{ yCenter: number; yMin: number; yMax: number; anchorIndexes: number[] }> = [];
+    for (let index = 0; index < dedupedAnchors.length; index += 1) {
+      const anchor = dedupedAnchors[index];
+      if (!anchor) {
+        continue;
+      }
+
+      const existingRowIndex = rawRowGroups.findIndex((row) => Math.abs(row.yCenter - anchor.y) <= rowTolerance);
+      if (existingRowIndex >= 0) {
+        const existingRow = rawRowGroups[existingRowIndex];
+        if (existingRow) {
+          existingRow.yMin = Math.min(existingRow.yMin, anchor.y);
+          existingRow.yMax = Math.max(existingRow.yMax, anchor.y);
+          existingRow.yCenter = (existingRow.yMin + existingRow.yMax) / 2;
+          existingRow.anchorIndexes.push(index);
+        }
+      } else {
+        rawRowGroups.push({
+          yCenter: anchor.y,
+          yMin: anchor.y,
+          yMax: anchor.y,
+          anchorIndexes: [index],
+        });
+      }
+    }
+
+    const filteredAnchorIndexes: number[] = [];
+    let droppedTerminalCount = 0;
+    rawRowGroups.forEach((row) => {
+      const rowIndexesSortedByX = [...row.anchorIndexes].sort((left, right) => {
+        const leftAnchor = dedupedAnchors[left];
+        const rightAnchor = dedupedAnchors[right];
+        if (!leftAnchor || !rightAnchor) {
+          return left - right;
+        }
+
+        return leftAnchor.x - rightAnchor.x;
+      });
+
+      if (rowIndexesSortedByX.length <= 1) {
+        filteredAnchorIndexes.push(...rowIndexesSortedByX);
+        return;
+      }
+
+      const keptIndexes = rowIndexesSortedByX.slice(0, -1);
+      filteredAnchorIndexes.push(...keptIndexes);
+      droppedTerminalCount += 1;
+    });
+
+    const filteredAnchors = filteredAnchorIndexes
+      .sort((left, right) => left - right)
+      .map((index) => dedupedAnchors[index])
+      .filter((anchor): anchor is { x: number; y: number; height: number } => anchor !== undefined);
+    const limitedAnchors = totalBars > 0 ? filteredAnchors.slice(0, totalBars) : filteredAnchors;
     if (limitedAnchors.length === 0) {
       continue;
     }
 
-    const rowTolerance = 10;
     const rowSummaries: Array<{
       yCenter: number;
       yMin: number;
@@ -717,7 +770,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     });
     state.playbackBarAnchorCount = state.playbackBarAnchors.length;
     state.playbackBarAnchorSource = strategy.source;
-    state.playbackAnchorStrategyAttempts = strategyAttempts.join(" | ");
+    state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | diag:raw=${rawAnchors.length},dedup=${dedupedAnchors.length},filtered=${filteredAnchors.length},used=${limitedAnchors.length},rows=${rowSummaries.length},dropped=${droppedTerminalCount},totalBars=${totalBars > 0 ? totalBars : "-"}`;
     updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
     updateDebugField(rootElement, "playback-bar-anchor-source", strategy.source);
     updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
