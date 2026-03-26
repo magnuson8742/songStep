@@ -38,6 +38,10 @@ const MIN_BOTTOM_DOCK_HEIGHT_PX = 180;
 const MAX_BOTTOM_DOCK_HEIGHT_PX = 520;
 const ARRANGEMENT_BAR_WIDTH_PX = 24;
 const ARRANGEMENT_BAR_GAP_PX = 4;
+const DEFAULT_TAB_ZOOM_PERCENT = 100;
+const MIN_TAB_ZOOM_PERCENT = 60;
+const MAX_TAB_ZOOM_PERCENT = 160;
+const TAB_ZOOM_STEP_PERCENT = 10;
 
 interface AppState {
   currentView: AppView;
@@ -87,6 +91,7 @@ interface AppState {
   mutedTrackIndexes: number[];
   soloTrackIndexes: number[];
   bottomDockHeightPx: number;
+  tabZoomPercent: number;
 }
 
 function updateDebugField(rootElement: HTMLElement, fieldName: string, value: string): void {
@@ -1146,6 +1151,34 @@ function setupBottomDockHorizontalSync(rootElement: HTMLElement): void {
   });
 }
 
+function setupTabViewportZoomWheel(rootElement: HTMLElement, state: AppState): void {
+  const tabViewport = rootElement.querySelector<HTMLElement>(".playerTabViewport");
+  if (!tabViewport) {
+    return;
+  }
+
+  tabViewport.addEventListener(
+    "wheel",
+    (event) => {
+      if (!event.ctrlKey) {
+        return;
+      }
+      event.preventDefault();
+      const zoomDirection = event.deltaY < 0 ? 1 : -1;
+      const nextZoomPercent = Math.max(
+        MIN_TAB_ZOOM_PERCENT,
+        Math.min(MAX_TAB_ZOOM_PERCENT, state.tabZoomPercent + zoomDirection * TAB_ZOOM_STEP_PERCENT),
+      );
+      if (nextZoomPercent === state.tabZoomPercent) {
+        return;
+      }
+      state.tabZoomPercent = nextZoomPercent;
+      state.gpRenderer?.setZoom(nextZoomPercent);
+    },
+    { passive: false },
+  );
+}
+
 export function startApp(rootElement: HTMLElement): void {
   const state: AppState = {
     currentView: "home",
@@ -1195,6 +1228,7 @@ export function startApp(rootElement: HTMLElement): void {
     mutedTrackIndexes: [],
     soloTrackIndexes: [],
     bottomDockHeightPx: DEFAULT_BOTTOM_DOCK_HEIGHT_PX,
+    tabZoomPercent: DEFAULT_TAB_ZOOM_PERCENT,
   };
 
   const cleanupRenderer = (): void => {
@@ -1280,6 +1314,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.clickCounter = 0;
           state.lastClickTimestampIso = null;
           state.selectionFired = false;
+          state.tabZoomPercent = DEFAULT_TAB_ZOOM_PERCENT;
           render();
         },
       });
@@ -1341,6 +1376,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.clickCounter = 0;
             state.lastClickTimestampIso = null;
             state.selectionFired = false;
+            state.tabZoomPercent = DEFAULT_TAB_ZOOM_PERCENT;
             render();
             return project.sourceFile.fileName;
           } catch (error) {
@@ -1545,6 +1581,7 @@ export function startApp(rootElement: HTMLElement): void {
       });
       setupBottomDockResize(rootElement, state);
       setupBottomDockHorizontalSync(rootElement);
+      setupTabViewportZoomWheel(rootElement, state);
 
       const gpRenderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
       if (!gpRenderHost) {
@@ -1710,7 +1747,7 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
           render();
         },
-      })
+      }, state.tabZoomPercent)
         .then((renderer) => {
           state.gpRenderer = renderer;
         })

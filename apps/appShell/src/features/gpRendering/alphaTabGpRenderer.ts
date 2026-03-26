@@ -208,6 +208,7 @@ export interface GpRendererHooks {
 
 export interface GpRendererController {
   selectTrack: (trackIndex: number) => void;
+  setZoom: (zoomPercent: number) => void;
   play: () => void;
   pause: () => void;
   stop: () => void;
@@ -435,7 +436,7 @@ function resolveBarStartTick(
   };
 }
 
-function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StaveProfile): alphaTab.json.SettingsJson {
+function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StaveProfile, zoomPercent: number): alphaTab.json.SettingsJson {
   const settings: alphaTab.json.SettingsJson = {
     core: {
       fontDirectory: BRAVURA_FONT_DIRECTORY,
@@ -466,17 +467,18 @@ function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StavePr
     ...(unsafeSettings.display ?? {}),
     followCursor: false,
     autoScroll: false,
+    scale: zoomPercent / 100,
   };
 
   return settings;
 }
 
-function createAlphaTabApi(container: HTMLElement, renderPlan: RenderPlan): AlphaTabApi {
+function createAlphaTabApi(container: HTMLElement, renderPlan: RenderPlan, zoomPercent: number): AlphaTabApi {
   const enableLazyLoading =
     renderPlan.mode === "string-heavy-safe" || renderPlan.mode === "percussion-heavy-safe" ? true : ENABLE_LAZY_LOADING_DEFAULT;
   return new alphaTab.AlphaTabApi(
     container,
-    buildAlphaTabSettings(enableLazyLoading, renderPlan.effectiveStaveProfile),
+    buildAlphaTabSettings(enableLazyLoading, renderPlan.effectiveStaveProfile, zoomPercent),
   ) as unknown as AlphaTabApi;
 }
 
@@ -544,6 +546,7 @@ export async function createGpRenderer(
   sourceFile: SourceFileData,
   selectedTrackIndex: number,
   hooks: GpRendererHooks,
+  initialZoomPercent = 100,
 ): Promise<GpRendererController> {
   const sourceBytes = base64ToBytes(sourceFile.contentBase64);
 
@@ -592,6 +595,7 @@ export async function createGpRenderer(
   let hasLoggedPlayerPositionPayloadShape = false;
   let hasLoggedPlayerStatePayloadShape = false;
   let playbackCapabilityMessage: string | null = null;
+  let zoomPercent = Math.max(50, Math.min(200, initialZoomPercent));
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1039,7 +1043,7 @@ export async function createGpRenderer(
       return;
     }
 
-    const api = createAlphaTabApi(container, renderPlan);
+    const api = createAlphaTabApi(container, renderPlan, zoomPercent);
     activeApi = api;
     const playbackAvailable = !renderPlan.isPercussion && isPlaybackApiAvailable(api);
     if (renderPlan.isPercussion) {
@@ -1245,6 +1249,17 @@ export async function createGpRenderer(
     selectTrack: (trackIndex: number) => {
       void switchTrackByReload(trackIndex).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : "Could not switch GP track.";
+        hooks.onRenderError(message);
+      });
+    },
+    setZoom: (nextZoomPercent: number) => {
+      const normalizedZoom = Math.max(50, Math.min(200, Math.round(nextZoomPercent)));
+      if (normalizedZoom === zoomPercent) {
+        return;
+      }
+      zoomPercent = normalizedZoom;
+      void switchTrackByReload(confirmedActiveTrackIndex).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Could not apply GP zoom.";
         hooks.onRenderError(message);
       });
     },
