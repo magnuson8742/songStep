@@ -340,6 +340,10 @@ select {
   grid-template-columns: minmax(72px, 1fr) 24px 24px 82px 82px;
 }
 
+.masterTrackControlRow {
+  grid-template-columns: minmax(120px, 1fr) 92px 92px;
+}
+
 .trackNameCompact {
   min-width: 0;
   overflow: hidden;
@@ -722,7 +726,7 @@ select {
   height: auto;
   overflow: visible;
   display: grid;
-  grid-template-rows: var(--dock-top-band-height) minmax(0, 1fr) var(--dock-bottom-band-height);
+  grid-template-rows: var(--dock-top-band-height) auto var(--dock-bottom-band-height);
   gap: 0;
 }
 

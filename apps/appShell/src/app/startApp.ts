@@ -81,6 +81,8 @@ interface AppState {
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
   trackBalanceByIndex: Record<number, number>;
+  masterVolume: number;
+  masterBalance: number;
   mutedTrackIndexes: number[];
   soloTrackIndexes: number[];
   bottomDockHeightPx: number;
@@ -259,6 +261,23 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
       valueLabel.textContent = `${value}`;
     }
   });
+
+  const masterVolumeInput = rootElement.querySelector<HTMLInputElement>("[data-master-action='set-volume']");
+  if (masterVolumeInput) {
+    masterVolumeInput.value = String(state.masterVolume);
+  }
+  const masterBalanceInput = rootElement.querySelector<HTMLInputElement>("[data-master-action='set-balance']");
+  if (masterBalanceInput) {
+    masterBalanceInput.value = String(state.masterBalance);
+  }
+  const masterVolumeValue = rootElement.querySelector<HTMLElement>("[data-master-volume-value='true']");
+  if (masterVolumeValue) {
+    masterVolumeValue.textContent = String(state.masterVolume);
+  }
+  const masterBalanceValue = rootElement.querySelector<HTMLElement>("[data-master-balance-value='true']");
+  if (masterBalanceValue) {
+    masterBalanceValue.textContent = String(state.masterBalance);
+  }
 }
 
 function updateArrangementOverview(state: AppState, rootElement: HTMLElement): void {
@@ -1140,6 +1159,8 @@ export function startApp(rootElement: HTMLElement): void {
     scoreOverview: null,
     trackVolumeByIndex: {},
     trackBalanceByIndex: {},
+    masterVolume: 80,
+    masterBalance: 0,
     mutedTrackIndexes: [],
     soloTrackIndexes: [],
     bottomDockHeightPx: DEFAULT_BOTTOM_DOCK_HEIGHT_PX,
@@ -1220,6 +1241,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.scoreOverview = null;
           state.trackVolumeByIndex = {};
           state.trackBalanceByIndex = {};
+          state.masterVolume = 80;
+          state.masterBalance = 0;
           state.mutedTrackIndexes = [];
           state.soloTrackIndexes = [];
           state.lastClickedTrackIndex = null;
@@ -1279,6 +1302,8 @@ export function startApp(rootElement: HTMLElement): void {
             state.scoreOverview = null;
             state.trackVolumeByIndex = {};
             state.trackBalanceByIndex = {};
+            state.masterVolume = 80;
+            state.masterBalance = 0;
             state.mutedTrackIndexes = [];
             state.soloTrackIndexes = [];
             state.lastClickedTrackIndex = null;
@@ -1333,6 +1358,8 @@ export function startApp(rootElement: HTMLElement): void {
         scoreOverview: state.scoreOverview,
         trackVolumeByIndex: state.trackVolumeByIndex,
         trackBalanceByIndex: state.trackBalanceByIndex,
+        masterVolume: state.masterVolume,
+        masterBalance: state.masterBalance,
         mutedTrackIndexes: state.mutedTrackIndexes,
         soloTrackIndexes: state.soloTrackIndexes,
         onTrackSelectionChange: (trackIndex: number) => {
@@ -1430,6 +1457,14 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onTrackBalanceChange: (trackIndex, balance) => {
           state.trackBalanceByIndex[trackIndex] = balance;
+          updateTrackControlVisualState(state, rootElement);
+        },
+        onMasterVolumeChange: (volume) => {
+          state.masterVolume = volume;
+          updateTrackControlVisualState(state, rootElement);
+        },
+        onMasterBalanceChange: (balance) => {
+          state.masterBalance = balance;
           updateTrackControlVisualState(state, rootElement);
         },
         onPlay: () => {

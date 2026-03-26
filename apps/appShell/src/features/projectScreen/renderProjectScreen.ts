@@ -35,6 +35,8 @@ export interface ProjectScreenActions {
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
   trackBalanceByIndex: Record<number, number>;
+  masterVolume: number;
+  masterBalance: number;
   mutedTrackIndexes: number[];
   soloTrackIndexes: number[];
   onTrackSelectionChange: (trackIndex: number) => void;
@@ -42,6 +44,8 @@ export interface ProjectScreenActions {
   onToggleTrackSolo: (trackIndex: number) => void;
   onTrackVolumeChange: (trackIndex: number, volume: number) => void;
   onTrackBalanceChange: (trackIndex: number, balance: number) => void;
+  onMasterVolumeChange: (volume: number) => void;
+  onMasterBalanceChange: (balance: number) => void;
   onBackToHome: () => void;
   onSaveProject: () => Promise<void>;
   onSaveProjectAs: () => Promise<void>;
@@ -236,19 +240,17 @@ export function renderProjectScreen(
                   actions.trackBalanceByIndex,
                 )}
                 <article class="trackStripItem masterTrackRow" data-stop-track-select="true" aria-label="Master row placeholder">
-                  <div class="trackControlRow trackControlRowCompact">
+                  <div class="trackControlRow trackControlRowCompact masterTrackControlRow">
                     <span class="trackNameCompact">Master</span>
-                    <button class="secondaryButton trackControlButton" type="button" disabled>S</button>
-                    <button class="secondaryButton trackControlButton" type="button" disabled>M</button>
                     <label class="trackControlLabel trackControlLabelCompact">
                       <span class="trackControlLabelName">Vol</span>
-                      <input class="trackControlRange" type="range" min="0" max="100" value="100" disabled />
-                      <span class="trackControlValue">100</span>
+                      <input class="trackControlRange" type="range" min="0" max="100" value="${actions.masterVolume}" data-stop-track-select="true" data-master-action="set-volume" />
+                      <span class="trackControlValue" data-master-volume-value="true">${actions.masterVolume}</span>
                     </label>
                     <label class="trackControlLabel trackControlLabelCompact">
                       <span class="trackControlLabelName">Bal</span>
-                      <input class="trackControlRange" type="range" min="-50" max="50" value="0" disabled />
-                      <span class="trackControlValue">0</span>
+                      <input class="trackControlRange" type="range" min="-50" max="50" value="${actions.masterBalance}" data-stop-track-select="true" data-master-action="set-balance" />
+                      <span class="trackControlValue" data-master-balance-value="true">${actions.masterBalance}</span>
                     </label>
                   </div>
                 </article>
@@ -361,6 +363,16 @@ export function renderProjectScreen(
       }
 
       actions.onTrackBalanceChange(trackIndex, Number(targetElement.value));
+      return;
+    }
+
+    if (targetElement.dataset.masterAction === "set-volume") {
+      actions.onMasterVolumeChange(Number(targetElement.value));
+      return;
+    }
+
+    if (targetElement.dataset.masterAction === "set-balance") {
+      actions.onMasterBalanceChange(Number(targetElement.value));
     }
   });
 
@@ -401,6 +413,16 @@ export function renderProjectScreen(
       }
 
       actions.onTrackBalanceChange(trackIndex, DEFAULT_TRACK_BALANCE);
+      return;
+    }
+
+    if (targetElement.dataset.masterAction === "set-volume") {
+      actions.onMasterVolumeChange(DEFAULT_TRACK_VOLUME);
+      return;
+    }
+
+    if (targetElement.dataset.masterAction === "set-balance") {
+      actions.onMasterBalanceChange(DEFAULT_TRACK_BALANCE);
     }
   });
 
