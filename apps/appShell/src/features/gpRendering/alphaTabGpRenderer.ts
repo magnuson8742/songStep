@@ -250,6 +250,11 @@ interface TickBarRange {
   barNumber: number;
 }
 
+interface ZoomPlaybackResumeSnapshot {
+  wasPlaying: boolean;
+  currentTick: number | null;
+}
+
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -596,6 +601,7 @@ export async function createGpRenderer(
   let hasLoggedPlayerStatePayloadShape = false;
   let playbackCapabilityMessage: string | null = null;
   let zoomPercent = Math.max(50, Math.min(200, initialZoomPercent));
+  let pendingZoomPlaybackResumeSnapshot: ZoomPlaybackResumeSnapshot | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -909,6 +915,50 @@ export async function createGpRenderer(
     container.scrollTop = snapshot.top;
   };
 
+  const tryRestorePlaybackPosition = (api: AlphaTabApi, tick: number | null): void => {
+    if (tick === null) {
+      return;
+    }
+    const unsafeApi = api as unknown as {
+      seek?: (nextTick: number) => void;
+      setPlaybackPosition?: (nextTick: number) => void;
+      setPosition?: (nextTick: number) => void;
+      player?: {
+        seek?: (nextTick: number) => void;
+        setPosition?: (nextTick: number) => void;
+        tickPosition?: number;
+      };
+      tickPosition?: number;
+    };
+    if (typeof unsafeApi.seek === "function") {
+      unsafeApi.seek(tick);
+      return;
+    }
+    if (typeof unsafeApi.setPlaybackPosition === "function") {
+      unsafeApi.setPlaybackPosition(tick);
+      return;
+    }
+    if (typeof unsafeApi.setPosition === "function") {
+      unsafeApi.setPosition(tick);
+      return;
+    }
+    if (typeof unsafeApi.player?.seek === "function") {
+      unsafeApi.player.seek(tick);
+      return;
+    }
+    if (typeof unsafeApi.player?.setPosition === "function") {
+      unsafeApi.player.setPosition(tick);
+      return;
+    }
+    if (typeof unsafeApi.player?.tickPosition === "number") {
+      unsafeApi.player.tickPosition = tick;
+      return;
+    }
+    if (typeof unsafeApi.tickPosition === "number") {
+      unsafeApi.tickPosition = tick;
+    }
+  };
+
   const isPercussionTrackFromRuntime = (track: AlphaTabTrack): boolean => {
     if (track.isPercussion === true) {
       return true;
@@ -1179,6 +1229,12 @@ export async function createGpRenderer(
         restoreRenderViewportScroll(pendingScrollSnapshot);
         pendingScrollSnapshot = null;
       }
+      if (pendingZoomPlaybackResumeSnapshot?.wasPlaying && playbackAvailable) {
+        tryRestorePlaybackPosition(api, pendingZoomPlaybackResumeSnapshot.currentTick);
+        const playbackApi = api as AlphaTabApi & { play: () => void };
+        playbackApi.play();
+      }
+      pendingZoomPlaybackResumeSnapshot = null;
       emitDebugInfo();
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
@@ -1257,8 +1313,13 @@ export async function createGpRenderer(
       if (normalizedZoom === zoomPercent) {
         return;
       }
+      pendingZoomPlaybackResumeSnapshot = {
+        wasPlaying: playbackRuntimeInfo.isPlaying === true && !isPercussionTrack,
+        currentTick: playbackRuntimeInfo.currentTick,
+      };
       zoomPercent = normalizedZoom;
       void switchTrackByReload(confirmedActiveTrackIndex).catch((error: unknown) => {
+        pendingZoomPlaybackResumeSnapshot = null;
         const message = error instanceof Error ? error.message : "Could not apply GP zoom.";
         hooks.onRenderError(message);
       });
