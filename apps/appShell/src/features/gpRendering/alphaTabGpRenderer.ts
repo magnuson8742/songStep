@@ -895,12 +895,13 @@ export async function createGpRenderer(
   };
 
   const captureRenderViewportScroll = (): RenderViewportScrollSnapshot => ({
-    left: container.scrollLeft,
+    left: Math.max(0, container.scrollLeft),
     top: container.scrollTop,
   });
 
   const restoreRenderViewportScroll = (snapshot: RenderViewportScrollSnapshot): void => {
-    container.scrollLeft = snapshot.left;
+    const maxHorizontalScroll = Math.max(container.scrollWidth - container.clientWidth, 0);
+    container.scrollLeft = Math.min(Math.max(snapshot.left, 0), maxHorizontalScroll);
     container.scrollTop = snapshot.top;
   };
 

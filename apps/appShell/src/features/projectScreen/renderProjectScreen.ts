@@ -93,21 +93,19 @@ function renderTrackStrip(
 
       return `
         <article class="${activeClass}" data-track-item-index="${track.index}" role="button" tabindex="0" aria-label="Select track ${track.name}">
-          <div class="trackTitleRow">
-            <h3 class="trackTitle">${track.name}</h3>
-            <span class="trackStateBadge" data-track-state-badge="true">${isActive ? "Active" : "Idle"}</span>
-          </div>
-          <div class="trackControlRow" aria-label="Track controls for ${track.name}">
+          <div class="trackControlRow trackControlRowCompact" aria-label="Track controls for ${track.name}">
+            <span class="trackNameCompact" title="${track.name}">${track.name}</span>
+            <span class="trackStateBadge trackStateBadgeCompact" data-track-state-badge="true">${isActive ? "Active" : "Idle"}</span>
             <button class="secondaryButton trackControlButton ${soloTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-solo" data-track-index="${track.index}">S</button>
             <button class="secondaryButton trackControlButton ${mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}">M</button>
-            <label class="trackControlLabel">
-              Vol
+            <label class="trackControlLabel trackControlLabelCompact">
+              <span class="trackControlLabelName">Vol</span>
               <input class="trackControlRange" type="range" min="0" max="100" value="${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}" data-stop-track-select="true" data-track-action="set-volume" data-track-volume-index="${track.index}" />
               <span class="trackControlValue" data-track-volume-value="${track.index}">${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}</span>
             </label>
-            <label class="trackControlLabel trackBalanceControl">
-              Bal
-              <input class="trackBalanceKnob" type="range" min="-50" max="50" value="${trackBalanceByIndex[track.index] ?? DEFAULT_TRACK_BALANCE}" data-stop-track-select="true" data-track-action="set-balance" data-track-balance-index="${track.index}" />
+            <label class="trackControlLabel trackControlLabelCompact">
+              <span class="trackControlLabelName">Bal</span>
+              <input class="trackControlRange" type="range" min="-50" max="50" value="${trackBalanceByIndex[track.index] ?? DEFAULT_TRACK_BALANCE}" data-stop-track-select="true" data-track-action="set-balance" data-track-balance-index="${track.index}" />
               <span class="trackControlValue" data-track-balance-value="${track.index}">${trackBalanceByIndex[track.index] ?? DEFAULT_TRACK_BALANCE}</span>
             </label>
           </div>
@@ -236,21 +234,19 @@ export function renderProjectScreen(
                 actions.trackBalanceByIndex,
               )}
               <article class="trackStripItem masterTrackRow" data-stop-track-select="true" aria-label="Master row placeholder">
-                <div class="trackTitleRow">
-                  <h3 class="trackTitle">Master</h3>
-                  <span class="trackStateBadge">Master</span>
-                </div>
-                <div class="trackControlRow">
+                <div class="trackControlRow trackControlRowCompact">
+                  <span class="trackNameCompact">Master</span>
+                  <span class="trackStateBadge trackStateBadgeCompact">Master</span>
                   <button class="secondaryButton trackControlButton" type="button" disabled>S</button>
                   <button class="secondaryButton trackControlButton" type="button" disabled>M</button>
-                  <label class="trackControlLabel">
-                    Vol
+                  <label class="trackControlLabel trackControlLabelCompact">
+                    <span class="trackControlLabelName">Vol</span>
                     <input class="trackControlRange" type="range" min="0" max="100" value="100" disabled />
                     <span class="trackControlValue">100</span>
                   </label>
-                  <label class="trackControlLabel trackBalanceControl">
-                    Bal
-                    <input class="trackBalanceKnob" type="range" min="-50" max="50" value="0" disabled />
+                  <label class="trackControlLabel trackControlLabelCompact">
+                    <span class="trackControlLabelName">Bal</span>
+                    <input class="trackControlRange" type="range" min="-50" max="50" value="0" disabled />
                     <span class="trackControlValue">0</span>
                   </label>
                 </div>

@@ -291,8 +291,7 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
         )
         .join("");
       return `
-        <div class="arrangementRow" data-arrangement-track-index="${row.trackIndex}">
-          <span class="arrangementTrackLabel">${row.trackName}</span>
+        <div class="arrangementRow" data-arrangement-track-index="${row.trackIndex}" aria-label="Timeline row for ${row.trackName}">
           <div class="arrangementBarRow">${barCells}</div>
         </div>
       `;
