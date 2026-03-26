@@ -33,6 +33,9 @@ interface PlaybackBarAnchor {
 }
 
 const ENABLE_CUSTOM_PLAYHEAD = true;
+const DEFAULT_BOTTOM_DOCK_HEIGHT_PX = 280;
+const MIN_BOTTOM_DOCK_HEIGHT_PX = 180;
+const MAX_BOTTOM_DOCK_HEIGHT_PX = 520;
 
 interface AppState {
   currentView: AppView;
@@ -79,6 +82,7 @@ interface AppState {
   trackBalanceByIndex: Record<number, number>;
   mutedTrackIndexes: number[];
   soloTrackIndexes: number[];
+  bottomDockHeightPx: number;
 }
 
 function updateDebugField(rootElement: HTMLElement, fieldName: string, value: string): void {
@@ -158,7 +162,8 @@ function updateTrackStripActive(rootElement: HTMLElement, activeTrackIndex: numb
     item.classList.toggle("isActiveTrack", isActive);
     const badge = item.querySelector<HTMLElement>("[data-track-state-badge]");
     if (badge) {
-      badge.textContent = isActive ? "Active" : "Idle";
+      badge.textContent = isActive ? "A" : "I";
+      badge.title = isActive ? "Active" : "Idle";
     }
   });
 }
@@ -1009,6 +1014,74 @@ function isSameTrackList(current: GpTrackInfo[], next: GpTrackInfo[]): boolean {
   });
 }
 
+function setupBottomDockResize(rootElement: HTMLElement, state: AppState): void {
+  const layoutShell = rootElement.querySelector<HTMLElement>(".playerLayoutShell");
+  const resizeHandle = rootElement.querySelector<HTMLElement>("[data-dock-resize-handle='true']");
+  if (!layoutShell || !resizeHandle) {
+    return;
+  }
+
+  const applyDockHeight = (): void => {
+    layoutShell.style.setProperty("--player-dock-height", `${state.bottomDockHeightPx}px`);
+  };
+  applyDockHeight();
+
+  let activePointerId: number | null = null;
+  let dragStartY = 0;
+  let dragStartHeight = state.bottomDockHeightPx;
+  let previousUserSelect = "";
+
+  const finishDrag = (pointerId: number | null): void => {
+    if (pointerId !== null) {
+      resizeHandle.releasePointerCapture?.(pointerId);
+    }
+    activePointerId = null;
+    document.body.style.userSelect = previousUserSelect;
+    rootElement.classList.remove("isDockResizing");
+  };
+
+  resizeHandle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    activePointerId = event.pointerId;
+    dragStartY = event.clientY;
+    dragStartHeight = state.bottomDockHeightPx;
+    previousUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+    rootElement.classList.add("isDockResizing");
+    resizeHandle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+
+  resizeHandle.addEventListener("pointermove", (event) => {
+    if (activePointerId === null || event.pointerId !== activePointerId) {
+      return;
+    }
+    const dragDeltaY = dragStartY - event.clientY;
+    const nextHeight = Math.min(
+      Math.max(dragStartHeight + dragDeltaY, MIN_BOTTOM_DOCK_HEIGHT_PX),
+      MAX_BOTTOM_DOCK_HEIGHT_PX,
+    );
+    state.bottomDockHeightPx = nextHeight;
+    applyDockHeight();
+    event.preventDefault();
+  });
+
+  resizeHandle.addEventListener("pointerup", (event) => {
+    if (activePointerId === null || event.pointerId !== activePointerId) {
+      return;
+    }
+    finishDrag(event.pointerId);
+  });
+  resizeHandle.addEventListener("pointercancel", (event) => {
+    if (activePointerId === null || event.pointerId !== activePointerId) {
+      return;
+    }
+    finishDrag(event.pointerId);
+  });
+}
+
 export function startApp(rootElement: HTMLElement): void {
   const state: AppState = {
     currentView: "home",
@@ -1055,6 +1128,7 @@ export function startApp(rootElement: HTMLElement): void {
     trackBalanceByIndex: {},
     mutedTrackIndexes: [],
     soloTrackIndexes: [],
+    bottomDockHeightPx: DEFAULT_BOTTOM_DOCK_HEIGHT_PX,
   };
 
   const cleanupRenderer = (): void => {
@@ -1389,6 +1463,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.gpRenderer.stop();
         },
       });
+      setupBottomDockResize(rootElement, state);
 
       const gpRenderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
       if (!gpRenderHost) {

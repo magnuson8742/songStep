@@ -404,19 +404,14 @@ select {
 .arrangementOverview {
   --arrangement-bar-count: 1;
   --arrangement-grid-width: 19px;
-  margin-top: 0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  background: rgba(9, 14, 20, 0.5);
-  padding: 10px;
-  overflow-x: auto;
+  min-width: 1100px;
+  margin: 0;
 }
 
 .arrangementBarHeader {
   position: relative;
   width: var(--arrangement-grid-width);
-  min-height: 16px;
-  margin-bottom: 6px;
+  height: var(--dock-top-band-height, 22px);
 }
 
 .arrangementBarHeaderLabel {
@@ -469,8 +464,7 @@ select {
 .arrangementMarkers {
   position: relative;
   width: var(--arrangement-grid-width);
-  margin-top: 8px;
-  min-height: 16px;
+  min-height: var(--dock-bottom-band-height, 24px);
 }
 
 .arrangementMarker {
@@ -542,8 +536,9 @@ select {
 }
 
 .playerLayoutShell {
+  --player-dock-height: 280px;
   display: grid;
-  grid-template-rows: auto auto minmax(240px, 1fr) 280px;
+  grid-template-rows: auto auto minmax(240px, 1fr) var(--player-dock-height);
   height: 100vh;
   overflow: hidden;
   background: #0f131b;
@@ -668,12 +663,27 @@ select {
 .playerBottomDock {
   --dock-row-height: 28px;
   --dock-row-gap: 4px;
-  --dock-row-top-offset: 22px;
+  --dock-top-band-height: 22px;
+  --dock-bottom-band-height: 24px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: 8px auto minmax(0, 1fr);
   min-height: 0;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(10, 14, 21, 0.95);
+}
+
+.playerDockResizeHandle {
+  cursor: ns-resize;
+  border-bottom: 1px solid rgba(130, 168, 220, 0.4);
+  background: rgba(112, 148, 197, 0.12);
+}
+
+.playerDockResizeHandle:hover {
+  background: rgba(112, 148, 197, 0.2);
+}
+
+.isDockResizing .playerDockResizeHandle {
+  background: rgba(112, 148, 197, 0.26);
 }
 
 .playerDockHeaders {
@@ -699,19 +709,42 @@ select {
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
   overflow-y: auto;
+  padding: 6px;
+  gap: 0;
 }
 
 .playerDockLeftRows {
   border-right: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 6px;
+  padding-right: 6px;
   min-height: fit-content;
   overflow: hidden;
+  display: grid;
+  grid-template-rows: var(--dock-top-band-height) auto var(--dock-bottom-band-height);
+  gap: 0;
 }
 
 .trackStripDock {
   max-height: none;
   overflow: visible;
-  padding-top: var(--dock-row-top-offset, 22px);
+  padding-top: 0;
+}
+
+.playerDockTopBandLeft {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: rgba(17, 24, 35, 0.55);
+}
+
+.playerDockRowsBandLeft {
+  min-height: 0;
+}
+
+.playerDockBottomBandLeft {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  background: rgba(17, 24, 35, 0.55);
 }
 
 .masterTrackRow {
@@ -721,20 +754,30 @@ select {
 .playerDockRightRows {
   min-width: 0;
   min-height: fit-content;
-  padding: 6px;
+  padding-left: 6px;
 }
 
 .timelineViewport {
   min-height: 100%;
   overflow-x: auto;
-  overflow-y: visible;
+  overflow-y: hidden;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   background: rgba(17, 24, 35, 0.55);
 }
 
 .arrangementOverviewDock {
-  min-width: 1100px;
   height: auto;
-  margin: 0;
+}
+
+.playerDockTopBandRight {
+  height: var(--dock-top-band-height);
+}
+
+.playerDockRowsBandRight {
+  min-height: 0;
+}
+
+.playerDockBottomBandRight {
+  min-height: var(--dock-bottom-band-height);
 }
