@@ -27,6 +27,7 @@ interface PlaybackBarAnchor {
   barNumber: number;
   startX: number;
   endX: number;
+  rowIndex: number;
   y: number;
   height: number;
 }
@@ -68,6 +69,7 @@ interface AppState {
   renderHostTopTagClassCombos: string | null;
   renderHostElementCounts: string | null;
   playbackPlayheadVisible: boolean;
+  lastPlaybackVisualBarNumber: number | null;
   playbackBarAnchors: PlaybackBarAnchor[];
   playbackAnchorRebuildToken: number;
   playbackAnchorRebuildScheduled: boolean;
@@ -401,6 +403,7 @@ function hidePlaybackPlayhead(rootElement: HTMLElement, state: AppState): void {
   }
 
   state.playbackPlayheadVisible = false;
+  state.lastPlaybackVisualBarNumber = null;
 }
 
 function updateRenderHostDomDiagnostics(state: AppState, rootElement: HTMLElement, renderHost: HTMLElement): void {
@@ -707,6 +710,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
         barNumber: index + 1,
         startX: anchor.x,
         endX,
+        rowIndex: currentRowIndex,
         y: anchor.y,
         height: anchor.height,
       };
@@ -821,8 +825,19 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
   const barEndTickExclusive = state.playbackCurrentBarEndTickExclusive;
   const normalizedProgress = (state.playbackCurrentTick - barStartTick) / (barEndTickExclusive - barStartTick);
   const clampedProgress = Math.min(Math.max(normalizedProgress, 0), 1);
+  const previousBarNumber = state.lastPlaybackVisualBarNumber;
+  const previousBarAnchor =
+    previousBarNumber === null ? null : state.playbackBarAnchors.find((item) => item.barNumber === previousBarNumber) ?? null;
+  const rowBreakTransition =
+    previousBarNumber !== null &&
+    previousBarNumber !== state.playbackCurrentBar &&
+    previousBarAnchor !== null &&
+    previousBarAnchor.rowIndex >= 0 &&
+    anchor.rowIndex >= 0 &&
+    previousBarAnchor.rowIndex !== anchor.rowIndex;
+  const effectiveProgress = rowBreakTransition ? 0 : clampedProgress;
   const regionWidth = Math.max(anchor.endX - anchor.startX, 8);
-  const playheadX = anchor.startX + regionWidth * clampedProgress;
+  const playheadX = anchor.startX + regionWidth * effectiveProgress;
 
   highlight.style.left = `${anchor.startX}px`;
   highlight.style.top = `${anchor.y}px`;
@@ -835,6 +850,7 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
   playhead.style.height = `${Math.max(anchor.height, 28)}px`;
   playhead.style.display = "block";
   state.playbackPlayheadVisible = true;
+  state.lastPlaybackVisualBarNumber = state.playbackCurrentBar;
 }
 
 function updatePlaybackFollowDiagnostics(
@@ -918,6 +934,7 @@ export function startApp(rootElement: HTMLElement): void {
     renderHostTopTagClassCombos: null,
     renderHostElementCounts: null,
     playbackPlayheadVisible: false,
+    lastPlaybackVisualBarNumber: null,
     playbackBarAnchors: [],
     playbackAnchorRebuildToken: 0,
     playbackAnchorRebuildScheduled: false,
