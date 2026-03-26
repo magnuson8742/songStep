@@ -36,6 +36,7 @@ const ENABLE_CUSTOM_PLAYHEAD = true;
 const DEFAULT_BOTTOM_DOCK_HEIGHT_PX = 280;
 const MIN_BOTTOM_DOCK_HEIGHT_PX = 180;
 const MAX_BOTTOM_DOCK_HEIGHT_PX = 520;
+const ARRANGEMENT_BAR_WIDTH_PX = 24;
 
 interface AppState {
   currentView: AppView;
@@ -272,7 +273,7 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
 
   emptyState.style.display = "none";
   const arrangementBarCount = Math.max(overview.totalBars, 1);
-  const arrangementGridWidthPx = arrangementBarCount * 19;
+  const arrangementGridWidthPx = arrangementBarCount * ARRANGEMENT_BAR_WIDTH_PX;
   overviewContainer.style.setProperty("--arrangement-bar-count", String(arrangementBarCount));
   overviewContainer.style.setProperty("--arrangement-grid-width", `${arrangementGridWidthPx}px`);
   const barLabels = new Set<number>([0, overview.totalBars - 1]);
