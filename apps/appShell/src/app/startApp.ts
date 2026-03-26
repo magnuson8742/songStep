@@ -70,8 +70,6 @@ interface AppState {
   renderHostElementCounts: string | null;
   playbackPlayheadVisible: boolean;
   lastPlaybackVisualBarNumber: number | null;
-  playbackVisualAnchorOverrideSourceBar: number | null;
-  playbackVisualAnchorOverrideBar: number | null;
   playbackBarAnchors: PlaybackBarAnchor[];
   playbackAnchorRebuildToken: number;
   playbackAnchorRebuildScheduled: boolean;
@@ -406,8 +404,6 @@ function hidePlaybackPlayhead(rootElement: HTMLElement, state: AppState): void {
 
   state.playbackPlayheadVisible = false;
   state.lastPlaybackVisualBarNumber = null;
-  state.playbackVisualAnchorOverrideSourceBar = null;
-  state.playbackVisualAnchorOverrideBar = null;
 }
 
 function updateRenderHostDomDiagnostics(state: AppState, rootElement: HTMLElement, renderHost: HTMLElement): void {
@@ -818,57 +814,12 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
     return;
   }
 
-  let selectedAnchor = anchorForCurrentBar;
+  const selectedAnchor = anchorForCurrentBar;
   const currentBarNumber = state.playbackCurrentBar;
-  let selectedAnchorBarNumber = currentBarNumber;
-
-  if (state.playbackVisualAnchorOverrideSourceBar !== currentBarNumber) {
-    state.playbackVisualAnchorOverrideSourceBar = null;
-    state.playbackVisualAnchorOverrideBar = null;
-  } else if (state.playbackVisualAnchorOverrideBar !== null) {
-    const overrideAnchor = state.playbackBarAnchors.find((item) => item.barNumber === state.playbackVisualAnchorOverrideBar);
-    if (overrideAnchor) {
-      selectedAnchor = overrideAnchor;
-      selectedAnchorBarNumber = overrideAnchor.barNumber;
-    } else {
-      state.playbackVisualAnchorOverrideSourceBar = null;
-      state.playbackVisualAnchorOverrideBar = null;
-    }
-  }
-
+  const selectedAnchorBarNumber = currentBarNumber;
   const previousBarNumber = state.lastPlaybackVisualBarNumber;
   const previousBarAnchor =
     previousBarNumber === null ? null : state.playbackBarAnchors.find((item) => item.barNumber === previousBarNumber) ?? null;
-
-  if (state.playbackVisualAnchorOverrideSourceBar === null && previousBarAnchor) {
-    const candidateNextAnchor = state.playbackBarAnchors.find((item) => item.barNumber === currentBarNumber + 1);
-    const rowBreakLagDetected =
-      previousBarNumber !== null &&
-      previousBarNumber !== currentBarNumber &&
-      anchorForCurrentBar.rowIndex === previousBarAnchor.rowIndex &&
-      candidateNextAnchor !== undefined &&
-      candidateNextAnchor.rowIndex !== anchorForCurrentBar.rowIndex &&
-      candidateNextAnchor.startX + 6 < anchorForCurrentBar.startX;
-    if (rowBreakLagDetected) {
-      state.playbackVisualAnchorOverrideSourceBar = currentBarNumber;
-      state.playbackVisualAnchorOverrideBar = candidateNextAnchor.barNumber;
-      selectedAnchor = candidateNextAnchor;
-      selectedAnchorBarNumber = candidateNextAnchor.barNumber;
-      console.info(
-        "[songStep] row-break visual anchor override:",
-        JSON.stringify({
-          currentTick: state.playbackCurrentTick,
-          playbackCurrentBar: currentBarNumber,
-          selectedVisualAnchorBar: selectedAnchorBarNumber,
-          previousVisualBar: previousBarNumber,
-          currentAnchorRow: anchorForCurrentBar.rowIndex,
-          previousAnchorRow: previousBarAnchor.rowIndex,
-          barStartTick: state.playbackCurrentBarStartTick,
-          barEndTickExclusive: state.playbackCurrentBarEndTickExclusive,
-        }),
-      );
-    }
-  }
 
   const playhead = ensurePlaybackPlayheadElement(rootElement);
   const highlight = ensurePlaybackHighlightElement(rootElement);
@@ -888,6 +839,23 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
     previousBarAnchor.rowIndex >= 0 &&
     selectedAnchor.rowIndex >= 0 &&
     previousBarAnchor.rowIndex !== selectedAnchor.rowIndex;
+  if (rowBreakTransition) {
+    console.info(
+      "[songStep] row-break mapping diagnostics:",
+      JSON.stringify({
+        currentTick: state.playbackCurrentTick,
+        playbackCurrentBar: currentBarNumber,
+        selectedVisualAnchorBar: selectedAnchorBarNumber,
+        previousVisualBar: previousBarNumber,
+        currentAnchorRow: selectedAnchor.rowIndex,
+        previousAnchorRow: previousBarAnchor?.rowIndex ?? null,
+        barStartTick: state.playbackCurrentBarStartTick,
+        barEndTickExclusive: state.playbackCurrentBarEndTickExclusive,
+        mappingCorrectionActive: false,
+        mappingOffset: 0,
+      }),
+    );
+  }
   const effectiveProgress = rowBreakTransition ? 0 : clampedProgress;
   const regionWidth = Math.max(selectedAnchor.endX - selectedAnchor.startX, 8);
   const playheadX = selectedAnchor.startX + regionWidth * effectiveProgress;
@@ -988,8 +956,6 @@ export function startApp(rootElement: HTMLElement): void {
     renderHostElementCounts: null,
     playbackPlayheadVisible: false,
     lastPlaybackVisualBarNumber: null,
-    playbackVisualAnchorOverrideSourceBar: null,
-    playbackVisualAnchorOverrideBar: null,
     playbackBarAnchors: [],
     playbackAnchorRebuildToken: 0,
     playbackAnchorRebuildScheduled: false,
