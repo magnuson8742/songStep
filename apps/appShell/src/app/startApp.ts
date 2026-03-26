@@ -161,11 +161,23 @@ function updateTrackStripActive(rootElement: HTMLElement, activeTrackIndex: numb
     const itemTrackIndex = Number(item.dataset.trackItemIndex);
     const isActive = activeTrackIndex !== null && itemTrackIndex === activeTrackIndex;
     item.classList.toggle("isActiveTrack", isActive);
-    const badge = item.querySelector<HTMLElement>("[data-track-state-badge]");
-    if (badge) {
-      badge.textContent = isActive ? "A" : "I";
-      badge.title = isActive ? "Active" : "Idle";
+  });
+}
+
+function updateTrackRowVisualState(state: AppState, rootElement: HTMLElement): void {
+  const anySoloActive = state.soloTrackIndexes.length > 0;
+  const trackItems = rootElement.querySelectorAll<HTMLElement>("[data-track-item-index]");
+  trackItems.forEach((item) => {
+    const trackIndex = Number(item.dataset.trackItemIndex);
+    if (Number.isNaN(trackIndex)) {
+      return;
     }
+    const isMuted = state.mutedTrackIndexes.includes(trackIndex);
+    const isSolo = state.soloTrackIndexes.includes(trackIndex);
+    const isSoloExcluded = anySoloActive && !isSolo;
+    item.classList.toggle("isTrackMutedVisual", isMuted);
+    item.classList.toggle("isTrackSoloVisual", isSolo);
+    item.classList.toggle("isTrackSoloExcludedVisual", isSoloExcluded);
   });
 }
 
@@ -214,6 +226,7 @@ function updateTrackToggleVisualState(state: AppState, rootElement: HTMLElement)
         : false;
     button.classList.toggle("isTrackToggleOn", isOn);
   });
+  updateTrackRowVisualState(state, rootElement);
 }
 
 function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement): void {
@@ -1474,6 +1487,7 @@ export function startApp(rootElement: HTMLElement): void {
 
       updateArrangementOverview(state, rootElement);
       updateTrackControlVisualState(state, rootElement);
+      updateTrackRowVisualState(state, rootElement);
 
       const project = state.currentProject;
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
@@ -1529,6 +1543,7 @@ export function startApp(rootElement: HTMLElement): void {
           });
           updateArrangementOverview(state, rootElement);
           updateTrackControlVisualState(state, rootElement);
+          updateTrackRowVisualState(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
         },
         onPlaybackRuntimeInfo: (info) => {

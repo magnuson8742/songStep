@@ -95,7 +95,6 @@ function renderTrackStrip(
         <article class="${activeClass}" data-track-item-index="${track.index}" role="button" tabindex="0" aria-label="Select track ${track.name}">
           <div class="trackControlRow trackControlRowCompact" aria-label="Track controls for ${track.name}">
             <span class="trackNameCompact" title="${track.name}">${track.name}</span>
-            <span class="trackStateBadge trackStateBadgeCompact" data-track-state-badge="true" title="${isActive ? "Active" : "Idle"}">${isActive ? "A" : "I"}</span>
             <button class="secondaryButton trackControlButton ${soloTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-solo" data-track-index="${track.index}">S</button>
             <button class="secondaryButton trackControlButton ${mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}">M</button>
             <label class="trackControlLabel trackControlLabelCompact">
@@ -239,7 +238,6 @@ export function renderProjectScreen(
                 <article class="trackStripItem masterTrackRow" data-stop-track-select="true" aria-label="Master row placeholder">
                   <div class="trackControlRow trackControlRowCompact">
                     <span class="trackNameCompact">Master</span>
-                    <span class="trackStateBadge trackStateBadgeCompact" title="Master">M</span>
                     <button class="secondaryButton trackControlButton" type="button" disabled>S</button>
                     <button class="secondaryButton trackControlButton" type="button" disabled>M</button>
                     <label class="trackControlLabel trackControlLabelCompact">
