@@ -561,9 +561,10 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       }
     }
 
-    const filteredAnchorIndexes: number[] = [];
+    const filteredAnchorsWithRow: Array<{ x: number; y: number; height: number; rawRowIndex: number }> = [];
+    const rawRowTerminalBoundaryByIndex: Array<number | null> = new Array(rawRowGroups.length).fill(null);
     let droppedTerminalCount = 0;
-    rawRowGroups.forEach((row) => {
+    rawRowGroups.forEach((row, rawRowIndex) => {
       const rowIndexesSortedByX = [...row.anchorIndexes].sort((left, right) => {
         const leftAnchor = dedupedAnchors[left];
         const rightAnchor = dedupedAnchors[right];
@@ -575,19 +576,45 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       });
 
       if (rowIndexesSortedByX.length <= 1) {
-        filteredAnchorIndexes.push(...rowIndexesSortedByX);
+        rowIndexesSortedByX.forEach((anchorIndex) => {
+          const anchor = dedupedAnchors[anchorIndex];
+          if (!anchor) {
+            return;
+          }
+
+          filteredAnchorsWithRow.push({
+            x: anchor.x,
+            y: anchor.y,
+            height: anchor.height,
+            rawRowIndex,
+          });
+        });
         return;
       }
 
       const keptIndexes = rowIndexesSortedByX.slice(0, -1);
-      filteredAnchorIndexes.push(...keptIndexes);
+      const droppedTerminalIndex = rowIndexesSortedByX[rowIndexesSortedByX.length - 1];
+      const droppedTerminalAnchor = droppedTerminalIndex === undefined ? null : dedupedAnchors[droppedTerminalIndex] ?? null;
+      rawRowTerminalBoundaryByIndex[rawRowIndex] = droppedTerminalAnchor ? droppedTerminalAnchor.x : null;
+      keptIndexes.forEach((anchorIndex) => {
+        const anchor = dedupedAnchors[anchorIndex];
+        if (!anchor) {
+          return;
+        }
+
+        filteredAnchorsWithRow.push({
+          x: anchor.x,
+          y: anchor.y,
+          height: anchor.height,
+          rawRowIndex,
+        });
+      });
       droppedTerminalCount += 1;
     });
 
-    const filteredAnchors = filteredAnchorIndexes
-      .sort((left, right) => left - right)
-      .map((index) => dedupedAnchors[index])
-      .filter((anchor): anchor is { x: number; y: number; height: number } => anchor !== undefined);
+    const filteredAnchors = [...filteredAnchorsWithRow].sort((left, right) =>
+      left.y === right.y ? left.x - right.x : left.y - right.y,
+    );
     const limitedAnchors = totalBars > 0 ? filteredAnchors.slice(0, totalBars) : filteredAnchors;
     if (limitedAnchors.length === 0) {
       continue;
@@ -599,6 +626,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       yMax: number;
       maxHeight: number;
       rowRightX: number | null;
+      rowTerminalBoundaryX: number | null;
       anchorIndexes: number[];
     }> = [];
     const anchorRowIndexes = new Array<number>(limitedAnchors.length).fill(-1);
@@ -616,6 +644,8 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
           existingRow.yMax = Math.max(existingRow.yMax, anchor.y);
           existingRow.maxHeight = Math.max(existingRow.maxHeight, anchor.height);
           existingRow.yCenter = (existingRow.yMin + existingRow.yMax) / 2;
+          existingRow.rowTerminalBoundaryX =
+            existingRow.rowTerminalBoundaryX ?? rawRowTerminalBoundaryByIndex[anchor.rawRowIndex] ?? null;
           existingRow.anchorIndexes.push(index);
           anchorRowIndexes[index] = existingRowIndex;
         }
@@ -626,6 +656,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
           yMax: anchor.y,
           maxHeight: anchor.height,
           rowRightX: null,
+          rowTerminalBoundaryX: rawRowTerminalBoundaryByIndex[anchor.rawRowIndex] ?? null,
           anchorIndexes: [index],
         });
         anchorRowIndexes[index] = rowSummaries.length - 1;
@@ -754,8 +785,14 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
           ? nextAnchor
           : null;
       const rowRightX = currentRowIndex >= 0 ? rowSummaries[currentRowIndex]?.rowRightX ?? null : null;
+      const rowTerminalBoundaryX = currentRowIndex >= 0 ? rowSummaries[currentRowIndex]?.rowTerminalBoundaryX ?? null : null;
       const fallbackEndX = anchor.x + fallbackGap;
-      const rowBoundaryEndX = rowRightX !== null ? Math.max(anchor.x + 12, rowRightX - 2) : fallbackEndX;
+      const rowBoundaryEndX =
+        rowTerminalBoundaryX !== null
+          ? Math.max(anchor.x + 12, rowTerminalBoundaryX - 2)
+          : rowRightX !== null
+            ? Math.max(anchor.x + 12, rowRightX - 2)
+            : fallbackEndX;
       const endX = sameSystemNext
         ? Math.max(anchor.x + 12, sameSystemNext.x - 2)
         : rowBoundaryEndX;
@@ -770,7 +807,8 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     });
     state.playbackBarAnchorCount = state.playbackBarAnchors.length;
     state.playbackBarAnchorSource = strategy.source;
-    state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | diag:raw=${rawAnchors.length},dedup=${dedupedAnchors.length},filtered=${filteredAnchors.length},used=${limitedAnchors.length},rows=${rowSummaries.length},dropped=${droppedTerminalCount},totalBars=${totalBars > 0 ? totalBars : "-"}`;
+    const rowsWithTerminalBoundary = rowSummaries.filter((row) => row.rowTerminalBoundaryX !== null).length;
+    state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | diag:raw=${rawAnchors.length},dedup=${dedupedAnchors.length},filtered=${filteredAnchors.length},used=${limitedAnchors.length},rows=${rowSummaries.length},dropped=${droppedTerminalCount},rowTerminal=${rowsWithTerminalBoundary},totalBars=${totalBars > 0 ? totalBars : "-"}`;
     updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
     updateDebugField(rootElement, "playback-bar-anchor-source", strategy.source);
     updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
