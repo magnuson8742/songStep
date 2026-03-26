@@ -555,6 +555,12 @@ function waitForAnimationFrame(): Promise<void> {
   });
 }
 
+function waitForTimeout(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delayMs);
+  });
+}
+
 export async function createGpRenderer(
   container: HTMLElement,
   sourceFile: SourceFileData,
@@ -613,6 +619,29 @@ export async function createGpRenderer(
   let activeZoomReloadContext: ZoomReloadContext | null = null;
   let pendingQueuedZoomReloadToken: number | null = null;
   let zoomReloadTokenCounter = 0;
+
+  const resumePlaybackAfterZoomReload = async (
+    api: AlphaTabApi,
+    resumeContext: ZoomReloadContext,
+    sessionToken: number,
+  ): Promise<void> => {
+    await waitForTimeout(60);
+    if (sessionToken !== activeSessionToken) {
+      return;
+    }
+    if (!activeZoomReloadContext || activeZoomReloadContext.token !== resumeContext.token) {
+      return;
+    }
+    if (!resumeContext.snapshot.wasPlaying || !isPlaybackApiAvailable(api)) {
+      activeZoomReloadContext = null;
+      return;
+    }
+
+    tryRestorePlaybackPosition(api, resumeContext.snapshot.currentTick);
+    const playbackApi = api as AlphaTabApi & { play: () => void };
+    playbackApi.play();
+    activeZoomReloadContext = null;
+  };
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1260,12 +1289,8 @@ export async function createGpRenderer(
         activeZoomReloadContext &&
         sessionZoomReloadToken === activeZoomReloadContext.token
       ) {
-        if (activeZoomReloadContext.snapshot.wasPlaying && playbackAvailable) {
-          tryRestorePlaybackPosition(api, activeZoomReloadContext.snapshot.currentTick);
-          const playbackApi = api as AlphaTabApi & { play: () => void };
-          playbackApi.play();
-        }
-        activeZoomReloadContext = null;
+        const resumeContext = activeZoomReloadContext;
+        void resumePlaybackAfterZoomReload(api, resumeContext, sessionToken);
       }
     });
 
