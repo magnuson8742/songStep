@@ -220,46 +220,51 @@ export function renderProjectScreen(
       </section>
 
       <section class="playerBottomDock">
-        <div class="playerDockLeft" aria-label="Track and control column">
-          <div class="trackStrip trackStripDock" aria-label="Track strip" data-action="track-strip">
-            ${renderTrackStrip(
-              actions.tracks,
-              actions.confirmedActiveTrackIndex,
-              actions.mutedTrackIndexes,
-              actions.soloTrackIndexes,
-              actions.trackVolumeByIndex,
-              actions.trackBalanceByIndex,
-            )}
-            <article class="trackStripItem masterTrackRow" data-stop-track-select="true" aria-label="Master row placeholder">
-              <div class="trackTitleRow">
-                <h3 class="trackTitle">Master</h3>
-                <span class="trackStateBadge">Master</span>
-              </div>
-              <div class="trackControlRow">
-                <button class="secondaryButton trackControlButton" type="button" disabled>S</button>
-                <button class="secondaryButton trackControlButton" type="button" disabled>M</button>
-                <label class="trackControlLabel">
-                  Vol
-                  <input class="trackControlRange" type="range" min="0" max="100" value="100" disabled />
-                  <span class="trackControlValue">100</span>
-                </label>
-                <label class="trackControlLabel trackBalanceControl">
-                  Bal
-                  <input class="trackBalanceKnob" type="range" min="-50" max="50" value="0" disabled />
-                  <span class="trackControlValue">0</span>
-                </label>
-              </div>
-            </article>
-          </div>
+        <div class="playerDockHeaders">
+          <div class="playerDockLeftHeader">Tracks / Controls</div>
+          <div class="playerDockRightHeader">Timeline</div>
         </div>
-
-        <div class="playerDockRight">
-          <div class="timelineViewport">
-            <div class="arrangementOverview arrangementOverviewDock" data-arrangement-overview="true">
-              <p class="helperText" data-arrangement-empty>${actions.scoreOverview ? "" : "Overview loads with score runtime data."}</p>
-              <div class="arrangementBarHeader" data-arrangement-bar-header></div>
-              <div class="arrangementRows" data-arrangement-rows></div>
-              <div class="arrangementMarkers" data-arrangement-markers></div>
+        <div class="playerDockRowsViewport">
+          <div class="playerDockLeftRows" aria-label="Track and control column">
+            <div class="trackStrip trackStripDock" aria-label="Track strip" data-action="track-strip">
+              ${renderTrackStrip(
+                actions.tracks,
+                actions.confirmedActiveTrackIndex,
+                actions.mutedTrackIndexes,
+                actions.soloTrackIndexes,
+                actions.trackVolumeByIndex,
+                actions.trackBalanceByIndex,
+              )}
+              <article class="trackStripItem masterTrackRow" data-stop-track-select="true" aria-label="Master row placeholder">
+                <div class="trackTitleRow">
+                  <h3 class="trackTitle">Master</h3>
+                  <span class="trackStateBadge">Master</span>
+                </div>
+                <div class="trackControlRow">
+                  <button class="secondaryButton trackControlButton" type="button" disabled>S</button>
+                  <button class="secondaryButton trackControlButton" type="button" disabled>M</button>
+                  <label class="trackControlLabel">
+                    Vol
+                    <input class="trackControlRange" type="range" min="0" max="100" value="100" disabled />
+                    <span class="trackControlValue">100</span>
+                  </label>
+                  <label class="trackControlLabel trackBalanceControl">
+                    Bal
+                    <input class="trackBalanceKnob" type="range" min="-50" max="50" value="0" disabled />
+                    <span class="trackControlValue">0</span>
+                  </label>
+                </div>
+              </article>
+            </div>
+          </div>
+          <div class="playerDockRightRows">
+            <div class="timelineViewport">
+              <div class="arrangementOverview arrangementOverviewDock" data-arrangement-overview="true">
+                <p class="helperText" data-arrangement-empty>${actions.scoreOverview ? "" : "Overview loads with score runtime data."}</p>
+                <div class="arrangementBarHeader" data-arrangement-bar-header></div>
+                <div class="arrangementRows" data-arrangement-rows></div>
+                <div class="arrangementMarkers" data-arrangement-markers></div>
+              </div>
             </div>
           </div>
         </div>

@@ -654,17 +654,41 @@ select {
 
 .playerBottomDock {
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(10, 14, 21, 0.95);
 }
 
-.playerDockLeft {
+.playerDockHeaders {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  color: #9eb2ce;
+}
+
+.playerDockLeftHeader,
+.playerDockRightHeader {
+  padding: 6px 10px;
+  font-weight: 600;
+}
+
+.playerDockLeftHeader {
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.playerDockRowsViewport {
   min-height: 0;
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
   overflow-y: auto;
+}
+
+.playerDockLeftRows {
   border-right: 1px solid rgba(255, 255, 255, 0.08);
   padding: 8px;
+  min-height: fit-content;
 }
 
 .trackStripDock {
@@ -676,16 +700,16 @@ select {
   opacity: 0.8;
 }
 
-.playerDockRight {
+.playerDockRightRows {
   min-width: 0;
-  min-height: 0;
+  min-height: fit-content;
   padding: 8px;
 }
 
 .timelineViewport {
-  height: 100%;
+  min-height: 100%;
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: visible;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   background: rgba(17, 24, 35, 0.55);
@@ -693,6 +717,6 @@ select {
 
 .arrangementOverviewDock {
   min-width: 1100px;
-  height: 100%;
+  height: auto;
   margin: 0;
 }
