@@ -1402,6 +1402,11 @@ export async function createGpRenderer(
             if (pendingProgrammaticSeek) {
               pendingProgrammaticSeek.retryCount = retryCountSnapshot;
             }
+            return;
+          } else if (pendingProgrammaticSeek.retryCount >= 2) {
+            pendingProgrammaticSeek = null;
+          } else {
+            return;
           }
         }
         const currentBarFromTick =
@@ -1658,6 +1663,14 @@ export async function createGpRenderer(
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
         hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
+      }
+
+      if (
+        pendingProgrammaticSeek &&
+        pendingProgrammaticSeek.sessionToken === activeSessionToken &&
+        pendingProgrammaticSeek.trackIndex === confirmedActiveTrackIndex
+      ) {
+        seekToTick(pendingProgrammaticSeek.tick);
       }
 
       playbackScrollLockSnapshot = captureRenderViewportScroll();
