@@ -670,6 +670,7 @@ select {
   --dock-row-gap: 4px;
   --dock-top-band-height: 22px;
   --dock-bottom-band-height: 24px;
+  --dock-timeline-end-gutter: 28px;
   display: grid;
   grid-template-rows: 8px auto auto minmax(0, 1fr) auto;
   min-height: 0;
@@ -770,6 +771,8 @@ select {
 .playerDockRightBottomFooter {
   min-width: 0;
   overflow-x: auto;
+  padding-right: var(--dock-timeline-end-gutter);
+  box-sizing: border-box;
 }
 
 .playerDockRightTopHeader,
