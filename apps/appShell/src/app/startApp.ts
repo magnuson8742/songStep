@@ -537,7 +537,14 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     }
 
     const rowTolerance = 10;
-    const rowSummaries: Array<{ yCenter: number; yMin: number; yMax: number; maxHeight: number; rowRightX: number | null }> = [];
+    const rowSummaries: Array<{
+      yCenter: number;
+      yMin: number;
+      yMax: number;
+      maxHeight: number;
+      rowRightX: number | null;
+      anchorIndexes: number[];
+    }> = [];
     const anchorRowIndexes = new Array<number>(limitedAnchors.length).fill(-1);
     for (let index = 0; index < limitedAnchors.length; index += 1) {
       const anchor = limitedAnchors[index];
@@ -553,6 +560,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
           existingRow.yMax = Math.max(existingRow.yMax, anchor.y);
           existingRow.maxHeight = Math.max(existingRow.maxHeight, anchor.height);
           existingRow.yCenter = (existingRow.yMin + existingRow.yMax) / 2;
+          existingRow.anchorIndexes.push(index);
           anchorRowIndexes[index] = existingRowIndex;
         }
       } else {
@@ -562,6 +570,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
           yMax: anchor.y,
           maxHeight: anchor.height,
           rowRightX: null,
+          anchorIndexes: [index],
         });
         anchorRowIndexes[index] = rowSummaries.length - 1;
       }
@@ -616,7 +625,44 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
         rowRightX = Math.max(rowRightX, candidate.right);
       });
 
-      row.rowRightX = Number.isFinite(rowRightX) ? rowRightX : null;
+      const structuralRightX = Number.isFinite(rowRightX) ? rowRightX : null;
+      const sortedAnchorIndexes = [...row.anchorIndexes].sort((left, right) => left - right);
+      const rowGaps: number[] = [];
+      sortedAnchorIndexes.forEach((anchorIndex, position) => {
+        const nextAnchorIndex = sortedAnchorIndexes[position + 1];
+        if (nextAnchorIndex === undefined) {
+          return;
+        }
+
+        const leftAnchor = limitedAnchors[anchorIndex];
+        const rightAnchor = limitedAnchors[nextAnchorIndex];
+        if (!leftAnchor || !rightAnchor) {
+          return;
+        }
+
+        const gap = rightAnchor.x - leftAnchor.x;
+        if (gap > 12) {
+          rowGaps.push(gap);
+        }
+      });
+
+      const sortedRowGaps = [...rowGaps].sort((left, right) => left - right);
+      const rowMedianGap = sortedRowGaps.length > 0 ? sortedRowGaps[Math.floor(sortedRowGaps.length / 2)] : null;
+      const lastAnchorIndex = sortedAnchorIndexes[sortedAnchorIndexes.length - 1];
+      const lastAnchor = lastAnchorIndex === undefined ? null : limitedAnchors[lastAnchorIndex] ?? null;
+      const conservativeGap = Math.min(Math.max((rowMedianGap ?? 72) * 0.9, 24), 160);
+      const conservativeRightX = lastAnchor ? lastAnchor.x + conservativeGap : null;
+
+      if (structuralRightX === null) {
+        row.rowRightX = conservativeRightX;
+        return;
+      }
+      if (conservativeRightX === null) {
+        row.rowRightX = structuralRightX;
+        return;
+      }
+
+      row.rowRightX = Math.min(structuralRightX, conservativeRightX);
     });
 
     const sameSystemGaps: number[] = [];
