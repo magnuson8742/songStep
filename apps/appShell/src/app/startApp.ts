@@ -1316,6 +1316,14 @@ function applyNavigationSelection(
   updateNavigationSelectionVisual(state, rootElement);
 }
 
+function clearNavigationSelectionState(state: AppState, rootElement: HTMLElement): void {
+  state.selectedNavigationBar = null;
+  state.selectedNavigationTick = null;
+  state.selectedNavigationTrackIndex = null;
+  updateArrangementSelectionHighlight(state, rootElement);
+  hideNavigationSelection(rootElement);
+}
+
 function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): void {
   const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
   if (!renderHost) {
@@ -1351,12 +1359,22 @@ function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): 
     if (targetTick === null && !clickedSameBar) {
       return;
     }
-
-    const finalTick = clickedSameBar ? targetTick : targetTick;
-    if (clickedSameBar && finalTick !== null) {
-      state.gpRenderer.seekToTick(finalTick);
+    if (clickedSameBar) {
+      if (targetTick === null) {
+        return;
+      }
+      if (state.selectedNavigationTick !== null && Math.abs(targetTick - state.selectedNavigationTick) < 1) {
+        return;
+      }
+      const didSeek = state.gpRenderer.seekToTick(targetTick);
+      if (!didSeek) {
+        return;
+      }
+      applyNavigationSelection(state, rootElement, clickedAnchor.barNumber, targetTick, activeTrackIndex);
+      return;
     }
-    applyNavigationSelection(state, rootElement, clickedAnchor.barNumber, finalTick ?? null, activeTrackIndex);
+
+    applyNavigationSelection(state, rootElement, clickedAnchor.barNumber, targetTick, activeTrackIndex);
   });
 }
 
@@ -1626,9 +1644,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.clickCounter += 1;
           state.lastClickTimestampIso = new Date().toISOString();
           state.selectionFired = true;
-          state.selectedNavigationBar = null;
-          state.selectedNavigationTick = null;
-          state.selectedNavigationTrackIndex = null;
+          clearNavigationSelectionState(state, rootElement);
 
           updateDebugField(rootElement, "requested-track-index", String(trackIndex));
           updateDebugField(rootElement, "last-clicked-track-index", String(trackIndex));
@@ -1645,8 +1661,6 @@ export function startApp(rootElement: HTMLElement): void {
           invalidatePlaybackBarAnchorRebuild(state);
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
-          updateArrangementSelectionHighlight(state, rootElement);
-          hideNavigationSelection(rootElement);
           hidePlaybackPlayhead(rootElement, state);
           state.gpRenderer?.selectTrack(trackIndex);
         },
@@ -1850,6 +1864,19 @@ export function startApp(rootElement: HTMLElement): void {
           state.playerPositionPayloadShape = info.playerPositionPayloadShape;
           state.playerStatePayloadShape = info.playerStatePayloadShape;
           state.currentBarSourcePath = info.currentBarSourcePath;
+          if (
+            state.selectedNavigationBar !== null &&
+            state.selectedNavigationTrackIndex !== null &&
+            state.selectedNavigationTick !== null
+          ) {
+            const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+            const sameTrack = state.selectedNavigationTrackIndex === activeTrackIndex;
+            const sameBar = info.currentBar !== null && info.currentBar === state.selectedNavigationBar;
+            const closeTick = info.currentTick !== null && Math.abs(info.currentTick - state.selectedNavigationTick) <= 1;
+            if (!sameTrack || !sameBar || !closeTick) {
+              clearNavigationSelectionState(state, rootElement);
+            }
+          }
           updatePlayerRuntimeFields(state, rootElement);
           updateDebugField(
             rootElement,
@@ -1896,8 +1923,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
-          updateArrangementSelectionHighlight(state, rootElement);
-          hideNavigationSelection(rootElement);
+          clearNavigationSelectionState(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
         },
         onActiveTrackConfirmed: (trackIndex) => {
@@ -1916,9 +1942,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentBarSourcePath = null;
           state.requestedTrackIndex = null;
           state.selectionFired = false;
-          state.selectedNavigationBar = null;
-          state.selectedNavigationTick = null;
-          state.selectedNavigationTrackIndex = null;
+          clearNavigationSelectionState(state, rootElement);
           if (state.currentProject) {
             state.currentProject.viewState.selectedTrackIndex = trackIndex;
           }
@@ -1935,8 +1959,6 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
-          updateArrangementSelectionHighlight(state, rootElement);
-          hideNavigationSelection(rootElement);
           hidePlaybackPlayhead(rootElement, state);
         },
         onRenderError: (message) => {

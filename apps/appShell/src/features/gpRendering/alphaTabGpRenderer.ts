@@ -117,6 +117,14 @@ interface AlphaTabBeat {
 }
 
 interface AlphaTabNote {
+  start?: number;
+  startTick?: number;
+  tick?: number;
+  playbackStart?: number;
+  absoluteStart?: number;
+  startPosition?: {
+    tick?: number;
+  };
   readonly _exists?: boolean;
 }
 
@@ -1045,15 +1053,28 @@ export async function createGpRenderer(
     const activeTrack = score?.tracks?.find((track) => track.index === activeTrackIndex) ?? null;
     const bar = activeTrack?.staves?.[0]?.bars?.[barNumber - 1];
     const beatTickCandidates = (bar?.voices ?? []).flatMap((voice) =>
-      (voice.beats ?? []).map((beat) => {
+      (voice.beats ?? []).flatMap((beat) => {
         const beatPaths = ["startTick", "start", "tick", "playbackStart", "absoluteStart", "startPosition.tick"];
+        const notePaths = ["startTick", "start", "tick", "playbackStart", "absoluteStart", "startPosition.tick"];
+        const candidates: number[] = [];
         for (const path of beatPaths) {
           const tick = tryReadTickAtPath(beat, path);
           if (tick !== null) {
-            return tick;
+            candidates.push(tick);
+            break;
           }
         }
-        return null;
+        for (const note of beat.notes ?? []) {
+          for (const path of notePaths) {
+            const tick = tryReadTickAtPath(note, path);
+            if (tick !== null) {
+              candidates.push(tick);
+              break;
+            }
+          }
+        }
+
+        return candidates;
       }),
     );
 
@@ -1062,21 +1083,38 @@ export async function createGpRenderer(
       tickRange && tickRange.endTickExclusive !== null
         ? tickRange.startTick + (tickRange.endTickExclusive - tickRange.startTick) * clampedProgress
         : barStartTick;
-    const candidateTicks = Array.from(
+    const barEndTickExclusive = tickRange?.endTickExclusive ?? Number.POSITIVE_INFINITY;
+    let candidateTicks = Array.from(
       new Set<number>(
         [barStartTick, ...beatTickCandidates]
           .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
-          .filter((value) => (tickRange?.endTickExclusive ?? Number.POSITIVE_INFINITY) > value && value >= barStartTick),
+          .filter((value) => barEndTickExclusive > value && value >= barStartTick),
       ),
     ).sort((left, right) => left - right);
+
+    if (candidateTicks.length <= 1 && tickRange && tickRange.endTickExclusive !== null) {
+      const barEndTick = tickRange.endTickExclusive;
+      const span = barEndTick - tickRange.startTick;
+      if (span > 1) {
+        const fallbackTicks = Array.from({ length: 9 }, (_, stepIndex) =>
+          Math.round(tickRange.startTick + (span * stepIndex) / 8),
+        ).filter((tick, stepIndex) => stepIndex > 0 && tick < barEndTick && tick >= barStartTick);
+        candidateTicks = Array.from(new Set([barStartTick, ...fallbackTicks])).sort((left, right) => left - right);
+      }
+    }
 
     if (candidateTicks.length === 0) {
       return barStartTick;
     }
 
-    return candidateTicks.reduce((bestTick, candidateTick) =>
+    const nearestTick = candidateTicks.reduce((bestTick, candidateTick) =>
       Math.abs(candidateTick - targetTick) < Math.abs(bestTick - targetTick) ? candidateTick : bestTick,
     );
+    if (nearestTick === barStartTick && candidateTicks.length > 1 && clampedProgress > 0.12) {
+      return candidateTicks[1] ?? nearestTick;
+    }
+
+    return nearestTick;
   };
 
   const seekToTick = (tick: number): boolean => {
