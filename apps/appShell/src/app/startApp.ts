@@ -915,17 +915,117 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
           return null;
         }
 
+        const unsafeElement = element as HTMLElement;
+        const rawBarIndex =
+          unsafeElement instanceof HTMLElement && unsafeElement.dataset
+            ? Number(unsafeElement.dataset.barIndex)
+            : Number.NaN;
+        const barNumber = Number.isFinite(rawBarIndex) ? rawBarIndex + 1 : null;
+
         return {
           x: rect.left - renderHostRect.left + renderHost.scrollLeft,
           y: rect.top - renderHostRect.top + renderHost.scrollTop,
           height: Math.max(rect.height, 28),
+          right: rect.right - renderHostRect.left + renderHost.scrollLeft,
+          barNumber,
         };
       })
-      .filter((anchor): anchor is { x: number; y: number; height: number } => anchor !== null)
+      .filter((anchor): anchor is { x: number; y: number; height: number; right: number; barNumber: number | null } => anchor !== null)
       .sort((left, right) => (left.y === right.y ? left.x - right.x : left.y - right.y));
 
     if (rawAnchors.length === 0) {
       continue;
+    }
+
+    if (strategy.source === "dom:[data-bar-index]") {
+      const anchorsByBarNumber = new Map<number, { x: number; y: number; height: number; right: number }>();
+      rawAnchors.forEach((anchor) => {
+        if (!anchor.barNumber || anchor.barNumber <= 0) {
+          return;
+        }
+        const existing = anchorsByBarNumber.get(anchor.barNumber);
+        if (!existing) {
+          anchorsByBarNumber.set(anchor.barNumber, {
+            x: anchor.x,
+            y: anchor.y,
+            height: anchor.height,
+            right: anchor.right,
+          });
+          return;
+        }
+        existing.x = Math.min(existing.x, anchor.x);
+        existing.y = Math.min(existing.y, anchor.y);
+        existing.height = Math.max(existing.height, anchor.height);
+        existing.right = Math.max(existing.right, anchor.right);
+      });
+
+      const barAnchors = Array.from(anchorsByBarNumber.entries())
+        .map(([barNumber, anchor]) => ({ barNumber, ...anchor }))
+        .sort((left, right) => left.barNumber - right.barNumber);
+      const limitedBarAnchors = totalBars > 0 ? barAnchors.filter((anchor) => anchor.barNumber <= totalBars) : barAnchors;
+      if (limitedBarAnchors.length > 0) {
+        const rowTolerance = 14;
+        const rowSummaries: Array<{ yCenter: number; yMin: number; yMax: number; rowStartX: number; rowEndX: number; barNumbers: number[] }> = [];
+        const rowIndexByBarNumber = new Map<number, number>();
+        limitedBarAnchors.forEach((anchor) => {
+          const rowIndex = rowSummaries.findIndex((row) => Math.abs(row.yCenter - anchor.y) <= rowTolerance);
+          if (rowIndex >= 0) {
+            const row = rowSummaries[rowIndex] as {
+              yCenter: number;
+              yMin: number;
+              yMax: number;
+              rowStartX: number;
+              rowEndX: number;
+              barNumbers: number[];
+            };
+            row.yMin = Math.min(row.yMin, anchor.y);
+            row.yMax = Math.max(row.yMax, anchor.y + anchor.height);
+            row.yCenter = (row.yMin + row.yMax) / 2;
+            row.rowStartX = Math.min(row.rowStartX, anchor.x);
+            row.rowEndX = Math.max(row.rowEndX, anchor.right);
+            row.barNumbers.push(anchor.barNumber);
+            rowIndexByBarNumber.set(anchor.barNumber, rowIndex);
+            return;
+          }
+
+          rowSummaries.push({
+            yCenter: anchor.y,
+            yMin: anchor.y,
+            yMax: anchor.y + anchor.height,
+            rowStartX: anchor.x,
+            rowEndX: anchor.right,
+            barNumbers: [anchor.barNumber],
+          });
+          rowIndexByBarNumber.set(anchor.barNumber, rowSummaries.length - 1);
+        });
+
+        state.playbackBarAnchors = limitedBarAnchors.map((anchor, index) => {
+          const nextAnchor = limitedBarAnchors[index + 1];
+          const rowIndex = rowIndexByBarNumber.get(anchor.barNumber) ?? -1;
+          const row = rowIndex >= 0 ? rowSummaries[rowIndex] : null;
+          const nextSameRow = nextAnchor && rowIndexByBarNumber.get(nextAnchor.barNumber) === rowIndex ? nextAnchor : null;
+          const endX = nextSameRow
+            ? Math.max(anchor.x + 12, nextSameRow.x - 2)
+            : Math.max(anchor.x + 12, row ? row.rowEndX - 2 : anchor.right);
+          return {
+            barNumber: anchor.barNumber,
+            startX: anchor.x,
+            endX,
+            rowIndex,
+            y: row ? row.yMin : anchor.y,
+            height: row ? Math.max(row.yMax - row.yMin, 28) : anchor.height,
+          };
+        });
+        state.playbackBarAnchorCount = state.playbackBarAnchors.length;
+        state.playbackBarAnchorSource = strategy.source;
+        const firstBar = state.playbackBarAnchors[0]?.barNumber ?? null;
+        const lastBar = state.playbackBarAnchors[state.playbackBarAnchors.length - 1]?.barNumber ?? null;
+        state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | diag:indexed=${limitedBarAnchors.length},firstBar=${firstBar ?? "-"},lastBar=${lastBar ?? "-"},rows=${rowSummaries.length},totalBars=${totalBars > 0 ? totalBars : "-"}`;
+        updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
+        updateDebugField(rootElement, "playback-bar-anchor-source", strategy.source);
+        updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+        return;
+      }
     }
 
     const dedupedAnchors = rawAnchors.filter((anchor, index) => {
