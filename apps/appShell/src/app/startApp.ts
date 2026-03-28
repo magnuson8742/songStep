@@ -1662,11 +1662,7 @@ function updateLoopHandlesVisual(state: AppState, rootElement: HTMLElement): voi
     renderHost.append(segment);
   });
 
-  const loopRowTop = Math.min(startAnchor.y, endAnchor.y);
-  const loopRowBottom = Math.max(startAnchor.y + startAnchor.height, endAnchor.y + endAnchor.height);
-  const loopHeight = Math.max(loopRowBottom - loopRowTop, 28);
-
-  const ensureHandle = (kind: "start" | "end", x: number): void => {
+  const ensureHandle = (kind: "start" | "end", x: number, top: number, height: number): void => {
     let handle = renderHost.querySelector<HTMLElement>(`[data-loop-handle='${kind}']`);
     if (!handle) {
       handle = document.createElement("div");
@@ -1677,12 +1673,12 @@ function updateLoopHandlesVisual(state: AppState, rootElement: HTMLElement): voi
       renderHost.append(handle);
     }
     handle.style.left = `${x - 4}px`;
-    handle.style.top = `${loopRowTop}px`;
-    handle.style.height = `${loopHeight}px`;
+    handle.style.top = `${top}px`;
+    handle.style.height = `${Math.max(height, 28)}px`;
   };
 
-  ensureHandle("start", startAnchor.startX);
-  ensureHandle("end", endAnchor.endX);
+  ensureHandle("start", startAnchor.startX, startAnchor.y, startAnchor.height);
+  ensureHandle("end", endAnchor.endX, endAnchor.y, endAnchor.height);
 }
 
 function setupLoopHandleDrag(rootElement: HTMLElement, state: AppState): void {
