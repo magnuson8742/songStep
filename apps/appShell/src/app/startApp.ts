@@ -860,6 +860,154 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     return;
   }
   updateRenderHostDomDiagnostics(state, rootElement, renderHost);
+  const isPercussionDefaultLayout =
+    state.gpRenderDebugInfo?.isPercussion === true || state.gpRenderDebugInfo?.effectiveStaveProfile === "Default";
+  const totalBars = state.totalBars ?? 0;
+  const strategyAttempts: string[] = [];
+
+  if (isPercussionDefaultLayout) {
+    const indexedElements = Array.from(renderHost.querySelectorAll<HTMLElement>("svg [data-bar-index]"));
+    const noisyThreshold = totalBars > 0 ? Math.max(totalBars * 120, 4000) : 5000;
+    if (indexedElements.length <= noisyThreshold) {
+      const renderHostRect = renderHost.getBoundingClientRect();
+      const glyphsByBarNumber = new Map<number, Array<{ left: number; right: number; top: number; bottom: number }>>();
+      indexedElements.forEach((element) => {
+        const rawBarIndex = Number(element.dataset.barIndex);
+        if (!Number.isFinite(rawBarIndex)) {
+          return;
+        }
+        const barNumber = rawBarIndex + 1;
+        if (barNumber <= 0 || (totalBars > 0 && barNumber > totalBars)) {
+          return;
+        }
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) {
+          return;
+        }
+        const glyphs = glyphsByBarNumber.get(barNumber) ?? [];
+        glyphs.push({
+          left: rect.left - renderHostRect.left + renderHost.scrollLeft,
+          right: rect.right - renderHostRect.left + renderHost.scrollLeft,
+          top: rect.top - renderHostRect.top + renderHost.scrollTop,
+          bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
+        });
+        glyphsByBarNumber.set(barNumber, glyphs);
+      });
+
+      const perBarStarts = Array.from(glyphsByBarNumber.entries())
+        .map(([barNumber, glyphs]) => {
+          const lefts = glyphs.map((glyph) => glyph.left).sort((left, right) => left - right);
+          const tops = glyphs.map((glyph) => glyph.top).sort((left, right) => left - right);
+          const representativeStart = lefts[Math.floor((lefts.length - 1) * 0.25)] ?? lefts[0] ?? 0;
+          const representativeY = tops[Math.floor(tops.length / 2)] ?? tops[0] ?? 0;
+          const minTop = glyphs.reduce((value, glyph) => Math.min(value, glyph.top), Number.POSITIVE_INFINITY);
+          const maxBottom = glyphs.reduce((value, glyph) => Math.max(value, glyph.bottom), Number.NEGATIVE_INFINITY);
+          const maxRight = glyphs.reduce((value, glyph) => Math.max(value, glyph.right), Number.NEGATIVE_INFINITY);
+          return {
+            barNumber,
+            startX: representativeStart,
+            representativeY,
+            minTop,
+            maxBottom,
+            maxRight,
+          };
+        })
+        .sort((left, right) => left.barNumber - right.barNumber);
+
+      const rowTolerance = 24;
+      const rowSummaries: Array<{
+        yCenter: number;
+        yMin: number;
+        yMax: number;
+        rowStartX: number;
+        rowEndX: number;
+        bars: Array<{ barNumber: number; startX: number }>;
+      }> = [];
+      perBarStarts.forEach((bar) => {
+        const rowIndex = rowSummaries.findIndex((row) => Math.abs(row.yCenter - bar.representativeY) <= rowTolerance);
+        if (rowIndex >= 0) {
+          const row = rowSummaries[rowIndex] as {
+            yCenter: number;
+            yMin: number;
+            yMax: number;
+            rowStartX: number;
+            rowEndX: number;
+            bars: Array<{ barNumber: number; startX: number }>;
+          };
+          row.yMin = Math.min(row.yMin, bar.minTop);
+          row.yMax = Math.max(row.yMax, bar.maxBottom);
+          row.yCenter = (row.yMin + row.yMax) / 2;
+          row.rowStartX = Math.min(row.rowStartX, bar.startX);
+          row.rowEndX = Math.max(row.rowEndX, bar.maxRight);
+          row.bars.push({ barNumber: bar.barNumber, startX: bar.startX });
+          return;
+        }
+        rowSummaries.push({
+          yCenter: bar.representativeY,
+          yMin: bar.minTop,
+          yMax: bar.maxBottom,
+          rowStartX: bar.startX,
+          rowEndX: bar.maxRight,
+          bars: [{ barNumber: bar.barNumber, startX: bar.startX }],
+        });
+      });
+
+      const normalizedAnchors: PlaybackBarAnchor[] = [];
+      rowSummaries.forEach((row, rowIndex) => {
+        const rowBars = [...row.bars].sort((left, right) => left.startX - right.startX);
+        if (rowBars.length === 0) {
+          return;
+        }
+        const rowLeft = Math.min(row.rowStartX - 8, rowBars[0]?.startX ?? row.rowStartX);
+        const rowRight = Math.max(row.rowEndX + 8, rowBars[rowBars.length - 1]?.startX ?? row.rowEndX);
+        rowBars.forEach((bar, position) => {
+          const previousBar = rowBars[position - 1];
+          const nextBar = rowBars[position + 1];
+          const startX = previousBar ? (previousBar.startX + bar.startX) / 2 : rowLeft;
+          const endX = nextBar ? (bar.startX + nextBar.startX) / 2 : rowRight;
+          normalizedAnchors.push({
+            barNumber: bar.barNumber,
+            startX: Math.min(startX, endX - 8),
+            endX: Math.max(endX, startX + 8),
+            rowIndex,
+            y: row.yMin,
+            height: Math.max(row.yMax - row.yMin, 28),
+          });
+        });
+      });
+      const normalizedSorted = normalizedAnchors.sort((left, right) => left.barNumber - right.barNumber);
+      const barsMatchTotal = totalBars > 0 ? normalizedSorted.length === totalBars : true;
+      const contiguous = normalizedSorted.every((anchor, index) => anchor.barNumber === index + 1);
+      const validGeometry = normalizedSorted.every(
+        (anchor) =>
+          Number.isFinite(anchor.startX) &&
+          Number.isFinite(anchor.endX) &&
+          Number.isFinite(anchor.y) &&
+          Number.isFinite(anchor.height) &&
+          anchor.endX > anchor.startX &&
+          anchor.rowIndex >= 0,
+      );
+      const rowMonotonic = normalizedSorted.every((anchor, index) => {
+        const next = normalizedSorted[index + 1];
+        return !next || next.rowIndex >= anchor.rowIndex;
+      });
+      if (normalizedSorted.length > 0 && barsMatchTotal && contiguous && validGeometry && rowMonotonic) {
+        state.playbackBarAnchors = normalizedSorted;
+        state.playbackBarAnchorCount = normalizedSorted.length;
+        state.playbackBarAnchorSource = "percussion:bar-start-normalized";
+        state.playbackAnchorStrategyAttempts = `percussion:bar-start-normalized => ${indexedElements.length} | diag:normalizedBars=${normalizedSorted.length},rows=${rowSummaries.length},matchesTotal=${barsMatchTotal ? "yes" : "no"}`;
+        updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
+        updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
+        updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+        return;
+      }
+      strategyAttempts.push(
+        `percussion:bar-start-normalized => validation=fail,normalizedBars=${normalizedSorted.length},matchesTotal=${barsMatchTotal ? "yes" : "no"}`,
+      );
+    } else {
+      strategyAttempts.push(`percussion:bar-start-normalized => noisySkip=yes,elements=${indexedElements.length}`);
+    }
+  }
 
   const selectorStrategies = [
     {
@@ -898,8 +1046,6 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     },
   ] as const;
   const renderHostRect = renderHost.getBoundingClientRect();
-  const totalBars = state.totalBars ?? 0;
-  const strategyAttempts: string[] = [];
 
   for (const strategy of selectorStrategies) {
     const elements = strategy.resolveAnchors();
