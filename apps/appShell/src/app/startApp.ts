@@ -1098,25 +1098,44 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
     return;
   }
 
-  if (state.playbackCurrentBar === null || state.playbackCurrentBar <= 0) {
+  const activeManualTarget = getActiveManualNavigationTarget(state);
+  let effectiveCurrentBar = state.playbackCurrentBar;
+  let effectiveCurrentTick = state.playbackCurrentTick;
+  let effectiveBarStartTick = state.playbackCurrentBarStartTick;
+  let effectiveBarEndTickExclusive = state.playbackCurrentBarEndTickExclusive;
+  if (
+    activeManualTarget &&
+    (!state.playbackIsPlaying ||
+      state.playbackCurrentTick === null ||
+      Math.abs(state.playbackCurrentTick - activeManualTarget.targetTick) <= 1)
+  ) {
+    effectiveCurrentBar = activeManualTarget.targetBar;
+    effectiveCurrentTick = activeManualTarget.targetTick;
+    const activeManualTargetBarRange = state.gpRenderer?.getBarTickRange(activeManualTarget.targetBar) ?? null;
+    effectiveBarStartTick = activeManualTargetBarRange?.startTick ?? activeManualTarget.targetTick;
+    effectiveBarEndTickExclusive =
+      activeManualTargetBarRange?.endTickExclusive ?? Math.max(activeManualTarget.targetTick + 1, effectiveBarStartTick + 1);
+  }
+
+  if (effectiveCurrentBar === null || effectiveCurrentBar <= 0) {
     hidePlaybackPlayhead(rootElement, state);
     return;
   }
 
-  const anchorForCurrentBar = state.playbackBarAnchors.find((item) => item.barNumber === state.playbackCurrentBar);
+  const anchorForCurrentBar = state.playbackBarAnchors.find((item) => item.barNumber === effectiveCurrentBar);
   if (!anchorForCurrentBar) {
     hidePlaybackPlayhead(rootElement, state);
     return;
   }
 
   const barTickSpan =
-    state.playbackCurrentBarStartTick !== null && state.playbackCurrentBarEndTickExclusive !== null
-      ? state.playbackCurrentBarEndTickExclusive - state.playbackCurrentBarStartTick
+    effectiveBarStartTick !== null && effectiveBarEndTickExclusive !== null
+      ? effectiveBarEndTickExclusive - effectiveBarStartTick
       : null;
   if (
-    state.playbackCurrentTick === null ||
-    state.playbackCurrentBarStartTick === null ||
-    state.playbackCurrentBarEndTickExclusive === null ||
+    effectiveCurrentTick === null ||
+    effectiveBarStartTick === null ||
+    effectiveBarEndTickExclusive === null ||
     barTickSpan === null ||
     barTickSpan <= 0
   ) {
@@ -1125,7 +1144,7 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
   }
 
   const selectedAnchor = anchorForCurrentBar;
-  const currentBarNumber = state.playbackCurrentBar;
+  const currentBarNumber = effectiveCurrentBar;
   const selectedAnchorBarNumber = currentBarNumber;
   const previousBarNumber = state.lastPlaybackVisualBarNumber;
   const previousBarAnchor =
@@ -1138,9 +1157,9 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
     return;
   }
 
-  const barStartTick = state.playbackCurrentBarStartTick;
-  const barEndTickExclusive = state.playbackCurrentBarEndTickExclusive;
-  const normalizedProgress = (state.playbackCurrentTick - barStartTick) / (barEndTickExclusive - barStartTick);
+  const barStartTick = effectiveBarStartTick;
+  const barEndTickExclusive = effectiveBarEndTickExclusive;
+  const normalizedProgress = (effectiveCurrentTick - barStartTick) / (barEndTickExclusive - barStartTick);
   const clampedProgress = Math.min(Math.max(normalizedProgress, 0), 1);
   const rowBreakTransition =
     previousBarNumber !== null &&
@@ -1153,14 +1172,14 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
     console.info(
       "[songStep] row-break mapping diagnostics:",
       JSON.stringify({
-        currentTick: state.playbackCurrentTick,
+        currentTick: effectiveCurrentTick,
         playbackCurrentBar: currentBarNumber,
         selectedVisualAnchorBar: selectedAnchorBarNumber,
         previousVisualBar: previousBarNumber,
         currentAnchorRow: selectedAnchor.rowIndex,
         previousAnchorRow: previousBarAnchor?.rowIndex ?? null,
-        barStartTick: state.playbackCurrentBarStartTick,
-        barEndTickExclusive: state.playbackCurrentBarEndTickExclusive,
+        barStartTick: effectiveBarStartTick,
+        barEndTickExclusive: effectiveBarEndTickExclusive,
         mappingCorrectionActive: false,
         mappingOffset: 0,
       }),
