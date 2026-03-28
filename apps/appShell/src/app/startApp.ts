@@ -1123,23 +1123,23 @@ function rebuildPercussionPlaybackBarAnchors(
 function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[] {
   const rawBounds = state.gpRenderer?.getRenderedBarBounds() ?? [];
   if (rawBounds.length === 0) {
-    state.playbackAnchorStrategyAttempts = "chosenSource=renderer:boundsLookup,rawBoundsCount=0,calibrated=unknown,rowCount=0,validation=fail";
+    state.playbackAnchorStrategyAttempts =
+      "chosenSource=renderer:boundsLookup,rawBoundsCount=0,representativeBarsCount=0,rowCount=0,validation=fail,normalizedBy=row-partition";
     return [];
   }
 
   const totalBars = state.totalBars ?? 0;
-  const normalized = rawBounds
+  const descriptors = rawBounds
     .filter((bound) => {
-      const hasGeometry =
+      const hasDescriptor =
         Number.isFinite(bound.barNumber) &&
-        Number.isFinite(bound.startX) &&
-        Number.isFinite(bound.endX) &&
-        Number.isFinite(bound.y) &&
-        Number.isFinite(bound.height) &&
-        bound.barNumber > 0 &&
-        bound.endX > bound.startX + 2 &&
-        bound.height > 0;
-      if (!hasGeometry) {
+        Number.isFinite(bound.representativeX) &&
+        Number.isFinite(bound.representativeY) &&
+        Number.isFinite(bound.rawTop) &&
+        Number.isFinite(bound.rawBottom) &&
+        Number.isFinite(bound.rowHint) &&
+        bound.barNumber > 0;
+      if (!hasDescriptor) {
         return false;
       }
       if (totalBars > 0 && bound.barNumber > totalBars) {
@@ -1149,85 +1149,104 @@ function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[]
     })
     .map((bound) => ({
       barNumber: Math.round(bound.barNumber),
-      startX: bound.startX,
-      endX: bound.endX,
-      y: bound.y,
-      height: Math.max(bound.height, 24),
-      rowIndex: Number.isFinite(bound.rowIndex) ? Math.max(0, Math.round(bound.rowIndex)) : 0,
+      representativeX: bound.representativeX,
+      representativeY: bound.representativeY,
+      rawTop: Math.min(bound.rawTop, bound.rawBottom),
+      rawBottom: Math.max(bound.rawBottom, bound.rawTop),
+      rowHint: Number.isFinite(bound.rowHint) ? Math.max(0, Math.round(bound.rowHint)) : 0,
     }))
     .sort((left, right) => left.barNumber - right.barNumber);
 
-  if (normalized.length === 0) {
+  if (descriptors.length === 0) {
     return [];
   }
 
-  const deduped = new Map<number, PlaybackBarAnchor>();
-  normalized.forEach((bound) => {
+  const deduped = new Map<
+    number,
+    { barNumber: number; representativeX: number; representativeY: number; rawTop: number; rawBottom: number; rowHint: number }
+  >();
+  descriptors.forEach((bound) => {
     const existing = deduped.get(bound.barNumber);
     if (!existing) {
       deduped.set(bound.barNumber, bound);
       return;
     }
+    const leftRepresentativeX = Math.min(existing.representativeX, bound.representativeX);
+    const conservativeTop = Math.max(existing.rawTop, bound.rawTop);
+    const conservativeBottom = Math.min(existing.rawBottom, bound.rawBottom);
     deduped.set(bound.barNumber, {
       barNumber: bound.barNumber,
-      startX: Math.min(existing.startX, bound.startX),
-      endX: Math.max(existing.endX, bound.endX),
-      y: Math.min(existing.y, bound.y),
-      height: Math.max(existing.height, bound.height),
-      rowIndex: Math.min(existing.rowIndex, bound.rowIndex),
+      representativeX: leftRepresentativeX,
+      representativeY: (existing.representativeY + bound.representativeY) / 2,
+      rawTop: conservativeTop,
+      rawBottom: conservativeBottom > conservativeTop ? conservativeBottom : Math.max(existing.rawBottom, bound.rawBottom),
+      rowHint: Math.min(existing.rowHint, bound.rowHint),
     });
   });
 
-  const anchors = Array.from(deduped.values()).sort((left, right) => left.barNumber - right.barNumber);
-  const contiguous = anchors.every((anchor, index) => anchor.barNumber === index + 1);
-  const matchesTotal = totalBars > 0 ? anchors.length === totalBars : true;
+  const representativeBars = Array.from(deduped.values()).sort((left, right) => left.barNumber - right.barNumber);
+  const contiguous = representativeBars.every((bar, index) => bar.barNumber === index + 1);
+  const matchesTotal = totalBars > 0 ? representativeBars.length === totalBars : true;
   if (!contiguous || !matchesTotal) {
-    state.playbackAnchorStrategyAttempts = `chosenSource=renderer:boundsLookup,rawBoundsCount=${rawBounds.length},calibrated=yes,rowCount=0,validation=fail`;
+    state.playbackAnchorStrategyAttempts = `chosenSource=renderer:boundsLookup,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=0,validation=fail,normalizedBy=row-partition`;
     return [];
   }
 
-  const rowsByIndex = new Map<number, PlaybackBarAnchor[]>();
-  anchors.forEach((anchor) => {
-    const rowAnchors = rowsByIndex.get(anchor.rowIndex) ?? [];
-    rowAnchors.push(anchor);
-    rowsByIndex.set(anchor.rowIndex, rowAnchors);
+  const rowsByIndex = new Map<number, typeof representativeBars>();
+  representativeBars.forEach((bar) => {
+    const rowAnchors = rowsByIndex.get(bar.rowHint) ?? [];
+    rowAnchors.push(bar);
+    rowsByIndex.set(bar.rowHint, rowAnchors);
   });
+  if (rowsByIndex.size <= 1) {
+    rowsByIndex.clear();
+    representativeBars.forEach((bar) => {
+      const rowAnchors = rowsByIndex.get(0) ?? [];
+      rowAnchors.push(bar);
+      rowsByIndex.set(0, rowAnchors);
+    });
+  }
 
   const sortedRowIndexes = Array.from(rowsByIndex.keys()).sort((left, right) => left - right);
   const normalizedAnchors: PlaybackBarAnchor[] = [];
 
+  const quantile = (values: number[], ratio: number): number | null => {
+    if (values.length === 0) {
+      return null;
+    }
+    const sorted = [...values].sort((left, right) => left - right);
+    const index = Math.max(0, Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio)));
+    return sorted[index] ?? null;
+  };
+
   sortedRowIndexes.forEach((rowIndex) => {
-    const rowAnchors = (rowsByIndex.get(rowIndex) ?? []).sort((left, right) => left.startX - right.startX);
-    if (rowAnchors.length === 0) {
+    const rowBars = (rowsByIndex.get(rowIndex) ?? []).sort((left, right) => left.representativeX - right.representativeX);
+    if (rowBars.length === 0) {
       return;
     }
 
-    const tops = rowAnchors.map((anchor) => anchor.y).sort((left, right) => left - right);
-    const bottoms = rowAnchors.map((anchor) => anchor.y + anchor.height).sort((left, right) => left - right);
-    const topQuantileIndex = Math.min(tops.length - 1, Math.floor((tops.length - 1) * 0.35));
-    const bottomQuantileIndex = Math.min(bottoms.length - 1, Math.floor((bottoms.length - 1) * 0.75));
-    const conservativeTop = tops[topQuantileIndex] ?? rowAnchors[0]?.y ?? 0;
-    const conservativeBottom = bottoms[bottomQuantileIndex] ?? rowAnchors[0]?.y ?? conservativeTop + 24;
-    const rowTop = Math.min(conservativeTop, conservativeBottom - 24);
-    const rowHeight = Math.max(24, conservativeBottom - rowTop);
+    const rowStarts = rowBars.map((bar) => bar.representativeX);
+    const rowLeft = quantile(rowStarts, 0.05) ?? rowStarts[0] ?? 0;
+    const rowRight = quantile(rowStarts, 0.95) ?? rowStarts[rowStarts.length - 1] ?? rowLeft + 24;
+    const tops = rowBars.map((bar) => bar.rawTop);
+    const bottoms = rowBars.map((bar) => bar.rawBottom);
+    const rowTop = quantile(tops, 0.4) ?? (tops[0] ?? 0);
+    const rowBottomCandidate = quantile(bottoms, 0.75) ?? (rowTop + 24);
+    const rowBottom = Math.max(rowBottomCandidate, rowTop + 24);
+    const rowHeight = rowBottom - rowTop;
 
-    const rowLeft = rowAnchors[0]?.startX ?? 0;
-    const rowRight = rowAnchors[rowAnchors.length - 1]?.endX ?? rowLeft + 24;
-    const centerXByIndex = rowAnchors.map((anchor) => (anchor.startX + anchor.endX) / 2);
-
-    rowAnchors.forEach((anchor, index) => {
-      const previousCenter = centerXByIndex[index - 1];
-      const nextCenter = centerXByIndex[index + 1];
-      const currentCenter = centerXByIndex[index] ?? (anchor.startX + anchor.endX) / 2;
-      const midpointLeft = previousCenter === undefined ? rowLeft : (previousCenter + currentCenter) / 2;
-      const midpointRight = nextCenter === undefined ? rowRight : (currentCenter + nextCenter) / 2;
-      const normalizedStartX = index === 0 ? Math.min(anchor.startX, midpointLeft) : midpointLeft;
-      const normalizedEndX = index === rowAnchors.length - 1 ? Math.max(anchor.endX, midpointRight) : midpointRight;
+    rowBars.forEach((bar, index) => {
+      const previous = rowBars[index - 1];
+      const next = rowBars[index + 1];
+      const leftBoundary =
+        previous === undefined ? rowLeft : (previous.representativeX + bar.representativeX) / 2;
+      const rightBoundary =
+        next === undefined ? Math.max(rowRight, bar.representativeX + 8) : (bar.representativeX + next.representativeX) / 2;
 
       normalizedAnchors.push({
-        barNumber: anchor.barNumber,
-        startX: Math.min(normalizedStartX, normalizedEndX - 8),
-        endX: Math.max(normalizedEndX, normalizedStartX + 8),
+        barNumber: bar.barNumber,
+        startX: leftBoundary,
+        endX: Math.max(rightBoundary, leftBoundary + 8),
         y: rowTop,
         height: rowHeight,
         rowIndex,
@@ -1235,26 +1254,28 @@ function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[]
     });
   });
 
-  const sortedNormalizedAnchors = normalizedAnchors.sort((left, right) => left.barNumber - right.barNumber);
-  const hasOverlap = sortedNormalizedAnchors.some((anchor, index) => {
-    const nextAnchor = sortedNormalizedAnchors[index + 1];
-    if (!nextAnchor) {
-      return false;
-    }
-    if (nextAnchor.rowIndex !== anchor.rowIndex) {
-      return false;
-    }
-    return anchor.endX > nextAnchor.startX + 1;
+  const byBarOrder = [...normalizedAnchors].sort((left, right) => left.barNumber - right.barNumber);
+  const rowMonotonic = byBarOrder.every((anchor, index) => {
+    const next = byBarOrder[index + 1];
+    return !next || next.rowIndex >= anchor.rowIndex;
   });
-  const normalizedContiguous = sortedNormalizedAnchors.every((anchor, index) => anchor.barNumber === index + 1);
-  const normalizedMatchesTotal = totalBars > 0 ? sortedNormalizedAnchors.length === totalBars : true;
-  const validationPass = normalizedContiguous && normalizedMatchesTotal && !hasOverlap;
-  state.playbackAnchorStrategyAttempts = `chosenSource=renderer:boundsLookup,rawBoundsCount=${rawBounds.length},calibrated=yes,rowCount=${sortedRowIndexes.length},validation=${validationPass ? "pass" : "fail"}`;
+  const sameRowNonOverlap = byBarOrder.every((anchor, index) => {
+    const next = byBarOrder[index + 1];
+    if (!next || next.rowIndex !== anchor.rowIndex) {
+      return true;
+    }
+    return next.startX >= anchor.endX - 1;
+  });
+  const positiveWidths = byBarOrder.every((anchor) => anchor.endX > anchor.startX + 2);
+  const normalizedContiguous = byBarOrder.every((anchor, index) => anchor.barNumber === index + 1);
+  const normalizedMatchesTotal = totalBars > 0 ? byBarOrder.length === totalBars : true;
+  const validationPass = normalizedContiguous && normalizedMatchesTotal && rowMonotonic && sameRowNonOverlap && positiveWidths;
+  state.playbackAnchorStrategyAttempts = `chosenSource=renderer:boundsLookup,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=${sortedRowIndexes.length},validation=${validationPass ? "pass" : "fail"},normalizedBy=row-partition`;
   if (!validationPass) {
     return [];
   }
 
-  return sortedNormalizedAnchors;
+  return byBarOrder;
 }
 function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): void {
   if (!ENABLE_CUSTOM_PLAYHEAD) {

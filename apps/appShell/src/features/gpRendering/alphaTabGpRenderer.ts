@@ -248,7 +248,14 @@ export interface GpRendererController {
   seekToBarStart: (barNumber: number) => number | null;
   resolveNearestTickInBar: (barNumber: number, progressInBar: number) => number | null;
   getBarTickRange: (barNumber: number) => { startTick: number; endTickExclusive: number | null } | null;
-  getRenderedBarBounds: () => Array<{ barNumber: number; startX: number; endX: number; y: number; height: number; rowIndex: number }>;
+  getRenderedBarBounds: () => Array<{
+    barNumber: number;
+    representativeX: number;
+    representativeY: number;
+    rawTop: number;
+    rawBottom: number;
+    rowHint: number;
+  }>;
   setPlaybackSpeedPercent: (speedPercent: number) => boolean;
   play: () => void;
   pause: () => void;
@@ -256,7 +263,14 @@ export interface GpRendererController {
   destroy: () => void;
 }
 
-type RenderedBarBound = { barNumber: number; startX: number; endX: number; y: number; height: number; rowIndex: number };
+type RenderedBarBound = {
+  barNumber: number;
+  representativeX: number;
+  representativeY: number;
+  rawTop: number;
+  rawBottom: number;
+  rowHint: number;
+};
 
 const BRAVURA_FONT_DIRECTORY = "/font/";
 const SONIVOX_SOUND_FONT_PATH = "/soundfont/sonivox.sf2";
@@ -1233,55 +1247,73 @@ export async function createGpRenderer(
       return candidate;
     });
 
-    const byBar = new Map<number, { startX: number; endX: number; y: number; height: number }>();
-    calibratedCandidates.forEach((candidate) => {
-      const existing = byBar.get(candidate.barNumber);
-      if (!existing) {
-        byBar.set(candidate.barNumber, {
-          startX: candidate.startX,
-          endX: candidate.endX,
-          y: candidate.y,
-          height: candidate.height,
-        });
-        return;
+    const toQuantile = (values: number[], quantile: number): number | null => {
+      if (values.length === 0) {
+        return null;
       }
-      existing.startX = Math.min(existing.startX, candidate.startX);
-      existing.endX = Math.max(existing.endX, candidate.endX);
-      existing.y = Math.min(existing.y, candidate.y);
-      existing.height = Math.max(existing.height, candidate.height);
+      const sortedValues = [...values].sort((left, right) => left - right);
+      const index = Math.max(0, Math.min(sortedValues.length - 1, Math.floor((sortedValues.length - 1) * quantile)));
+      return sortedValues[index] ?? null;
+    };
+
+    const byBar = new Map<number, Array<{ startX: number; endX: number; y: number; height: number }>>();
+    calibratedCandidates.forEach((candidate) => {
+      const items = byBar.get(candidate.barNumber) ?? [];
+      items.push(candidate);
+      byBar.set(candidate.barNumber, items);
     });
 
-    const sorted = Array.from(byBar.entries())
-      .map(([barNumber, bound]) => ({ barNumber, ...bound }))
+    const descriptors = Array.from(byBar.entries())
+      .map(([barNumber, items]) => {
+        const starts = items.map((item) => item.startX);
+        const centers = items.map((item) => (item.startX + item.endX) / 2);
+        const ys = items.map((item) => item.y);
+        const bottoms = items.map((item) => item.y + item.height);
+        const representativeX = toQuantile(starts, 0.22) ?? toQuantile(centers, 0.25) ?? starts[0] ?? 0;
+        const representativeY = toQuantile(ys, 0.5) ?? 0;
+        const rawTop = toQuantile(ys, 0.35) ?? representativeY;
+        const rawBottom = toQuantile(bottoms, 0.7) ?? rawTop + 24;
+        return {
+          barNumber,
+          representativeX,
+          representativeY,
+          rawTop,
+          rawBottom,
+        };
+      })
       .sort((left, right) => left.barNumber - right.barNumber);
-    const rows: Array<{ yMin: number; yMax: number; yCenter: number; bars: number[] }> = [];
-    sorted.forEach((bound) => {
-      const rowIndex = rows.findIndex((row) => Math.abs(row.yCenter - bound.y) <= 22);
+
+    const rows: Array<{ yCenter: number; yMin: number; yMax: number; bars: number[] }> = [];
+    descriptors.forEach((descriptor) => {
+      const rowIndex = rows.findIndex((row) => Math.abs(row.yCenter - descriptor.representativeY) <= 28);
       if (rowIndex >= 0) {
-        const row = rows[rowIndex] as { yMin: number; yMax: number; yCenter: number; bars: number[] };
-        row.yMin = Math.min(row.yMin, bound.y);
-        row.yMax = Math.max(row.yMax, bound.y + bound.height);
+        const row = rows[rowIndex];
+        if (!row) {
+          return;
+        }
+        row.yMin = Math.min(row.yMin, descriptor.rawTop);
+        row.yMax = Math.max(row.yMax, descriptor.rawBottom);
         row.yCenter = (row.yMin + row.yMax) / 2;
-        row.bars.push(bound.barNumber);
+        row.bars.push(descriptor.barNumber);
         return;
       }
       rows.push({
-        yMin: bound.y,
-        yMax: bound.y + bound.height,
-        yCenter: bound.y,
-        bars: [bound.barNumber],
+        yCenter: descriptor.representativeY,
+        yMin: descriptor.rawTop,
+        yMax: descriptor.rawBottom,
+        bars: [descriptor.barNumber],
       });
     });
-    const rowIndexByBar = new Map<number, number>();
-    rows.forEach((row, rowIndex) => row.bars.forEach((barNumber) => rowIndexByBar.set(barNumber, rowIndex)));
+    const rowHintByBar = new Map<number, number>();
+    rows.forEach((row, rowIndex) => row.bars.forEach((barNumber) => rowHintByBar.set(barNumber, rowIndex)));
 
-    return sorted.map((bound) => ({
-      barNumber: bound.barNumber,
-      startX: bound.startX,
-      endX: bound.endX,
-      y: bound.y,
-      height: Math.max(bound.height, 24),
-      rowIndex: rowIndexByBar.get(bound.barNumber) ?? -1,
+    return descriptors.map((descriptor) => ({
+      barNumber: descriptor.barNumber,
+      representativeX: descriptor.representativeX,
+      representativeY: descriptor.representativeY,
+      rawTop: descriptor.rawTop,
+      rawBottom: Math.max(descriptor.rawBottom, descriptor.rawTop + 16),
+      rowHint: rowHintByBar.get(descriptor.barNumber) ?? 0,
     }));
   };
 
