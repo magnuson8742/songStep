@@ -86,6 +86,7 @@ interface AppState {
   selectionDivergenceSuppressTicks: number;
   pendingOverviewNavigationBar: number | null;
   pendingOverviewNavigationTrackIndex: number | null;
+  pendingOverviewNavigationTick: number | null;
   desiredTrackSwitchTick: number | null;
   desiredTrackSwitchBar: number | null;
   desiredTrackSwitchSourceTrackIndex: number | null;
@@ -1365,10 +1366,15 @@ function tryCompletePendingOverviewNavigationAfterRender(
     return;
   }
 
+  if (state.pendingOverviewNavigationTick !== null) {
+    return;
+  }
+
   const pendingBar = state.pendingOverviewNavigationBar;
+  const seekSucceeded = seekToBarAndApplyNavigationSelection(state, rootElement, committedTrackIndex, pendingBar);
   state.pendingOverviewNavigationBar = null;
   state.pendingOverviewNavigationTrackIndex = null;
-  const seekSucceeded = seekToBarAndApplyNavigationSelection(state, rootElement, committedTrackIndex, pendingBar);
+  state.pendingOverviewNavigationTick = null;
   if (!seekSucceeded) {
     clearNavigationSelectionState(state, rootElement);
   }
@@ -1460,15 +1466,22 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
     if (clickedTrackIndex === confirmedTrackIndex) {
       state.pendingOverviewNavigationBar = null;
       state.pendingOverviewNavigationTrackIndex = null;
+      state.pendingOverviewNavigationTick = null;
       seekToBarAndApplyNavigationSelection(state, rootElement, clickedTrackIndex, targetBarNumber);
+      return;
+    }
+
+    const targetTick = state.gpRenderer.getBarTickRange(targetBarNumber)?.startTick ?? null;
+    if (targetTick === null) {
       return;
     }
 
     state.pendingOverviewNavigationBar = targetBarNumber;
     state.pendingOverviewNavigationTrackIndex = clickedTrackIndex;
+    state.pendingOverviewNavigationTick = targetTick;
     clearNavigationSelectionState(state, rootElement);
     state.requestedTrackIndex = clickedTrackIndex;
-    state.gpRenderer.selectTrack(clickedTrackIndex);
+    state.gpRenderer.selectTrack(clickedTrackIndex, targetTick);
   });
 }
 
@@ -1516,6 +1529,7 @@ export function startApp(rootElement: HTMLElement): void {
     selectionDivergenceSuppressTicks: 0,
     pendingOverviewNavigationBar: null,
     pendingOverviewNavigationTrackIndex: null,
+    pendingOverviewNavigationTick: null,
     desiredTrackSwitchTick: null,
     desiredTrackSwitchBar: null,
     desiredTrackSwitchSourceTrackIndex: null,
@@ -1537,6 +1551,7 @@ export function startApp(rootElement: HTMLElement): void {
     invalidatePlaybackBarAnchorRebuild(state);
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
+    state.pendingOverviewNavigationTick = null;
     state.desiredTrackSwitchTick = null;
     state.desiredTrackSwitchBar = null;
     state.desiredTrackSwitchSourceTrackIndex = null;
@@ -1755,6 +1770,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.selectionFired = true;
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
+          state.pendingOverviewNavigationTick = null;
           clearNavigationSelectionState(state, rootElement);
 
           updateDebugField(rootElement, "requested-track-index", String(trackIndex));
@@ -1950,6 +1966,25 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onProgrammaticSeekConfirmed: (trackIndex, tick) => {
           if (
+            state.pendingOverviewNavigationBar !== null &&
+            state.pendingOverviewNavigationTrackIndex === trackIndex &&
+            state.pendingOverviewNavigationTick !== null &&
+            state.pendingOverviewNavigationTick === tick
+          ) {
+            applyNavigationSelection(
+              state,
+              rootElement,
+              state.pendingOverviewNavigationBar,
+              state.pendingOverviewNavigationTick,
+              trackIndex,
+            );
+            state.pendingOverviewNavigationBar = null;
+            state.pendingOverviewNavigationTrackIndex = null;
+            state.pendingOverviewNavigationTick = null;
+            return;
+          }
+
+          if (
             state.pendingOverviewNavigationBar !== null ||
             state.pendingOverviewNavigationTrackIndex !== null ||
             state.desiredTrackSwitchTick === null ||
@@ -2058,6 +2093,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackAnchorStrategyAttempts = null;
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
+          state.pendingOverviewNavigationTick = null;
           invalidatePlaybackBarAnchorRebuild(state);
           updateProjectStatusBanner(rootElement, message);
           updateDebugField(rootElement, "current-tick", "-");
@@ -2070,11 +2106,25 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
         },
         onActiveTrackConfirmed: (trackIndex) => {
+          const isPendingOverviewTrackSwitch =
+            state.pendingOverviewNavigationBar !== null &&
+            state.pendingOverviewNavigationTrackIndex === trackIndex &&
+            state.pendingOverviewNavigationTick !== null;
+
           state.selectedTrackIndex = trackIndex;
-          state.playbackCurrentBar = null;
-          state.playbackCurrentTick = null;
-          state.playbackCurrentBarStartTick = null;
-          state.playbackCurrentBarEndTickExclusive = null;
+          if (isPendingOverviewTrackSwitch) {
+            const pendingBarNumber = state.pendingOverviewNavigationBar as number;
+            state.playbackCurrentBar = pendingBarNumber;
+            state.playbackCurrentTick = state.pendingOverviewNavigationTick;
+            const targetBarRange = state.gpRenderer?.getBarTickRange(pendingBarNumber) ?? null;
+            state.playbackCurrentBarStartTick = targetBarRange?.startTick ?? state.pendingOverviewNavigationTick;
+            state.playbackCurrentBarEndTickExclusive = targetBarRange?.endTickExclusive ?? null;
+          } else {
+            state.playbackCurrentBar = null;
+            state.playbackCurrentTick = null;
+            state.playbackCurrentBarStartTick = null;
+            state.playbackCurrentBarEndTickExclusive = null;
+          }
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.playbackPlayheadVisible = false;
@@ -2085,7 +2135,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentBarSourcePath = null;
           state.requestedTrackIndex = null;
           state.selectionFired = false;
-          clearNavigationSelectionState(state, rootElement);
+          if (!isPendingOverviewTrackSwitch) {
+            clearNavigationSelectionState(state, rootElement);
+          }
           if (state.currentProject) {
             state.currentProject.viewState.selectedTrackIndex = trackIndex;
           }
@@ -2108,6 +2160,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.projectStatusMessage = message;
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
+          state.pendingOverviewNavigationTick = null;
           state.desiredTrackSwitchTick = null;
           state.desiredTrackSwitchBar = null;
           state.desiredTrackSwitchSourceTrackIndex = null;
