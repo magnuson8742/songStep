@@ -1124,7 +1124,7 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
   const rawBounds = state.gpRenderer?.getRenderedBarBounds() ?? [];
   if (rawBounds.length === 0) {
     state.playbackAnchorStrategyAttempts =
-      "chosenSource=renderer:boundsLookup,rawBoundsCount=0,representativeBarsCount=0,rowCount=0,validation=fail,normalizedBy=row-partition";
+      "chosenSource=renderer+svg-separators,rawBoundsCount=0,representativeBarsCount=0,rowCount=0,rawVerticalCount=0,spanningVerticalCount=0,separatorCount=0,usedFallbackMidpoints=no,validation=fail,normalizedBy=separator-partition";
     return [];
   }
 
@@ -1188,7 +1188,7 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
   const contiguous = representativeBars.every((bar, index) => bar.barNumber === index + 1);
   const matchesTotal = totalBars > 0 ? representativeBars.length === totalBars : true;
   if (!contiguous || !matchesTotal) {
-    state.playbackAnchorStrategyAttempts = `chosenSource=renderer:boundsLookup,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=0,validation=fail,normalizedBy=row-partition`;
+    state.playbackAnchorStrategyAttempts = `chosenSource=renderer+svg-separators,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=0,rawVerticalCount=0,spanningVerticalCount=0,separatorCount=0,usedFallbackMidpoints=no,validation=fail,normalizedBy=separator-partition`;
     return [];
   }
 
@@ -1221,14 +1221,14 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
         if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
           return false;
         }
-        return Math.abs(y2 - y1) <= 1.6 && Math.abs(x2 - x1) >= 20;
+        return Math.abs(y2 - y1) <= 1.6 && Math.abs(x2 - x1) >= 48;
       })
       .map((line) => toLocalRect(line.getBoundingClientRect())),
     ...Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect"))
       .filter((rect) => {
         const width = Number(rect.getAttribute("width"));
         const height = Number(rect.getAttribute("height"));
-        return Number.isFinite(width) && Number.isFinite(height) && width >= 20 && height > 0 && height <= 4;
+        return Number.isFinite(width) && Number.isFinite(height) && width >= 48 && height > 0 && height <= 4;
       })
       .map((rect) => toLocalRect(rect.getBoundingClientRect())),
   ];
@@ -1302,6 +1302,9 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
 
   const normalizedAnchors: PlaybackBarAnchor[] = [];
   let usedSeparatorCount = 0;
+  let rawVerticalCount = 0;
+  let spanningVerticalCount = 0;
+  let usedFallbackMidpoints = false;
 
   rowGroups.forEach((row, rowIndex) => {
     const rowBars = [...row.bars].sort((left, right) => left.representativeX - right.representativeX);
@@ -1311,18 +1314,29 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
     const rowRepXs = rowBars.map((bar) => bar.representativeX);
     const rowYCenter = quantile(rowBars.map((bar) => bar.representativeY), 0.5) ?? row.yCenter;
 
-    const rowHorizontal = horizontalSegments.filter((segment) => Math.abs((segment.top + segment.bottom) / 2 - rowYCenter) <= 48);
-    const rowTopFromStructure = quantile(rowHorizontal.map((segment) => segment.top), 0.2);
-    const rowBottomFromStructure = quantile(rowHorizontal.map((segment) => segment.bottom), 0.8);
+    const rowHorizontal = horizontalSegments.filter((segment) => Math.abs((segment.top + segment.bottom) / 2 - rowYCenter) <= 56);
+    const rowTopFromStructure = rowHorizontal.length > 0 ? Math.min(...rowHorizontal.map((segment) => segment.top)) : null;
+    const rowBottomFromStructure = rowHorizontal.length > 0 ? Math.max(...rowHorizontal.map((segment) => segment.bottom)) : null;
     const rowTopFromBounds = quantile(rowBars.map((bar) => bar.rawTop), 0.4) ?? (rowYCenter - 18);
     const rowBottomFromBounds = quantile(rowBars.map((bar) => bar.rawBottom), 0.75) ?? (rowYCenter + 18);
-    const rowTop = rowTopFromStructure ?? rowTopFromBounds;
-    const rowBottom = Math.max(rowBottomFromStructure ?? rowBottomFromBounds, rowTop + 24);
+    const rowTop = rowTopFromStructure !== null ? rowTopFromStructure - 2 : rowTopFromBounds;
+    const rowBottom = rowBottomFromStructure !== null ? rowBottomFromStructure + 2 : Math.max(rowBottomFromBounds, rowTop + 24);
+    const rowHeight = Math.max(rowBottom - rowTop, 24);
 
-    const rowSeparatorsRaw = verticalSeparators
-      .filter((segment) => segment.bottom >= rowTop - 6 && segment.top <= rowBottom + 6)
+    const rowVerticalRaw = verticalSeparators.filter((segment) => segment.bottom >= rowTop - 6 && segment.top <= rowBottom + 6);
+    rawVerticalCount += rowVerticalRaw.length;
+    const rowSeparatorsRaw = rowVerticalRaw
+      .filter((segment) => {
+        const overlapTop = Math.max(segment.top, rowTop);
+        const overlapBottom = Math.min(segment.bottom, rowBottom);
+        const overlapHeight = Math.max(overlapBottom - overlapTop, 0);
+        const overlapRatio = overlapHeight / rowHeight;
+        const spanRatio = segment.height / rowHeight;
+        return overlapRatio >= 0.82 && spanRatio >= 0.82;
+      })
       .map((segment) => (segment.left + segment.right) / 2)
       .sort((left, right) => left - right);
+    spanningVerticalCount += rowSeparatorsRaw.length;
     const dedupedSeparators = rowSeparatorsRaw.filter((value, index) => {
       if (index === 0) {
         return true;
@@ -1348,6 +1362,7 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
       }
       selectedBoundaries = bestWindow;
     } else {
+      usedFallbackMidpoints = true;
       const rowLeft = quantile(rowRepXs, 0.05) ?? rowRepXs[0] ?? 0;
       const rowRight = quantile(rowRepXs, 0.95) ?? rowRepXs[rowRepXs.length - 1] ?? rowLeft + 24;
       const fallbackBoundaries: number[] = [rowLeft];
@@ -1379,7 +1394,7 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
         startX,
         endX: Math.max(endX, startX + 8),
         y: rowTop,
-        height: Math.max(rowBottom - rowTop, 24),
+        height: rowHeight,
         rowIndex,
       });
     });
@@ -1401,7 +1416,7 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
   const normalizedContiguous = byBarOrder.every((anchor, index) => anchor.barNumber === index + 1);
   const normalizedMatchesTotal = totalBars > 0 ? byBarOrder.length === totalBars : true;
   const validationPass = normalizedContiguous && normalizedMatchesTotal && rowMonotonic && sameRowNonOverlap && positiveWidths;
-  state.playbackAnchorStrategyAttempts = `chosenSource=renderer+svg-separators,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=${rowGroups.length},separatorCount=${usedSeparatorCount},validation=${validationPass ? "pass" : "fail"},normalizedBy=separator-partition`;
+  state.playbackAnchorStrategyAttempts = `chosenSource=renderer+svg-separators,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=${rowGroups.length},rawVerticalCount=${rawVerticalCount},spanningVerticalCount=${spanningVerticalCount},separatorCount=${usedSeparatorCount},usedFallbackMidpoints=${usedFallbackMidpoints ? "yes" : "no"},validation=${validationPass ? "pass" : "fail"},normalizedBy=separator-partition`;
   if (!validationPass) {
     return [];
   }
