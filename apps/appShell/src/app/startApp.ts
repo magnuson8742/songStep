@@ -1947,27 +1947,28 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onTrackRenderCommitted: (trackIndex) => {
           tryCompletePendingOverviewNavigationAfterRender(state, rootElement, trackIndex);
+        },
+        onProgrammaticSeekConfirmed: (trackIndex, tick) => {
           if (
-            state.pendingOverviewNavigationBar === null &&
-            state.pendingOverviewNavigationTrackIndex === null &&
-            state.desiredTrackSwitchTick !== null &&
-            state.gpRenderer &&
-            trackIndex === state.selectedTrackIndex
+            state.pendingOverviewNavigationBar !== null ||
+            state.pendingOverviewNavigationTrackIndex !== null ||
+            state.desiredTrackSwitchTick === null ||
+            trackIndex !== state.selectedTrackIndex ||
+            tick !== state.desiredTrackSwitchTick
           ) {
-            const seekSucceeded = state.gpRenderer.seekToTick(state.desiredTrackSwitchTick);
-            if (seekSucceeded) {
-              applyNavigationSelection(
-                state,
-                rootElement,
-                state.desiredTrackSwitchBar ?? (state.playbackCurrentBar ?? 1),
-                state.desiredTrackSwitchTick,
-                trackIndex,
-              );
-            }
-            state.desiredTrackSwitchTick = null;
-            state.desiredTrackSwitchBar = null;
-            state.desiredTrackSwitchSourceTrackIndex = null;
+            return;
           }
+
+          applyNavigationSelection(
+            state,
+            rootElement,
+            state.desiredTrackSwitchBar ?? (state.playbackCurrentBar ?? 1),
+            state.desiredTrackSwitchTick,
+            trackIndex,
+          );
+          state.desiredTrackSwitchTick = null;
+          state.desiredTrackSwitchBar = null;
+          state.desiredTrackSwitchSourceTrackIndex = null;
         },
         onScoreRuntimeInfo: (info) => {
           state.scoreTitle = info.scoreTitle;

@@ -232,6 +232,7 @@ export interface GpRendererHooks {
   onDebugInfo: (debugInfo: GpRenderDebugInfo) => void;
   onActiveTrackConfirmed: (trackIndex: number) => void;
   onTrackRenderCommitted: (trackIndex: number) => void;
+  onProgrammaticSeekConfirmed: (trackIndex: number, tick: number) => void;
   onScoreRuntimeInfo: (info: GpScoreRuntimeInfo) => void;
   onScoreOverviewRuntimeInfo: (info: GpScoreOverviewRuntimeInfo) => void;
   onPlaybackRuntimeInfo: (info: GpPlaybackRuntimeInfo) => void;
@@ -1401,6 +1402,7 @@ export async function createGpRenderer(
         ) {
           const tickDelta = Math.abs(currentTick - pendingProgrammaticSeek.tick);
           if (tickDelta <= 1) {
+            hooks.onProgrammaticSeekConfirmed(confirmedActiveTrackIndex, pendingProgrammaticSeek.tick);
             pendingProgrammaticSeek = null;
             if (pendingPlayAfterProgrammaticSeek && isPlaybackApiAvailable(api) && !isPercussionTrack) {
               pendingPlayAfterProgrammaticSeek = false;
@@ -1415,8 +1417,6 @@ export async function createGpRenderer(
               pendingProgrammaticSeek.retryCount = retryCountSnapshot;
             }
             return;
-          } else if (pendingProgrammaticSeek.retryCount >= 2) {
-            pendingProgrammaticSeek = null;
           } else {
             return;
           }
