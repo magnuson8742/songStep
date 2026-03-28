@@ -199,9 +199,9 @@ export function renderProjectScreen(
             <button class="secondaryButton" type="button" data-action="stop">Stop</button>
           </div>
           <div class="playerLoopControls">
-            <button class="${actions.loopEnabled ? "primaryButton" : "secondaryButton"}" type="button" data-action="toggle-loop">Loop</button>
-            <span class="playerLoopLabel">A: ${renderDebugValue(actions.loopStartBar)}</span>
-            <span class="playerLoopLabel">B: ${renderDebugValue(actions.loopEndBar)}</span>
+            <button class="${actions.loopEnabled ? "primaryButton" : "secondaryButton"}" type="button" data-action="toggle-loop" data-loop-toggle-button="true">Loop</button>
+            <span class="playerLoopLabel" data-loop-start-label="true">A: ${renderDebugValue(actions.loopStartBar)}</span>
+            <span class="playerLoopLabel" data-loop-end-label="true">B: ${renderDebugValue(actions.loopEndBar)}</span>
           </div>
         </div>
         <dl class="playerTopInfo">

@@ -1338,6 +1338,23 @@ function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElem
   updatePlaybackFollowDiagnostics(rootElement, true, "row-transition-follow");
 }
 
+function updateLoopControlsVisual(rootElement: HTMLElement, state: AppState): void {
+  const loopToggleButton = rootElement.querySelector<HTMLButtonElement>("[data-loop-toggle-button='true']");
+  if (loopToggleButton) {
+    loopToggleButton.classList.remove("primaryButton", "secondaryButton");
+    loopToggleButton.classList.add(state.loopEnabled ? "primaryButton" : "secondaryButton");
+  }
+
+  const loopStartLabel = rootElement.querySelector<HTMLElement>("[data-loop-start-label='true']");
+  if (loopStartLabel) {
+    loopStartLabel.textContent = `A: ${state.loopStartBar === null ? "-" : String(state.loopStartBar)}`;
+  }
+  const loopEndLabel = rootElement.querySelector<HTMLElement>("[data-loop-end-label='true']");
+  if (loopEndLabel) {
+    loopEndLabel.textContent = `B: ${state.loopEndBar === null ? "-" : String(state.loopEndBar)}`;
+  }
+}
+
 function updateProjectStatusBanner(rootElement: HTMLElement, message: string): void {
   let statusBanner = rootElement.querySelector<HTMLElement>("[data-status-banner='true']");
   if (!statusBanner) {
@@ -1690,6 +1707,7 @@ function setupLoopHandleDrag(rootElement: HTMLElement, state: AppState): void {
     }
 
     updateLoopHandlesVisual(state, rootElement);
+    updateLoopControlsVisual(rootElement, state);
   });
 
   const finishDrag = (event: PointerEvent): void => {
@@ -1786,6 +1804,7 @@ function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): 
         state.loopEndBar = clickedAnchor.barNumber;
         state.loopEndTick = loopRange.endTickExclusive ?? loopRange.startTick + 1;
         updateLoopHandlesVisual(state, rootElement);
+        updateLoopControlsVisual(rootElement, state);
       }
     }
     const clickedSameBar =
@@ -1855,6 +1874,7 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
         state.loopEndBar = targetBarNumber;
         state.loopEndTick = loopRange.endTickExclusive ?? loopRange.startTick + 1;
         updateLoopHandlesVisual(state, rootElement);
+        updateLoopControlsVisual(rootElement, state);
       }
     }
     const confirmedTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
@@ -1954,7 +1974,6 @@ export function startApp(rootElement: HTMLElement): void {
   };
 
   const cleanupRenderer = (): void => {
-    clearLoopState(state);
     invalidatePlaybackBarAnchorRebuild(state);
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
@@ -2343,14 +2362,14 @@ export function startApp(rootElement: HTMLElement): void {
         onToggleLoop: () => {
           if (state.loopEnabled) {
             clearLoopState(state);
-            updateLoopHandlesVisual(state, rootElement);
             state.projectStatusMessage = "Loop mode disabled.";
           } else {
             state.loopEnabled = true;
             state.projectStatusMessage = "Loop mode enabled. Click a bar to create loop region.";
           }
+          updateLoopControlsVisual(rootElement, state);
+          updateLoopHandlesVisual(state, rootElement);
           updateProjectStatusBanner(rootElement, state.projectStatusMessage);
-          render();
         },
       });
       setupBottomDockResize(rootElement, state);
@@ -2369,6 +2388,7 @@ export function startApp(rootElement: HTMLElement): void {
       updateArrangementOverview(state, rootElement);
       updateTrackControlVisualState(state, rootElement);
       updateTrackRowVisualState(state, rootElement);
+      updateLoopControlsVisual(rootElement, state);
       updateLoopHandlesVisual(state, rootElement);
 
       const project = state.currentProject;
