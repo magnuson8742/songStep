@@ -1931,8 +1931,8 @@ export function startApp(rootElement: HTMLElement): void {
           const activeManualTarget = getActiveManualNavigationTarget(state);
           if (activeManualTarget) {
             state.gpRenderer.seekToTick(activeManualTarget.targetTick);
-            clearNavigationSelectionState(state, rootElement);
           }
+          clearNavigationSelectionState(state, rootElement);
           state.manualNavigationVisualOverrideActive = false;
           state.gpRenderer.play();
         },
