@@ -1002,7 +1002,7 @@ function rebuildPercussionPlaybackBarAnchors(
   };
   const stageAValid = validateAnchors(sortedAnchors);
   if (stageAValid) {
-    const diagnostics = `strategy=percussion-authoritative | stageA=pass,stageB=skipped,labelsFound=${labels.length},rowCount=${sortedRows.length},normalizedBars=${sortedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${totalBars > 0 ? "yes" : "-"},validation=pass,chosenStage=A`;
+    const diagnostics = `strategy=percussion-authoritative | levelA=pass,levelB=skipped,levelC=skipped,chosenLevel=A,labelsFound=${labels.length},rowCount=${sortedRows.length},normalizedBars=${sortedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${totalBars > 0 ? "yes" : "-"},validation=pass`;
     return {
       anchors: sortedAnchors,
       diagnostics,
@@ -1041,9 +1041,80 @@ function rebuildPercussionPlaybackBarAnchors(
   });
   const fallbackSorted = fallbackAnchors.sort((left, right) => left.barNumber - right.barNumber);
   const stageBValid = validateAnchors(fallbackSorted);
-  const diagnostics = `strategy=percussion-authoritative | stageA=${stageAValid ? "pass" : "fail"},stageB=${stageBValid ? "pass" : "fail"},labelsFound=${labels.length},rowCount=${sortedRows.length},normalizedBars=${stageBValid ? fallbackSorted.length : sortedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${totalBars > 0 ? (stageBValid ? fallbackSorted.length === totalBars : sortedAnchors.length === totalBars) ? "yes" : "no" : "-"},validation=${stageBValid ? "pass" : "fail"},chosenStage=${stageBValid ? "B" : "none"}`;
+  if (stageBValid) {
+    const diagnostics = `strategy=percussion-authoritative | levelA=fail,levelB=pass,levelC=skipped,chosenLevel=B,labelsFound=${labels.length},rowCount=${sortedRows.length},normalizedBars=${fallbackSorted.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${totalBars > 0 ? (fallbackSorted.length === totalBars ? "yes" : "no") : "-"},validation=pass`;
+    return {
+      anchors: fallbackSorted,
+      diagnostics,
+    };
+  }
+
+  const emergencyRows =
+    sortedRows.length > 0
+      ? sortedRows
+      : labels.length > 0
+        ? labels.reduce<Array<{ yMin: number; yMax: number; yCenter: number }>>((rows, label) => {
+            const index = rows.findIndex((row) => Math.abs(row.yCenter - label.y) <= 28);
+            if (index >= 0) {
+              const row = rows[index] as { yMin: number; yMax: number; yCenter: number };
+              row.yMin = Math.min(row.yMin, label.y - 10);
+              row.yMax = Math.max(row.yMax, label.y + 18);
+              row.yCenter = (row.yMin + row.yMax) / 2;
+            } else {
+              rows.push({ yMin: label.y - 10, yMax: label.y + 18, yCenter: label.y });
+            }
+            return rows;
+          }, [])
+        : [];
+  const stageCAnchors: PlaybackBarAnchor[] = [];
+  if (totalBars > 0 && emergencyRows.length > 0) {
+    const rowCount = emergencyRows.length;
+    let currentBar = 1;
+    emergencyRows
+      .sort((left, right) => left.yCenter - right.yCenter)
+      .forEach((row, rowIndex) => {
+        if (currentBar > totalBars) {
+          return;
+        }
+        const barsRemaining = totalBars - currentBar + 1;
+        const rowsRemaining = rowCount - rowIndex;
+        const barsInRow = Math.max(1, Math.ceil(barsRemaining / rowsRemaining));
+        const overlappingVerticals = verticalCandidates
+          .filter((candidate) => candidate.top <= row.yMax + 6 && candidate.bottom >= row.yMin - 6)
+          .map((candidate) => candidate.x)
+          .sort((left, right) => left - right);
+        const rowLeft = overlappingVerticals[0] ?? (labels.find((label) => Math.abs(label.y - row.yCenter) <= 30)?.x ?? 0) - 40;
+        let rowLabelRightX: number | null = null;
+        for (let index = labels.length - 1; index >= 0; index -= 1) {
+          const label = labels[index];
+          if (label && Math.abs(label.y - row.yCenter) <= 30) {
+            rowLabelRightX = label.x;
+            break;
+          }
+        }
+        const rowRight =
+          overlappingVerticals[overlappingVerticals.length - 1] ??
+          (rowLabelRightX ?? rowLeft + 320) + 40;
+        const rowWidth = Math.max(rowRight - rowLeft, 120);
+        const slotWidth = rowWidth / barsInRow;
+        for (let slot = 0; slot < barsInRow && currentBar <= totalBars; slot += 1) {
+          stageCAnchors.push({
+            barNumber: currentBar,
+            startX: rowLeft + slot * slotWidth,
+            endX: rowLeft + (slot + 1) * slotWidth,
+            rowIndex,
+            y: row.yMin,
+            height: Math.max(row.yMax - row.yMin, 28),
+          });
+          currentBar += 1;
+        }
+      });
+  }
+  const stageCSorted = stageCAnchors.sort((left, right) => left.barNumber - right.barNumber);
+  const stageCValid = validateAnchors(stageCSorted);
+  const diagnostics = `strategy=percussion-authoritative | levelA=fail,levelB=fail,levelC=${stageCValid ? "pass" : "fail"},chosenLevel=${stageCValid ? "C" : "none"},labelsFound=${labels.length},rowCount=${emergencyRows.length},normalizedBars=${stageCValid ? stageCSorted.length : 0},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${totalBars > 0 ? (stageCSorted.length === totalBars ? "yes" : "no") : "-"},validation=${stageCValid ? "pass" : "fail"},rejectionReason=${stageCValid ? "-" : "allStagesFailed"}`;
   return {
-    anchors: stageBValid ? fallbackSorted : null,
+    anchors: stageCValid ? stageCSorted : null,
     diagnostics,
   };
 }
