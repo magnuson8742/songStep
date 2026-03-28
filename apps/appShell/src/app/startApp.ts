@@ -1502,6 +1502,12 @@ function applyNavigationSelection(
   tick: number | null,
   trackIndex: number,
 ): void {
+  if (state.playbackIsPlaying === true) {
+    clearNavigationSelectionState(state, rootElement);
+    state.manualNavigationVisualOverrideActive = false;
+    return;
+  }
+
   state.selectedNavigationBar = barNumber;
   state.selectedNavigationTick = tick;
   state.selectedNavigationTrackIndex = trackIndex;
@@ -1509,6 +1515,11 @@ function applyNavigationSelection(
   state.manualNavigationVisualOverrideActive = true;
   updateArrangementSelectionHighlight(state, rootElement);
   updateNavigationSelectionVisual(state, rootElement);
+}
+
+function resetPlaybackFollowBaselineAfterSeek(state: AppState): void {
+  state.lastPlaybackVisualBarNumber = null;
+  state.lastPlaybackFollowRowIndex = null;
 }
 
 function clearNavigationSelectionState(state: AppState, rootElement: HTMLElement): void {
@@ -1535,6 +1546,9 @@ function seekToBarAndApplyNavigationSelection(
     return false;
   }
 
+  if (state.playbackIsPlaying === true) {
+    resetPlaybackFollowBaselineAfterSeek(state);
+  }
   applyNavigationSelection(state, rootElement, barNumber, tick, trackIndex);
   return true;
 }
@@ -1614,10 +1628,16 @@ function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): 
       if (!didSeek) {
         return;
       }
+      if (state.playbackIsPlaying === true) {
+        resetPlaybackFollowBaselineAfterSeek(state);
+      }
       applyNavigationSelection(state, rootElement, clickedAnchor.barNumber, targetTick, activeTrackIndex);
       return;
     }
 
+    if (state.playbackIsPlaying === true) {
+      resetPlaybackFollowBaselineAfterSeek(state);
+    }
     applyNavigationSelection(state, rootElement, clickedAnchor.barNumber, targetTick, activeTrackIndex);
   });
 }
@@ -2169,6 +2189,9 @@ export function startApp(rootElement: HTMLElement): void {
           nudgeRenderedSectionLabels(rootElement, state);
         },
         onProgrammaticSeekConfirmed: (trackIndex, tick) => {
+          if (state.playbackIsPlaying === true) {
+            resetPlaybackFollowBaselineAfterSeek(state);
+          }
           if (
             state.pendingOverviewNavigationBar !== null &&
             state.pendingOverviewNavigationTrackIndex === trackIndex &&
