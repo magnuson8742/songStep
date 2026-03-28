@@ -2621,8 +2621,13 @@ export function startApp(rootElement: HTMLElement): void {
             state.pendingOverviewNavigationTrackIndex === trackIndex &&
             state.pendingOverviewNavigationTick !== null;
 
+          const previousSelectedTrackIndex = state.selectedTrackIndex;
           state.selectedTrackIndex = trackIndex;
-          clearLoopState(state);
+          if (previousSelectedTrackIndex !== trackIndex) {
+            clearLoopState(state);
+            updateLoopControlsVisual(rootElement, state);
+            updateLoopHandlesVisual(state, rootElement);
+          }
           if (isPendingOverviewTrackSwitch) {
             const pendingBarNumber = state.pendingOverviewNavigationBar as number;
             state.playbackCurrentBar = pendingBarNumber;
