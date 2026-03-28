@@ -1208,7 +1208,7 @@ export async function createGpRenderer(
       return true;
     }
 
-    return /(drum|drums|percussion|perc|kit)/i.test(track.name || "");
+    return false;
   };
 
   const buildRenderPlan = (trackIndex: number): RenderPlan => {
@@ -1686,9 +1686,8 @@ export async function createGpRenderer(
         pendingProgrammaticSeek.sessionToken === activeSessionToken &&
         pendingProgrammaticSeek.trackIndex === confirmedActiveTrackIndex
       ) {
-        pendingPlayAfterProgrammaticSeek = true;
+        pendingPlayAfterProgrammaticSeek = false;
         seekToTick(pendingProgrammaticSeek.tick);
-        return;
       }
 
       playbackScrollLockSnapshot = captureRenderViewportScroll();
