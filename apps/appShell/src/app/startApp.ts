@@ -1103,12 +1103,7 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
   let effectiveCurrentTick = state.playbackCurrentTick;
   let effectiveBarStartTick = state.playbackCurrentBarStartTick;
   let effectiveBarEndTickExclusive = state.playbackCurrentBarEndTickExclusive;
-  if (
-    activeManualTarget &&
-    (!state.playbackIsPlaying ||
-      state.playbackCurrentTick === null ||
-      Math.abs(state.playbackCurrentTick - activeManualTarget.targetTick) <= 1)
-  ) {
+  if (activeManualTarget && !state.playbackIsPlaying) {
     effectiveCurrentBar = activeManualTarget.targetBar;
     effectiveCurrentTick = activeManualTarget.targetTick;
     const activeManualTargetBarRange = state.gpRenderer?.getBarTickRange(activeManualTarget.targetBar) ?? null;
