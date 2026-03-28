@@ -91,6 +91,11 @@ interface AppState {
   pendingOverviewNavigationBar: number | null;
   pendingOverviewNavigationTrackIndex: number | null;
   pendingOverviewNavigationTick: number | null;
+  loopEnabled: boolean;
+  loopStartBar: number | null;
+  loopStartTick: number | null;
+  loopEndBar: number | null;
+  loopEndTick: number | null;
   desiredTrackSwitchTick: number | null;
   desiredTrackSwitchBar: number | null;
   desiredTrackSwitchSourceTrackIndex: number | null;
@@ -1541,6 +1546,39 @@ function clearNavigationSelectionState(state: AppState, rootElement: HTMLElement
   hideNavigationSelection(rootElement);
 }
 
+function clearLoopState(state: AppState): void {
+  state.loopEnabled = false;
+  state.loopStartBar = null;
+  state.loopStartTick = null;
+  state.loopEndBar = null;
+  state.loopEndTick = null;
+}
+
+function resolveLoopTargetFromCurrentState(state: AppState): { bar: number; tick: number } | null {
+  if (state.selectedNavigationBar !== null && state.selectedNavigationTick !== null && state.selectedNavigationBar > 0) {
+    return {
+      bar: state.selectedNavigationBar,
+      tick: state.selectedNavigationTick,
+    };
+  }
+
+  if (state.playbackCurrentBar !== null && state.playbackCurrentTick !== null && state.playbackCurrentBar > 0) {
+    return {
+      bar: state.playbackCurrentBar,
+      tick: state.playbackCurrentTick,
+    };
+  }
+
+  if (state.playbackCurrentBar !== null && state.playbackCurrentBarStartTick !== null && state.playbackCurrentBar > 0) {
+    return {
+      bar: state.playbackCurrentBar,
+      tick: state.playbackCurrentBarStartTick,
+    };
+  }
+
+  return null;
+}
+
 function seekToBarAndApplyNavigationSelection(
   state: AppState,
   rootElement: HTMLElement,
@@ -1746,6 +1784,11 @@ export function startApp(rootElement: HTMLElement): void {
     pendingOverviewNavigationBar: null,
     pendingOverviewNavigationTrackIndex: null,
     pendingOverviewNavigationTick: null,
+    loopEnabled: false,
+    loopStartBar: null,
+    loopStartTick: null,
+    loopEndBar: null,
+    loopEndTick: null,
     desiredTrackSwitchTick: null,
     desiredTrackSwitchBar: null,
     desiredTrackSwitchSourceTrackIndex: null,
@@ -1764,6 +1807,7 @@ export function startApp(rootElement: HTMLElement): void {
   };
 
   const cleanupRenderer = (): void => {
+    clearLoopState(state);
     invalidatePlaybackBarAnchorRebuild(state);
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
@@ -1953,6 +1997,9 @@ export function startApp(rootElement: HTMLElement): void {
         totalBars: state.totalBars,
         tempoBpm: state.tempoBpm,
         playbackIsPlaying: state.playbackIsPlaying,
+        loopEnabled: state.loopEnabled,
+        loopStartBar: state.loopStartBar,
+        loopEndBar: state.loopEndBar,
         playerPositionPayloadShape: state.playerPositionPayloadShape,
         playerStatePayloadShape: state.playerStatePayloadShape,
         currentBarSourcePath: state.currentBarSourcePath,
@@ -1973,6 +2020,7 @@ export function startApp(rootElement: HTMLElement): void {
         mutedTrackIndexes: state.mutedTrackIndexes,
         soloTrackIndexes: state.soloTrackIndexes,
         onTrackSelectionChange: (trackIndex: number) => {
+          clearLoopState(state);
           const preservedTick = state.selectedNavigationTick ?? state.playbackCurrentTick ?? state.playbackCurrentBarStartTick;
           state.desiredTrackSwitchTick = preservedTick;
           state.desiredTrackSwitchBar = state.selectedNavigationBar ?? state.playbackCurrentBar;
@@ -2141,6 +2189,73 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
           state.gpRenderer.stop();
         },
+        onSetLoopA: () => {
+          const target = resolveLoopTargetFromCurrentState(state);
+          if (!target) {
+            state.projectStatusMessage = "Set A requires a valid bar/tick position.";
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            return;
+          }
+          state.loopStartBar = target.bar;
+          state.loopStartTick = target.tick;
+          if (state.loopEndTick !== null && state.loopStartTick >= state.loopEndTick) {
+            state.loopEnabled = false;
+            state.projectStatusMessage = "Loop A must be before Loop B.";
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            return;
+          }
+          state.projectStatusMessage = `Loop A set to bar ${target.bar}.`;
+          updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+          render();
+        },
+        onSetLoopB: () => {
+          const target = resolveLoopTargetFromCurrentState(state);
+          if (!target) {
+            state.projectStatusMessage = "Set B requires a valid bar/tick position.";
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            return;
+          }
+          if (state.loopStartTick === null || state.loopStartBar === null) {
+            state.projectStatusMessage = "Set Loop A before Loop B.";
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            return;
+          }
+          if (target.tick <= state.loopStartTick) {
+            state.projectStatusMessage = "Loop B must be after Loop A.";
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            return;
+          }
+          state.loopEndBar = target.bar;
+          state.loopEndTick = target.tick;
+          state.projectStatusMessage = `Loop B set to bar ${target.bar}.`;
+          updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+          render();
+        },
+        onToggleLoop: () => {
+          if (state.loopStartTick === null || state.loopEndTick === null || state.loopStartBar === null || state.loopEndBar === null) {
+            state.projectStatusMessage = "Set Loop A and B before enabling loop.";
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            return;
+          }
+          if (state.loopStartTick >= state.loopEndTick) {
+            state.projectStatusMessage = "Loop A must be before Loop B.";
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            state.loopEnabled = false;
+            return;
+          }
+          state.loopEnabled = !state.loopEnabled;
+          state.projectStatusMessage = state.loopEnabled
+            ? `Loop enabled: bars ${state.loopStartBar}-${state.loopEndBar}.`
+            : "Loop disabled.";
+          updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+          render();
+        },
+        onClearLoop: () => {
+          clearLoopState(state);
+          state.projectStatusMessage = "Loop cleared.";
+          updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+          render();
+        },
       });
       setupBottomDockResize(rootElement, state);
       setupBottomDockHorizontalSync(rootElement);
@@ -2274,6 +2389,28 @@ export function startApp(rootElement: HTMLElement): void {
           state.playerPositionPayloadShape = info.playerPositionPayloadShape;
           state.playerStatePayloadShape = info.playerStatePayloadShape;
           state.currentBarSourcePath = info.currentBarSourcePath;
+          if (
+            state.loopEnabled &&
+            state.loopStartTick !== null &&
+            state.loopEndTick !== null &&
+            state.loopStartTick < state.loopEndTick &&
+            info.currentTick !== null &&
+            info.currentTick >= state.loopEndTick &&
+            state.gpRenderer
+          ) {
+            const loopSeekSucceeded = state.gpRenderer.seekToTick(state.loopStartTick);
+            if (!loopSeekSucceeded) {
+              state.projectStatusMessage = "Loop seek failed. Loop disabled.";
+              clearLoopState(state);
+              updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            } else {
+              state.playbackCurrentTick = state.loopStartTick;
+              state.playbackCurrentBar = state.loopStartBar;
+              const loopStartRange = state.loopStartBar === null ? null : state.gpRenderer.getBarTickRange(state.loopStartBar);
+              state.playbackCurrentBarStartTick = loopStartRange?.startTick ?? state.loopStartTick;
+              state.playbackCurrentBarEndTickExclusive = loopStartRange?.endTickExclusive ?? null;
+            }
+          }
           if (info.isPlaying === true && info.currentTick !== null) {
             state.manualNavigationVisualOverrideActive = false;
           }
@@ -2329,6 +2466,7 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onRuntimeNotice: (message) => {
           state.projectStatusMessage = message;
+          clearLoopState(state);
           state.playbackCurrentBar = null;
           state.playbackCurrentTick = null;
           state.playbackCurrentBarStartTick = null;
@@ -2363,6 +2501,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.pendingOverviewNavigationTick !== null;
 
           state.selectedTrackIndex = trackIndex;
+          clearLoopState(state);
           if (isPendingOverviewTrackSwitch) {
             const pendingBarNumber = state.pendingOverviewNavigationBar as number;
             state.playbackCurrentBar = pendingBarNumber;
@@ -2411,6 +2550,7 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onRenderError: (message) => {
           state.projectStatusMessage = message;
+          clearLoopState(state);
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;

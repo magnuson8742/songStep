@@ -20,6 +20,9 @@ export interface ProjectScreenActions {
   totalBars: number | null;
   tempoBpm: number | null;
   playbackIsPlaying: boolean | null;
+  loopEnabled: boolean;
+  loopStartBar: number | null;
+  loopEndBar: number | null;
   playerPositionPayloadShape: string | null;
   playerStatePayloadShape: string | null;
   currentBarSourcePath: string | null;
@@ -52,6 +55,10 @@ export interface ProjectScreenActions {
   onPlay: () => void;
   onPause: () => void;
   onStop: () => void;
+  onSetLoopA: () => void;
+  onSetLoopB: () => void;
+  onToggleLoop: () => void;
+  onClearLoop: () => void;
 }
 
 const DEFAULT_TRACK_VOLUME = 80;
@@ -194,6 +201,14 @@ export function renderProjectScreen(
             <button class="secondaryButton" type="button" data-action="pause">Pause</button>
             <button class="secondaryButton" type="button" data-action="stop">Stop</button>
           </div>
+          <div class="playerLoopControls">
+            <button class="secondaryButton" type="button" data-action="set-loop-a">Set A</button>
+            <button class="secondaryButton" type="button" data-action="set-loop-b">Set B</button>
+            <button class="secondaryButton" type="button" data-action="clear-loop">Clear Loop</button>
+            <button class="${actions.loopEnabled ? "primaryButton" : "secondaryButton"}" type="button" data-action="toggle-loop">${actions.loopEnabled ? "Loop On" : "Loop Off"}</button>
+            <span class="playerLoopLabel">A: ${renderDebugValue(actions.loopStartBar)}</span>
+            <span class="playerLoopLabel">B: ${renderDebugValue(actions.loopEndBar)}</span>
+          </div>
         </div>
         <dl class="playerTopInfo">
           <dt>Song</dt>
@@ -286,6 +301,10 @@ export function renderProjectScreen(
   const playButton = container.querySelector<HTMLButtonElement>('[data-action="play"]');
   const pauseButton = container.querySelector<HTMLButtonElement>('[data-action="pause"]');
   const stopButton = container.querySelector<HTMLButtonElement>('[data-action="stop"]');
+  const setLoopAButton = container.querySelector<HTMLButtonElement>('[data-action="set-loop-a"]');
+  const setLoopBButton = container.querySelector<HTMLButtonElement>('[data-action="set-loop-b"]');
+  const clearLoopButton = container.querySelector<HTMLButtonElement>('[data-action="clear-loop"]');
+  const toggleLoopButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-loop"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
   const openDebugWindowButton = container.querySelector<HTMLButtonElement>('[data-action="open-debug-window"]');
   const leftControls = container.querySelectorAll<HTMLElement>('[data-action="left-controls"]');
@@ -433,6 +452,10 @@ export function renderProjectScreen(
   playButton?.addEventListener("click", actions.onPlay);
   pauseButton?.addEventListener("click", actions.onPause);
   stopButton?.addEventListener("click", actions.onStop);
+  setLoopAButton?.addEventListener("click", actions.onSetLoopA);
+  setLoopBButton?.addEventListener("click", actions.onSetLoopB);
+  clearLoopButton?.addEventListener("click", actions.onClearLoop);
+  toggleLoopButton?.addEventListener("click", actions.onToggleLoop);
   backHomeButton?.addEventListener("click", actions.onBackToHome);
   openDebugWindowButton?.addEventListener("click", () => openDebugWindow(actions));
 }
