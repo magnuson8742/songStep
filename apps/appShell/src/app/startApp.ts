@@ -68,6 +68,9 @@ interface AppState {
   countInEnabled: boolean;
   countInInProgress: boolean;
   pendingCountInTimerId: number | null;
+  metronomeEnabled: boolean;
+  pendingMetronomeIntervalId: number | null;
+  metronomeAudioContext: AudioContext | null;
   playbackPositionLabel: string | null;
   playbackCurrentBar: number | null;
   playbackCurrentTick: number | null;
@@ -266,6 +269,74 @@ function updateCountInToggleVisual(state: AppState, rootElement: HTMLElement): v
   countInToggleButton.classList.add(state.countInEnabled ? "primaryButton" : "secondaryButton");
 }
 
+function updateMetronomeToggleVisual(state: AppState, rootElement: HTMLElement): void {
+  const metronomeToggleButton = rootElement.querySelector<HTMLButtonElement>("[data-metronome-toggle-button='true']");
+  if (!metronomeToggleButton) {
+    return;
+  }
+  metronomeToggleButton.classList.remove("primaryButton", "secondaryButton");
+  metronomeToggleButton.classList.add(state.metronomeEnabled ? "primaryButton" : "secondaryButton");
+}
+
+function resolveEffectiveTempoBpm(state: AppState): number {
+  const effectiveTempoBpm = state.tempoBpm === null ? null : (state.tempoBpm * state.playbackSpeedPercent) / 100;
+  if (!effectiveTempoBpm || effectiveTempoBpm <= 0) {
+    return 120;
+  }
+  return effectiveTempoBpm;
+}
+
+function ensureMetronomeAudioContext(state: AppState): AudioContext | null {
+  const ExistingAudioContext = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!ExistingAudioContext) {
+    return null;
+  }
+  if (!state.metronomeAudioContext) {
+    state.metronomeAudioContext = new ExistingAudioContext();
+  }
+  if (state.metronomeAudioContext.state === "suspended") {
+    void state.metronomeAudioContext.resume().catch(() => undefined);
+  }
+  return state.metronomeAudioContext;
+}
+
+function playMetronomeClick(state: AppState, isDownbeat: boolean): void {
+  const audioContext = ensureMetronomeAudioContext(state);
+  if (!audioContext) {
+    return;
+  }
+  const clickStart = audioContext.currentTime + 0.005;
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  oscillator.type = "square";
+  oscillator.frequency.value = isDownbeat ? 1240 : 940;
+  gain.gain.setValueAtTime(0.0001, clickStart);
+  gain.gain.exponentialRampToValueAtTime(0.18, clickStart + 0.003);
+  gain.gain.exponentialRampToValueAtTime(0.0001, clickStart + 0.06);
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+  oscillator.start(clickStart);
+  oscillator.stop(clickStart + 0.07);
+}
+
+function stopPlaybackMetronome(state: AppState): void {
+  if (state.pendingMetronomeIntervalId !== null) {
+    window.clearInterval(state.pendingMetronomeIntervalId);
+    state.pendingMetronomeIntervalId = null;
+  }
+}
+
+function startPlaybackMetronome(state: AppState): void {
+  stopPlaybackMetronome(state);
+  const beatDurationMs = Math.max(120, Math.round(60000 / resolveEffectiveTempoBpm(state)));
+  let beatCounter = 0;
+  playMetronomeClick(state, true);
+  state.pendingMetronomeIntervalId = window.setInterval(() => {
+    beatCounter += 1;
+    playMetronomeClick(state, beatCounter % 4 === 0);
+  }, beatDurationMs);
+}
+
 function clearCountInTimer(state: AppState): void {
   if (state.pendingCountInTimerId !== null) {
     window.clearTimeout(state.pendingCountInTimerId);
@@ -279,6 +350,9 @@ function cancelCountIn(state: AppState, rootElement: HTMLElement): void {
     state.countInInProgress = false;
     state.projectStatusMessage = null;
     updateProjectStatusBanner(rootElement, "");
+  }
+  if (!state.metronomeEnabled) {
+    stopPlaybackMetronome(state);
   }
 }
 
@@ -2074,6 +2148,9 @@ export function startApp(rootElement: HTMLElement): void {
     countInEnabled: false,
     countInInProgress: false,
     pendingCountInTimerId: null,
+    metronomeEnabled: false,
+    pendingMetronomeIntervalId: null,
+    metronomeAudioContext: null,
     playbackPositionLabel: null,
     playbackCurrentBar: null,
     playbackCurrentTick: null,
@@ -2131,6 +2208,7 @@ export function startApp(rootElement: HTMLElement): void {
   const cleanupRenderer = (): void => {
     clearCountInTimer(state);
     state.countInInProgress = false;
+    stopPlaybackMetronome(state);
     invalidatePlaybackBarAnchorRebuild(state);
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
@@ -2227,6 +2305,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.countInEnabled = false;
           state.countInInProgress = false;
           state.pendingCountInTimerId = null;
+          state.metronomeEnabled = false;
+          stopPlaybackMetronome(state);
           render();
         },
       });
@@ -2295,6 +2375,8 @@ export function startApp(rootElement: HTMLElement): void {
             state.countInEnabled = false;
             state.countInInProgress = false;
             state.pendingCountInTimerId = null;
+            state.metronomeEnabled = false;
+            stopPlaybackMetronome(state);
             render();
             return project.sourceFile.fileName;
           } catch (error) {
@@ -2332,6 +2414,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.tempoBpm === null ? null : Number(((state.tempoBpm * state.playbackSpeedPercent) / 100).toFixed(1)),
         playbackIsPlaying: state.playbackIsPlaying,
         countInEnabled: state.countInEnabled,
+        metronomeEnabled: state.metronomeEnabled,
         loopEnabled: state.loopEnabled,
         loopStartBar: state.loopStartBar,
         loopEndBar: state.loopEndBar,
@@ -2493,6 +2576,11 @@ export function startApp(rootElement: HTMLElement): void {
             state.manualNavigationVisualOverrideActive = false;
             state.projectStatusMessage = null;
             updateProjectStatusBanner(rootElement, "");
+            if (state.metronomeEnabled) {
+              startPlaybackMetronome(state);
+            } else {
+              stopPlaybackMetronome(state);
+            }
             state.gpRenderer.play();
           };
 
@@ -2501,13 +2589,8 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
 
-          const effectiveTempoBpm =
-            state.tempoBpm === null ? null : (state.tempoBpm * state.playbackSpeedPercent) / 100;
           const beatsPerBar = 4;
-          const beatDurationMs = Math.max(
-            120,
-            Math.round(60000 / (effectiveTempoBpm && effectiveTempoBpm > 0 ? effectiveTempoBpm : 120)),
-          );
+          const beatDurationMs = Math.max(120, Math.round(60000 / resolveEffectiveTempoBpm(state)));
           let beatsRemaining = beatsPerBar;
           state.countInInProgress = true;
           state.playbackTransportActive = false;
@@ -2518,6 +2601,7 @@ export function startApp(rootElement: HTMLElement): void {
             }
             state.projectStatusMessage = `Count-in: ${beatsRemaining}`;
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            playMetronomeClick(state, beatsRemaining === beatsPerBar);
             if (beatsRemaining <= 1) {
               state.pendingCountInTimerId = window.setTimeout(() => {
                 state.pendingCountInTimerId = null;
@@ -2541,6 +2625,7 @@ export function startApp(rootElement: HTMLElement): void {
 
           cancelCountIn(state, rootElement);
           state.playbackTransportActive = false;
+          stopPlaybackMetronome(state);
           state.gpRenderer.pause();
         },
         onStop: () => {
@@ -2555,6 +2640,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
           cancelCountIn(state, rootElement);
+          stopPlaybackMetronome(state);
           state.playbackTransportActive = false;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
@@ -2589,12 +2675,25 @@ export function startApp(rootElement: HTMLElement): void {
           state.countInEnabled = !state.countInEnabled;
           updateCountInToggleVisual(state, rootElement);
         },
+        onToggleMetronome: () => {
+          state.metronomeEnabled = !state.metronomeEnabled;
+          if (state.metronomeEnabled && state.playbackTransportActive && !state.countInInProgress) {
+            startPlaybackMetronome(state);
+          }
+          if (!state.metronomeEnabled) {
+            stopPlaybackMetronome(state);
+          }
+          updateMetronomeToggleVisual(state, rootElement);
+        },
         onDecreasePlaybackSpeed: () => {
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(
             state.playbackSpeedPercent - PLAYBACK_SPEED_BUTTON_STEP_PERCENT,
           );
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
+          if (state.metronomeEnabled && state.playbackTransportActive && !state.countInInProgress) {
+            startPlaybackMetronome(state);
+          }
         },
         onIncreasePlaybackSpeed: () => {
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(
@@ -2602,16 +2701,25 @@ export function startApp(rootElement: HTMLElement): void {
           );
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
+          if (state.metronomeEnabled && state.playbackTransportActive && !state.countInInProgress) {
+            startPlaybackMetronome(state);
+          }
         },
         onSetPlaybackSpeedPercent: (speedPercent: number) => {
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(speedPercent);
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
+          if (state.metronomeEnabled && state.playbackTransportActive && !state.countInInProgress) {
+            startPlaybackMetronome(state);
+          }
         },
         onResetPlaybackSpeed: () => {
           state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
+          if (state.metronomeEnabled && state.playbackTransportActive && !state.countInInProgress) {
+            startPlaybackMetronome(state);
+          }
         },
       });
       setupBottomDockResize(rootElement, state);
@@ -2634,6 +2742,7 @@ export function startApp(rootElement: HTMLElement): void {
       updateLoopHandlesVisual(state, rootElement);
       updatePlaybackSpeedVisual(state, rootElement);
       updateCountInToggleVisual(state, rootElement);
+      updateMetronomeToggleVisual(state, rootElement);
 
       const project = state.currentProject;
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
@@ -2744,6 +2853,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackIsPlaying = info.isPlaying;
           if (info.isPlaying === false) {
             state.playbackTransportActive = false;
+            stopPlaybackMetronome(state);
           }
           state.playbackPositionLabel = info.positionLabel;
           state.playbackCurrentBar = info.currentBar;
@@ -2920,6 +3030,8 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onRenderError: (message) => {
           state.projectStatusMessage = message;
+          cancelCountIn(state, rootElement);
+          stopPlaybackMetronome(state);
           clearLoopState(state);
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;

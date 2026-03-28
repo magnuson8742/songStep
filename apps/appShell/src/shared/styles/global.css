@@ -647,6 +647,11 @@ select {
   align-items: center;
 }
 
+.playerMetronomeControls {
+  display: flex;
+  align-items: center;
+}
+
 .playerLoopControls {
   display: flex;
   align-items: center;

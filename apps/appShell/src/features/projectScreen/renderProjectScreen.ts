@@ -23,6 +23,7 @@ export interface ProjectScreenActions {
   effectiveTempoBpm: number | null;
   playbackIsPlaying: boolean | null;
   countInEnabled: boolean;
+  metronomeEnabled: boolean;
   loopEnabled: boolean;
   loopStartBar: number | null;
   loopEndBar: number | null;
@@ -64,6 +65,7 @@ export interface ProjectScreenActions {
   onSetPlaybackSpeedPercent: (speedPercent: number) => void;
   onResetPlaybackSpeed: () => void;
   onToggleCountIn: () => void;
+  onToggleMetronome: () => void;
 }
 
 const DEFAULT_TRACK_VOLUME = 80;
@@ -216,6 +218,16 @@ export function renderProjectScreen(
               Count-in
             </button>
           </div>
+          <div class="playerMetronomeControls">
+            <button
+              class="${actions.metronomeEnabled ? "primaryButton" : "secondaryButton"}"
+              type="button"
+              data-action="toggle-metronome"
+              data-metronome-toggle-button="true"
+            >
+              Metronome
+            </button>
+          </div>
           <div class="playerLoopControls">
             <button class="${actions.loopEnabled ? "primaryButton" : "secondaryButton"}" type="button" data-action="toggle-loop" data-loop-toggle-button="true">Loop</button>
             <span class="playerLoopLabel" data-loop-start-label="true">A: ${renderDebugValue(actions.loopStartBar)}</span>
@@ -337,6 +349,7 @@ export function renderProjectScreen(
   const playbackSpeedSlider = container.querySelector<HTMLInputElement>('[data-action="set-playback-speed"]');
   const playbackSpeedReadout = container.querySelector<HTMLElement>(".playerSpeedReadout");
   const toggleCountInButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-count-in"]');
+  const toggleMetronomeButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-metronome"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
   const openDebugWindowButton = container.querySelector<HTMLButtonElement>('[data-action="open-debug-window"]');
   const leftControls = container.querySelectorAll<HTMLElement>('[data-action="left-controls"]');
@@ -493,6 +506,7 @@ export function renderProjectScreen(
   playbackSpeedSlider?.addEventListener("dblclick", actions.onResetPlaybackSpeed);
   playbackSpeedReadout?.addEventListener("dblclick", actions.onResetPlaybackSpeed);
   toggleCountInButton?.addEventListener("click", actions.onToggleCountIn);
+  toggleMetronomeButton?.addEventListener("click", actions.onToggleMetronome);
   backHomeButton?.addEventListener("click", actions.onBackToHome);
   openDebugWindowButton?.addEventListener("click", () => openDebugWindow(actions));
 }
