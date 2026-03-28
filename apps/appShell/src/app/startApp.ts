@@ -84,6 +84,7 @@ interface AppState {
   selectedNavigationTick: number | null;
   selectedNavigationTrackIndex: number | null;
   selectionDivergenceSuppressTicks: number;
+  manualNavigationVisualOverrideActive: boolean;
   pendingOverviewNavigationBar: number | null;
   pendingOverviewNavigationTrackIndex: number | null;
   pendingOverviewNavigationTick: number | null;
@@ -430,12 +431,7 @@ function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLEl
   const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
   const activeManualTarget = getActiveManualNavigationTarget(state);
   let playbackBar = state.playbackCurrentBar;
-  if (
-    activeManualTarget &&
-    (!state.playbackIsPlaying ||
-      state.playbackCurrentTick === null ||
-      Math.abs(state.playbackCurrentTick - activeManualTarget.targetTick) <= 1)
-  ) {
+  if (state.manualNavigationVisualOverrideActive && activeManualTarget) {
     playbackBar = activeManualTarget.targetBar;
   }
   if (playbackBar === null || playbackBar <= 0) {
@@ -1103,7 +1099,7 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
   let effectiveCurrentTick = state.playbackCurrentTick;
   let effectiveBarStartTick = state.playbackCurrentBarStartTick;
   let effectiveBarEndTickExclusive = state.playbackCurrentBarEndTickExclusive;
-  if (activeManualTarget && !state.playbackIsPlaying) {
+  if (state.manualNavigationVisualOverrideActive && activeManualTarget) {
     effectiveCurrentBar = activeManualTarget.targetBar;
     effectiveCurrentTick = activeManualTarget.targetTick;
     const activeManualTargetBarRange = state.gpRenderer?.getBarTickRange(activeManualTarget.targetBar) ?? null;
@@ -1375,6 +1371,7 @@ function applyNavigationSelection(
   state.selectedNavigationTick = tick;
   state.selectedNavigationTrackIndex = trackIndex;
   state.selectionDivergenceSuppressTicks = 8;
+  state.manualNavigationVisualOverrideActive = true;
   updateArrangementSelectionHighlight(state, rootElement);
   updateNavigationSelectionVisual(state, rootElement);
 }
@@ -1384,6 +1381,7 @@ function clearNavigationSelectionState(state: AppState, rootElement: HTMLElement
   state.selectedNavigationTick = null;
   state.selectedNavigationTrackIndex = null;
   state.selectionDivergenceSuppressTicks = 0;
+  state.manualNavigationVisualOverrideActive = false;
   updateArrangementSelectionHighlight(state, rootElement);
   hideNavigationSelection(rootElement);
 }
@@ -1535,6 +1533,7 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
     state.pendingOverviewNavigationTrackIndex = clickedTrackIndex;
     state.pendingOverviewNavigationTick = targetTick;
     clearNavigationSelectionState(state, rootElement);
+    state.manualNavigationVisualOverrideActive = true;
     state.requestedTrackIndex = clickedTrackIndex;
     state.gpRenderer.selectTrack(clickedTrackIndex, targetTick);
   });
@@ -1582,6 +1581,7 @@ export function startApp(rootElement: HTMLElement): void {
     selectedNavigationTick: null,
     selectedNavigationTrackIndex: null,
     selectionDivergenceSuppressTicks: 0,
+    manualNavigationVisualOverrideActive: false,
     pendingOverviewNavigationBar: null,
     pendingOverviewNavigationTrackIndex: null,
     pendingOverviewNavigationTick: null,
@@ -1607,6 +1607,7 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
     state.pendingOverviewNavigationTick = null;
+    state.manualNavigationVisualOverrideActive = false;
     state.desiredTrackSwitchTick = null;
     state.desiredTrackSwitchBar = null;
     state.desiredTrackSwitchSourceTrackIndex = null;
@@ -1827,6 +1828,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;
           clearNavigationSelectionState(state, rootElement);
+          state.manualNavigationVisualOverrideActive = preservedTick !== null;
 
           updateDebugField(rootElement, "requested-track-index", String(trackIndex));
           updateDebugField(rootElement, "last-clicked-track-index", String(trackIndex));
@@ -1930,6 +1932,7 @@ export function startApp(rootElement: HTMLElement): void {
           if (activeManualTarget) {
             state.gpRenderer.seekToTick(activeManualTarget.targetTick);
           }
+          state.manualNavigationVisualOverrideActive = false;
           state.gpRenderer.play();
         },
         onPause: () => {
@@ -1958,6 +1961,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
           state.playbackAnchorStrategyAttempts = null;
+          state.manualNavigationVisualOverrideActive = false;
           invalidatePlaybackBarAnchorRebuild(state);
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateDebugField(rootElement, "playback-bar-anchor-count", "0");
@@ -2095,6 +2099,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.playerPositionPayloadShape = info.playerPositionPayloadShape;
           state.playerStatePayloadShape = info.playerStatePayloadShape;
           state.currentBarSourcePath = info.currentBarSourcePath;
+          if (info.isPlaying === true && info.currentTick !== null) {
+            state.manualNavigationVisualOverrideActive = false;
+          }
           if (
             state.selectedNavigationBar !== null &&
             state.selectedNavigationTrackIndex !== null &&
@@ -2153,6 +2160,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;
+          state.manualNavigationVisualOverrideActive = false;
           invalidatePlaybackBarAnchorRebuild(state);
           updateProjectStatusBanner(rootElement, message);
           updateDebugField(rootElement, "current-tick", "-");
@@ -2220,6 +2228,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;
+          state.manualNavigationVisualOverrideActive = false;
           state.desiredTrackSwitchTick = null;
           state.desiredTrackSwitchBar = null;
           state.desiredTrackSwitchSourceTrackIndex = null;
