@@ -72,6 +72,7 @@ interface AppState {
   playbackFollowTargetFound: boolean;
   playbackFollowSource: string | null;
   lastPlaybackFollowRowIndex: number | null;
+  pendingPlaybackFollowReanchor: boolean;
   playbackBarAnchorCount: number;
   playbackBarAnchorSource: string | null;
   playbackAnchorStrategyAttempts: string | null;
@@ -1259,6 +1260,7 @@ function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElem
 
   if (state.playbackIsPlaying !== true || state.playbackCurrentBar === null || state.playbackCurrentBar <= 0) {
     state.lastPlaybackFollowRowIndex = null;
+    state.pendingPlaybackFollowReanchor = false;
     state.playbackFollowTargetFound = false;
     state.playbackFollowSource = "inactive";
     updatePlaybackFollowDiagnostics(rootElement, false, "inactive");
@@ -1273,7 +1275,7 @@ function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElem
     return;
   }
 
-  if (state.lastPlaybackFollowRowIndex === activeAnchor.rowIndex) {
+  if (state.lastPlaybackFollowRowIndex === activeAnchor.rowIndex && !state.pendingPlaybackFollowReanchor) {
     state.playbackFollowTargetFound = true;
     state.playbackFollowSource = "row-unchanged";
     updatePlaybackFollowDiagnostics(rootElement, true, "row-unchanged");
@@ -1325,6 +1327,7 @@ function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElem
   }
 
   state.lastPlaybackFollowRowIndex = activeAnchor.rowIndex;
+  state.pendingPlaybackFollowReanchor = false;
   state.playbackFollowTargetFound = true;
   state.playbackFollowSource = "row-transition-follow";
   updatePlaybackFollowDiagnostics(rootElement, true, "row-transition-follow");
@@ -1520,6 +1523,7 @@ function applyNavigationSelection(
 function resetPlaybackFollowBaselineAfterSeek(state: AppState): void {
   state.lastPlaybackVisualBarNumber = null;
   state.lastPlaybackFollowRowIndex = null;
+  state.pendingPlaybackFollowReanchor = true;
 }
 
 function clearNavigationSelectionState(state: AppState, rootElement: HTMLElement): void {
@@ -1723,6 +1727,7 @@ export function startApp(rootElement: HTMLElement): void {
     playbackFollowTargetFound: false,
     playbackFollowSource: null,
     lastPlaybackFollowRowIndex: null,
+    pendingPlaybackFollowReanchor: false,
     playbackBarAnchorCount: 0,
     playbackBarAnchorSource: null,
     playbackAnchorStrategyAttempts: null,
@@ -1825,6 +1830,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;
+          state.pendingPlaybackFollowReanchor = false;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
@@ -1891,6 +1897,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackFollowTargetFound = false;
             state.playbackFollowSource = null;
             state.lastPlaybackFollowRowIndex = null;
+            state.pendingPlaybackFollowReanchor = false;
             state.playbackBarAnchorCount = 0;
             state.playbackBarAnchorSource = null;
             state.playbackAnchorStrategyAttempts = null;
@@ -2117,6 +2124,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;
+          state.pendingPlaybackFollowReanchor = false;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
@@ -2326,6 +2334,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;
+          state.pendingPlaybackFollowReanchor = false;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
@@ -2368,6 +2377,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;
+          state.pendingPlaybackFollowReanchor = false;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;

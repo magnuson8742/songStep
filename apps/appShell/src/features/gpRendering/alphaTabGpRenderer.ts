@@ -1398,6 +1398,8 @@ export async function createGpRenderer(
           pendingProgrammaticSeek.sessionToken === sessionToken &&
           pendingProgrammaticSeek.trackIndex === confirmedActiveTrackIndex
         ) {
+          const playbackIsActive =
+            playbackRuntimeInfo.isPlaying === true || normalizePlaybackState(api.playerState) === "playing";
           const tickDelta = Math.abs(currentTick - pendingProgrammaticSeek.tick);
           if (tickDelta <= 1) {
             hooks.onProgrammaticSeekConfirmed(confirmedActiveTrackIndex, pendingProgrammaticSeek.tick);
@@ -1414,8 +1416,10 @@ export async function createGpRenderer(
             if (pendingProgrammaticSeek) {
               pendingProgrammaticSeek.retryCount = retryCountSnapshot;
             }
-            return;
-          } else {
+            if (!playbackIsActive) {
+              return;
+            }
+          } else if (!playbackIsActive) {
             return;
           }
         }
