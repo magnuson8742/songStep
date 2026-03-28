@@ -1931,6 +1931,7 @@ export function startApp(rootElement: HTMLElement): void {
           const activeManualTarget = getActiveManualNavigationTarget(state);
           if (activeManualTarget) {
             state.gpRenderer.seekToTick(activeManualTarget.targetTick);
+            clearNavigationSelectionState(state, rootElement);
           }
           state.manualNavigationVisualOverrideActive = false;
           state.gpRenderer.play();
@@ -2101,6 +2102,13 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentBarSourcePath = info.currentBarSourcePath;
           if (info.isPlaying === true && info.currentTick !== null) {
             state.manualNavigationVisualOverrideActive = false;
+          }
+          if (
+            info.isPlaying === true &&
+            state.selectedNavigationBar !== null &&
+            state.selectedNavigationTrackIndex !== null
+          ) {
+            clearNavigationSelectionState(state, rootElement);
           }
           if (
             state.selectedNavigationBar !== null &&
