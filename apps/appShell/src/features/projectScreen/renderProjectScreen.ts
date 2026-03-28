@@ -22,6 +22,7 @@ export interface ProjectScreenActions {
   playbackSpeedPercent: number;
   effectiveTempoBpm: number | null;
   playbackIsPlaying: boolean | null;
+  countInEnabled: boolean;
   loopEnabled: boolean;
   loopStartBar: number | null;
   loopEndBar: number | null;
@@ -61,6 +62,8 @@ export interface ProjectScreenActions {
   onDecreasePlaybackSpeed: () => void;
   onIncreasePlaybackSpeed: () => void;
   onSetPlaybackSpeedPercent: (speedPercent: number) => void;
+  onResetPlaybackSpeed: () => void;
+  onToggleCountIn: () => void;
 }
 
 const DEFAULT_TRACK_VOLUME = 80;
@@ -203,6 +206,16 @@ export function renderProjectScreen(
             <button class="secondaryButton" type="button" data-action="pause">Pause</button>
             <button class="secondaryButton" type="button" data-action="stop">Stop</button>
           </div>
+          <div class="playerCountInControls">
+            <button
+              class="${actions.countInEnabled ? "primaryButton" : "secondaryButton"}"
+              type="button"
+              data-action="toggle-count-in"
+              data-count-in-toggle-button="true"
+            >
+              Count-in
+            </button>
+          </div>
           <div class="playerLoopControls">
             <button class="${actions.loopEnabled ? "primaryButton" : "secondaryButton"}" type="button" data-action="toggle-loop" data-loop-toggle-button="true">Loop</button>
             <span class="playerLoopLabel" data-loop-start-label="true">A: ${renderDebugValue(actions.loopStartBar)}</span>
@@ -322,6 +335,8 @@ export function renderProjectScreen(
   const decreasePlaybackSpeedButton = container.querySelector<HTMLButtonElement>('[data-action="decrease-playback-speed"]');
   const increasePlaybackSpeedButton = container.querySelector<HTMLButtonElement>('[data-action="increase-playback-speed"]');
   const playbackSpeedSlider = container.querySelector<HTMLInputElement>('[data-action="set-playback-speed"]');
+  const playbackSpeedReadout = container.querySelector<HTMLElement>(".playerSpeedReadout");
+  const toggleCountInButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-count-in"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
   const openDebugWindowButton = container.querySelector<HTMLButtonElement>('[data-action="open-debug-window"]');
   const leftControls = container.querySelectorAll<HTMLElement>('[data-action="left-controls"]');
@@ -475,6 +490,9 @@ export function renderProjectScreen(
   playbackSpeedSlider?.addEventListener("input", () => {
     actions.onSetPlaybackSpeedPercent(Number(playbackSpeedSlider.value));
   });
+  playbackSpeedSlider?.addEventListener("dblclick", actions.onResetPlaybackSpeed);
+  playbackSpeedReadout?.addEventListener("dblclick", actions.onResetPlaybackSpeed);
+  toggleCountInButton?.addEventListener("click", actions.onToggleCountIn);
   backHomeButton?.addEventListener("click", actions.onBackToHome);
   openDebugWindowButton?.addEventListener("click", () => openDebugWindow(actions));
 }

@@ -65,6 +65,9 @@ interface AppState {
   totalBars: number | null;
   tempoBpm: number | null;
   playbackSpeedPercent: number;
+  countInEnabled: boolean;
+  countInInProgress: boolean;
+  pendingCountInTimerId: number | null;
   playbackPositionLabel: string | null;
   playbackCurrentBar: number | null;
   playbackCurrentTick: number | null;
@@ -251,6 +254,31 @@ function updatePlaybackSpeedVisual(state: AppState, rootElement: HTMLElement): v
   const speedSlider = rootElement.querySelector<HTMLInputElement>("[data-action='set-playback-speed']");
   if (speedSlider) {
     speedSlider.value = String(state.playbackSpeedPercent);
+  }
+}
+
+function updateCountInToggleVisual(state: AppState, rootElement: HTMLElement): void {
+  const countInToggleButton = rootElement.querySelector<HTMLButtonElement>("[data-count-in-toggle-button='true']");
+  if (!countInToggleButton) {
+    return;
+  }
+  countInToggleButton.classList.remove("primaryButton", "secondaryButton");
+  countInToggleButton.classList.add(state.countInEnabled ? "primaryButton" : "secondaryButton");
+}
+
+function clearCountInTimer(state: AppState): void {
+  if (state.pendingCountInTimerId !== null) {
+    window.clearTimeout(state.pendingCountInTimerId);
+    state.pendingCountInTimerId = null;
+  }
+}
+
+function cancelCountIn(state: AppState, rootElement: HTMLElement): void {
+  clearCountInTimer(state);
+  if (state.countInInProgress) {
+    state.countInInProgress = false;
+    state.projectStatusMessage = null;
+    updateProjectStatusBanner(rootElement, "");
   }
 }
 
@@ -2043,6 +2071,9 @@ export function startApp(rootElement: HTMLElement): void {
     totalBars: null,
     tempoBpm: null,
     playbackSpeedPercent: DEFAULT_PLAYBACK_SPEED_PERCENT,
+    countInEnabled: false,
+    countInInProgress: false,
+    pendingCountInTimerId: null,
     playbackPositionLabel: null,
     playbackCurrentBar: null,
     playbackCurrentTick: null,
@@ -2098,6 +2129,8 @@ export function startApp(rootElement: HTMLElement): void {
   };
 
   const cleanupRenderer = (): void => {
+    clearCountInTimer(state);
+    state.countInInProgress = false;
     invalidatePlaybackBarAnchorRebuild(state);
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
@@ -2191,6 +2224,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.selectionFired = false;
           state.tabZoomPercent = DEFAULT_TAB_ZOOM_PERCENT;
           state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
+          state.countInEnabled = false;
+          state.countInInProgress = false;
+          state.pendingCountInTimerId = null;
           render();
         },
       });
@@ -2256,6 +2292,9 @@ export function startApp(rootElement: HTMLElement): void {
             state.selectionFired = false;
             state.tabZoomPercent = DEFAULT_TAB_ZOOM_PERCENT;
             state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
+            state.countInEnabled = false;
+            state.countInInProgress = false;
+            state.pendingCountInTimerId = null;
             render();
             return project.sourceFile.fileName;
           } catch (error) {
@@ -2292,6 +2331,7 @@ export function startApp(rootElement: HTMLElement): void {
         effectiveTempoBpm:
           state.tempoBpm === null ? null : Number(((state.tempoBpm * state.playbackSpeedPercent) / 100).toFixed(1)),
         playbackIsPlaying: state.playbackIsPlaying,
+        countInEnabled: state.countInEnabled,
         loopEnabled: state.loopEnabled,
         loopStartBar: state.loopStartBar,
         loopEndBar: state.loopEndBar,
@@ -2436,18 +2476,61 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
 
-          if (state.loopEnabled && state.loopStartTick !== null) {
-            state.gpRenderer.seekToTick(state.loopStartTick);
-          } else {
-            const activeManualTarget = getActiveManualNavigationTarget(state);
-            if (activeManualTarget) {
-              state.gpRenderer.seekToTick(activeManualTarget.targetTick);
+          cancelCountIn(state, rootElement);
+          const targetTick =
+            state.loopEnabled && state.loopStartTick !== null
+              ? state.loopStartTick
+              : getActiveManualNavigationTarget(state)?.targetTick ?? null;
+          const startPlaybackNow = (): void => {
+            if (!state.gpRenderer) {
+              return;
             }
+            if (targetTick !== null) {
+              state.gpRenderer.seekToTick(targetTick);
+            }
+            state.playbackTransportActive = true;
+            clearNavigationSelectionState(state, rootElement);
+            state.manualNavigationVisualOverrideActive = false;
+            state.projectStatusMessage = null;
+            updateProjectStatusBanner(rootElement, "");
+            state.gpRenderer.play();
+          };
+
+          if (!state.countInEnabled) {
+            startPlaybackNow();
+            return;
           }
-          state.playbackTransportActive = true;
-          clearNavigationSelectionState(state, rootElement);
-          state.manualNavigationVisualOverrideActive = false;
-          state.gpRenderer.play();
+
+          const effectiveTempoBpm =
+            state.tempoBpm === null ? null : (state.tempoBpm * state.playbackSpeedPercent) / 100;
+          const beatsPerBar = 4;
+          const beatDurationMs = Math.max(
+            120,
+            Math.round(60000 / (effectiveTempoBpm && effectiveTempoBpm > 0 ? effectiveTempoBpm : 120)),
+          );
+          let beatsRemaining = beatsPerBar;
+          state.countInInProgress = true;
+          state.playbackTransportActive = false;
+
+          const runCountInBeat = (): void => {
+            if (!state.countInInProgress) {
+              return;
+            }
+            state.projectStatusMessage = `Count-in: ${beatsRemaining}`;
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            if (beatsRemaining <= 1) {
+              state.pendingCountInTimerId = window.setTimeout(() => {
+                state.pendingCountInTimerId = null;
+                state.countInInProgress = false;
+                startPlaybackNow();
+              }, beatDurationMs);
+              return;
+            }
+            beatsRemaining -= 1;
+            state.pendingCountInTimerId = window.setTimeout(runCountInBeat, beatDurationMs);
+          };
+
+          runCountInBeat();
         },
         onPause: () => {
           if (!state.gpRenderer) {
@@ -2456,6 +2539,7 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
 
+          cancelCountIn(state, rootElement);
           state.playbackTransportActive = false;
           state.gpRenderer.pause();
         },
@@ -2470,6 +2554,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentTick = null;
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
+          cancelCountIn(state, rootElement);
           state.playbackTransportActive = false;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
@@ -2500,6 +2585,10 @@ export function startApp(rootElement: HTMLElement): void {
           updateLoopHandlesVisual(state, rootElement);
           updateProjectStatusBanner(rootElement, state.projectStatusMessage);
         },
+        onToggleCountIn: () => {
+          state.countInEnabled = !state.countInEnabled;
+          updateCountInToggleVisual(state, rootElement);
+        },
         onDecreasePlaybackSpeed: () => {
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(
             state.playbackSpeedPercent - PLAYBACK_SPEED_BUTTON_STEP_PERCENT,
@@ -2516,6 +2605,11 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onSetPlaybackSpeedPercent: (speedPercent: number) => {
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(speedPercent);
+          state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
+          updatePlaybackSpeedVisual(state, rootElement);
+        },
+        onResetPlaybackSpeed: () => {
+          state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
         },
@@ -2539,6 +2633,7 @@ export function startApp(rootElement: HTMLElement): void {
       updateLoopControlsVisual(rootElement, state);
       updateLoopHandlesVisual(state, rootElement);
       updatePlaybackSpeedVisual(state, rootElement);
+      updateCountInToggleVisual(state, rootElement);
 
       const project = state.currentProject;
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {

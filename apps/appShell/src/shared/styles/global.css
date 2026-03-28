@@ -642,6 +642,11 @@ select {
   gap: 8px;
 }
 
+.playerCountInControls {
+  display: flex;
+  align-items: center;
+}
+
 .playerLoopControls {
   display: flex;
   align-items: center;
