@@ -983,24 +983,67 @@ function rebuildPercussionPlaybackBarAnchors(
   });
 
   const sortedAnchors = snappedAnchors.sort((left, right) => left.barNumber - right.barNumber);
-  const matchesTotal = totalBars > 0 ? sortedAnchors.length === totalBars : true;
-  const contiguous = sortedAnchors.every((anchor, index) => anchor.barNumber === index + 1);
-  const rowMonotonic = sortedAnchors.every((anchor, index) => {
-    const next = sortedAnchors[index + 1];
-    return !next || next.rowIndex >= anchor.rowIndex;
+  const validateAnchors = (anchors: PlaybackBarAnchor[]): boolean => {
+    const matchesTotal = totalBars > 0 ? anchors.length === totalBars : true;
+    const contiguous = anchors.every((anchor, index) => anchor.barNumber === index + 1);
+    const rowMonotonic = anchors.every((anchor, index) => {
+      const next = anchors[index + 1];
+      return !next || next.rowIndex >= anchor.rowIndex;
+    });
+    const validGeometry = anchors.every(
+      (anchor) =>
+        Number.isFinite(anchor.startX) &&
+        Number.isFinite(anchor.endX) &&
+        Number.isFinite(anchor.y) &&
+        Number.isFinite(anchor.height) &&
+        anchor.endX > anchor.startX,
+    );
+    return anchors.length > 0 && matchesTotal && contiguous && rowMonotonic && validGeometry;
+  };
+  const stageAValid = validateAnchors(sortedAnchors);
+  if (stageAValid) {
+    const diagnostics = `strategy=percussion-authoritative | stageA=pass,stageB=skipped,labelsFound=${labels.length},rowCount=${sortedRows.length},normalizedBars=${sortedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${totalBars > 0 ? "yes" : "-"},validation=pass,chosenStage=A`;
+    return {
+      anchors: sortedAnchors,
+      diagnostics,
+    };
+  }
+
+  const fallbackAnchors: PlaybackBarAnchor[] = [];
+  sortedRows.forEach((row, rowIndex) => {
+    const labelsOnRow = labels.filter((label) => Math.abs(label.y - row.yCenter) <= 30).sort((left, right) => left.x - right.x);
+    if (labelsOnRow.length === 0) {
+      return;
+    }
+    const rowBoundaries = verticalCandidates
+      .filter((candidate) => candidate.top <= row.yMax + 6 && candidate.bottom >= row.yMin - 6)
+      .map((candidate) => candidate.x)
+      .sort((left, right) => left - right);
+    const rowLeftBoundary = rowBoundaries[0] ?? labelsOnRow[0]!.x - 40;
+    const rowRightBoundary = rowBoundaries[rowBoundaries.length - 1] ?? labelsOnRow[labelsOnRow.length - 1]!.x + 40;
+    labelsOnRow.forEach((label, index) => {
+      const previous = labelsOnRow[index - 1];
+      const next = labelsOnRow[index + 1];
+      const startX = previous ? (previous.x + label.x) / 2 : rowLeftBoundary;
+      const endX = next ? (label.x + next.x) / 2 : rowRightBoundary;
+      if (endX <= startX + 6) {
+        return;
+      }
+      fallbackAnchors.push({
+        barNumber: label.barNumber,
+        startX,
+        endX,
+        rowIndex,
+        y: row.yMin,
+        height: Math.max(row.yMax - row.yMin, 28),
+      });
+    });
   });
-  const validGeometry = sortedAnchors.every(
-    (anchor) =>
-      Number.isFinite(anchor.startX) &&
-      Number.isFinite(anchor.endX) &&
-      Number.isFinite(anchor.y) &&
-      Number.isFinite(anchor.height) &&
-      anchor.endX > anchor.startX,
-  );
-  const validationPass = sortedAnchors.length > 0 && matchesTotal && contiguous && rowMonotonic && validGeometry;
-  const diagnostics = `strategy=percussion-authoritative | labelsFound=${labels.length},verticalCandidates=${verticalCandidates.length},rowCount=${sortedRows.length},snappedStarts=${sortedAnchors.length},normalizedBars=${sortedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${matchesTotal ? "yes" : "no"},validation=${validationPass ? "pass" : "fail"}`;
+  const fallbackSorted = fallbackAnchors.sort((left, right) => left.barNumber - right.barNumber);
+  const stageBValid = validateAnchors(fallbackSorted);
+  const diagnostics = `strategy=percussion-authoritative | stageA=${stageAValid ? "pass" : "fail"},stageB=${stageBValid ? "pass" : "fail"},labelsFound=${labels.length},rowCount=${sortedRows.length},normalizedBars=${stageBValid ? fallbackSorted.length : sortedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${totalBars > 0 ? (stageBValid ? fallbackSorted.length === totalBars : sortedAnchors.length === totalBars) ? "yes" : "no" : "-"},validation=${stageBValid ? "pass" : "fail"},chosenStage=${stageBValid ? "B" : "none"}`;
   return {
-    anchors: validationPass ? sortedAnchors : null,
+    anchors: stageBValid ? fallbackSorted : null,
     diagnostics,
   };
 }
