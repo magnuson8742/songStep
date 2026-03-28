@@ -1119,6 +1119,73 @@ function rebuildPercussionPlaybackBarAnchors(
   };
 }
 
+
+function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[] {
+  const rawBounds = state.gpRenderer?.getRenderedBarBounds() ?? [];
+  if (rawBounds.length === 0) {
+    return [];
+  }
+
+  const totalBars = state.totalBars ?? 0;
+  const normalized = rawBounds
+    .filter((bound) => {
+      const hasGeometry =
+        Number.isFinite(bound.barNumber) &&
+        Number.isFinite(bound.startX) &&
+        Number.isFinite(bound.endX) &&
+        Number.isFinite(bound.y) &&
+        Number.isFinite(bound.height) &&
+        bound.barNumber > 0 &&
+        bound.endX > bound.startX + 2 &&
+        bound.height > 0;
+      if (!hasGeometry) {
+        return false;
+      }
+      if (totalBars > 0 && bound.barNumber > totalBars) {
+        return false;
+      }
+      return true;
+    })
+    .map((bound) => ({
+      barNumber: Math.round(bound.barNumber),
+      startX: bound.startX,
+      endX: bound.endX,
+      y: bound.y,
+      height: Math.max(bound.height, 24),
+      rowIndex: Number.isFinite(bound.rowIndex) ? Math.max(0, Math.round(bound.rowIndex)) : 0,
+    }))
+    .sort((left, right) => left.barNumber - right.barNumber);
+
+  if (normalized.length === 0) {
+    return [];
+  }
+
+  const deduped = new Map<number, PlaybackBarAnchor>();
+  normalized.forEach((bound) => {
+    const existing = deduped.get(bound.barNumber);
+    if (!existing) {
+      deduped.set(bound.barNumber, bound);
+      return;
+    }
+    deduped.set(bound.barNumber, {
+      barNumber: bound.barNumber,
+      startX: Math.min(existing.startX, bound.startX),
+      endX: Math.max(existing.endX, bound.endX),
+      y: Math.min(existing.y, bound.y),
+      height: Math.max(existing.height, bound.height),
+      rowIndex: Math.min(existing.rowIndex, bound.rowIndex),
+    });
+  });
+
+  const anchors = Array.from(deduped.values()).sort((left, right) => left.barNumber - right.barNumber);
+  const contiguous = anchors.every((anchor, index) => anchor.barNumber === index + 1);
+  const matchesTotal = totalBars > 0 ? anchors.length === totalBars : true;
+  if (!contiguous || !matchesTotal) {
+    return [];
+  }
+
+  return anchors;
+}
 function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): void {
   if (!ENABLE_CUSTOM_PLAYHEAD) {
     state.playbackBarAnchors = [];
@@ -1150,6 +1217,20 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
     return;
   }
+
+  const rendererAnchors = resolveRendererPlaybackBarAnchors(state);
+  if (rendererAnchors.length > 0) {
+    state.playbackBarAnchors = rendererAnchors;
+    state.playbackBarAnchorCount = rendererAnchors.length;
+    state.playbackBarAnchorSource = "renderer:boundsLookup";
+    state.playbackAnchorStrategyAttempts = `renderer:boundsLookup => ${rendererAnchors.length}`;
+    updateRenderHostDomDiagnostics(state, rootElement, renderHost);
+    updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
+    updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
+    updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+    return;
+  }
+
   updateRenderHostDomDiagnostics(state, rootElement, renderHost);
   const isPercussionDefaultLayout =
     state.gpRenderDebugInfo?.isPercussion === true || state.gpRenderDebugInfo?.effectiveStaveProfile === "Default";

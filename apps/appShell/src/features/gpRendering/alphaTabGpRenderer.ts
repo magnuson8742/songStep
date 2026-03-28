@@ -248,12 +248,15 @@ export interface GpRendererController {
   seekToBarStart: (barNumber: number) => number | null;
   resolveNearestTickInBar: (barNumber: number, progressInBar: number) => number | null;
   getBarTickRange: (barNumber: number) => { startTick: number; endTickExclusive: number | null } | null;
+  getRenderedBarBounds: () => Array<{ barNumber: number; startX: number; endX: number; y: number; height: number; rowIndex: number }>;
   setPlaybackSpeedPercent: (speedPercent: number) => boolean;
   play: () => void;
   pause: () => void;
   stop: () => void;
   destroy: () => void;
 }
+
+type RenderedBarBound = { barNumber: number; startX: number; endX: number; y: number; height: number; rowIndex: number };
 
 const BRAVURA_FONT_DIRECTORY = "/font/";
 const SONIVOX_SOUND_FONT_PATH = "/soundfont/sonivox.sf2";
@@ -652,6 +655,7 @@ export async function createGpRenderer(
   let hasLoggedPlayerPositionPayloadShape = false;
   let hasLoggedPlayerStatePayloadShape = false;
   let playbackCapabilityMessage: string | null = null;
+  let renderedBarBounds: RenderedBarBound[] = [];
   let zoomPercent = Math.max(50, Math.min(200, initialZoomPercent));
   let playbackSpeedPercent = 100;
   let pendingZoomPercent: number | null = null;
@@ -1100,6 +1104,129 @@ export async function createGpRenderer(
     }
 
     return speedApplied;
+  };
+
+  const extractRenderedBarBoundsFromApi = (api: AlphaTabApi, totalBars: number | null): RenderedBarBound[] => {
+    const unsafeApi = api as AlphaTabApi & {
+      renderer?: Record<string, unknown>;
+      boundsLookup?: Record<string, unknown>;
+    };
+    const rootCandidates: unknown[] = [
+      unsafeApi.boundsLookup,
+      unsafeApi.renderer?.boundsLookup,
+      (unsafeApi.renderer as { renderEngine?: { boundsLookup?: unknown } } | undefined)?.renderEngine?.boundsLookup,
+      unsafeApi.renderer,
+    ];
+    const candidates: Array<{ barNumber: number; startX: number; endX: number; y: number; height: number }> = [];
+
+    const tryExtractFromItem = (item: unknown): void => {
+      if (!item || typeof item !== "object") {
+        return;
+      }
+      const unsafeItem = item as Record<string, unknown>;
+      const barIndexCandidate = [unsafeItem.barIndex, unsafeItem.masterBarIndex, unsafeItem.index, unsafeItem.bar];
+      const barIndexValue = barIndexCandidate.find((value) => typeof value === "number");
+      const barNumber = typeof barIndexValue === "number" ? barIndexValue + 1 : null;
+      const rectCandidate =
+        (unsafeItem.bounds as Record<string, unknown> | undefined) ??
+        (unsafeItem.visualBounds as Record<string, unknown> | undefined) ??
+        (unsafeItem.rect as Record<string, unknown> | undefined);
+      if (!rectCandidate || barNumber === null || barNumber <= 0) {
+        return;
+      }
+      const x = typeof rectCandidate.x === "number" ? rectCandidate.x : null;
+      const y = typeof rectCandidate.y === "number" ? rectCandidate.y : null;
+      const width =
+        typeof rectCandidate.w === "number"
+          ? rectCandidate.w
+          : typeof rectCandidate.width === "number"
+            ? rectCandidate.width
+            : null;
+      const height =
+        typeof rectCandidate.h === "number"
+          ? rectCandidate.h
+          : typeof rectCandidate.height === "number"
+            ? rectCandidate.height
+            : null;
+      if (x === null || y === null || width === null || height === null || width <= 0 || height <= 0) {
+        return;
+      }
+      if (totalBars !== null && totalBars > 0 && barNumber > totalBars) {
+        return;
+      }
+      candidates.push({
+        barNumber,
+        startX: x,
+        endX: x + width,
+        y,
+        height,
+      });
+    };
+
+    rootCandidates.forEach((root) => {
+      if (!root || typeof root !== "object") {
+        return;
+      }
+      const values = Object.values(root as Record<string, unknown>);
+      values.forEach((value) => {
+        if (Array.isArray(value)) {
+          value.forEach((item) => tryExtractFromItem(item));
+        } else {
+          tryExtractFromItem(value);
+        }
+      });
+    });
+
+    const byBar = new Map<number, { startX: number; endX: number; y: number; height: number }>();
+    candidates.forEach((candidate) => {
+      const existing = byBar.get(candidate.barNumber);
+      if (!existing) {
+        byBar.set(candidate.barNumber, {
+          startX: candidate.startX,
+          endX: candidate.endX,
+          y: candidate.y,
+          height: candidate.height,
+        });
+        return;
+      }
+      existing.startX = Math.min(existing.startX, candidate.startX);
+      existing.endX = Math.max(existing.endX, candidate.endX);
+      existing.y = Math.min(existing.y, candidate.y);
+      existing.height = Math.max(existing.height, candidate.height);
+    });
+
+    const sorted = Array.from(byBar.entries())
+      .map(([barNumber, bound]) => ({ barNumber, ...bound }))
+      .sort((left, right) => left.barNumber - right.barNumber);
+    const rows: Array<{ yMin: number; yMax: number; yCenter: number; bars: number[] }> = [];
+    sorted.forEach((bound) => {
+      const rowIndex = rows.findIndex((row) => Math.abs(row.yCenter - bound.y) <= 22);
+      if (rowIndex >= 0) {
+        const row = rows[rowIndex] as { yMin: number; yMax: number; yCenter: number; bars: number[] };
+        row.yMin = Math.min(row.yMin, bound.y);
+        row.yMax = Math.max(row.yMax, bound.y + bound.height);
+        row.yCenter = (row.yMin + row.yMax) / 2;
+        row.bars.push(bound.barNumber);
+        return;
+      }
+      rows.push({
+        yMin: bound.y,
+        yMax: bound.y + bound.height,
+        yCenter: bound.y,
+        bars: [bound.barNumber],
+      });
+    });
+    const rowIndexByBar = new Map<number, number>();
+    rows.forEach((row, rowIndex) => row.bars.forEach((barNumber) => rowIndexByBar.set(barNumber, rowIndex)));
+
+    return sorted.map((bound) => ({
+      barNumber: bound.barNumber,
+      startX: bound.startX,
+      endX: bound.endX,
+      y: bound.y,
+      height: Math.max(bound.height, 24),
+      rowIndex: rowIndexByBar.get(bound.barNumber) ?? -1,
+    }));
   };
 
   const getBarTickRange = (barNumber: number): { startTick: number; endTickExclusive: number | null } | null => {
@@ -1588,6 +1715,7 @@ export async function createGpRenderer(
         restoreRenderViewportScroll(pendingScrollSnapshot);
         pendingScrollSnapshot = null;
       }
+      renderedBarBounds = extractRenderedBarBoundsFromApi(api, scoreRuntimeInfo.totalBars);
       emitDebugInfo();
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
@@ -1742,6 +1870,7 @@ export async function createGpRenderer(
     resolveNearestTickInBar: (barNumber: number, progressInBar: number) =>
       resolveNearestTickInBarForNavigation(barNumber, progressInBar),
     getBarTickRange: (barNumber: number) => getBarTickRange(barNumber),
+    getRenderedBarBounds: () => renderedBarBounds,
     setPlaybackSpeedPercent: (nextSpeedPercent: number) => {
       const normalizedSpeedPercent = Math.max(15, Math.min(175, Math.round(nextSpeedPercent)));
       playbackSpeedPercent = normalizedSpeedPercent;
