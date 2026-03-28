@@ -502,7 +502,7 @@ function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StavePr
       staveProfile,
     },
     player: {
-      enablePlayer: staveProfile === "Tab",
+      enablePlayer: true,
       soundFont: SONIVOX_SOUND_FONT_PATH,
     },
   };
@@ -1343,10 +1343,8 @@ export async function createGpRenderer(
 
     const api = createAlphaTabApi(container, renderPlan, zoomPercent);
     activeApi = api;
-    const playbackAvailable = !renderPlan.isPercussion && isPlaybackApiAvailable(api);
-    if (renderPlan.isPercussion) {
-      setPlaybackCapabilityMessage("Playback is not enabled for percussion tracks yet.");
-    } else if (!playbackAvailable) {
+    const playbackAvailable = isPlaybackApiAvailable(api);
+    if (!playbackAvailable) {
       setPlaybackCapabilityMessage("Playback is unavailable in this runtime.");
     } else {
       setPlaybackCapabilityMessage(null);
@@ -1404,7 +1402,7 @@ export async function createGpRenderer(
           if (tickDelta <= 1) {
             hooks.onProgrammaticSeekConfirmed(confirmedActiveTrackIndex, pendingProgrammaticSeek.tick);
             pendingProgrammaticSeek = null;
-            if (pendingPlayAfterProgrammaticSeek && isPlaybackApiAvailable(api) && !isPercussionTrack) {
+            if (pendingPlayAfterProgrammaticSeek && isPlaybackApiAvailable(api)) {
               pendingPlayAfterProgrammaticSeek = false;
               api.play?.();
             }
@@ -1554,7 +1552,7 @@ export async function createGpRenderer(
 
       const zoomPlaybackContext = inPlaceZoomPlaybackContext;
       inPlaceZoomPlaybackContext = null;
-      if (!zoomPlaybackContext.wasPlaying || isPercussionTrack || !isPlaybackApiAvailable(api)) {
+      if (!zoomPlaybackContext.wasPlaying || !isPlaybackApiAvailable(api)) {
         return;
       }
       const stillPlaying =
@@ -1671,11 +1669,6 @@ export async function createGpRenderer(
       resolveNearestTickInBarForNavigation(barNumber, progressInBar),
     getBarTickRange: (barNumber: number) => getBarTickRange(barNumber),
     play: () => {
-      if (isPercussionTrack) {
-        hooks.onRuntimeNotice("Playback is not enabled for percussion tracks yet.");
-        return;
-      }
-
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
         hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
@@ -1695,11 +1688,6 @@ export async function createGpRenderer(
       playbackApi.play();
     },
     pause: () => {
-      if (isPercussionTrack) {
-        hooks.onRuntimeNotice("Playback is not enabled for percussion tracks yet.");
-        return;
-      }
-
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
         hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
@@ -1711,11 +1699,6 @@ export async function createGpRenderer(
       playbackApi.pause();
     },
     stop: () => {
-      if (isPercussionTrack) {
-        hooks.onRuntimeNotice("Playback is not enabled for percussion tracks yet.");
-        return;
-      }
-
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
         hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
