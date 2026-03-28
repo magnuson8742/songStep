@@ -1455,48 +1455,28 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     return;
   }
 
-  const rendererAnchors = resolveRendererPlaybackBarAnchors(state, renderHost);
-  if (rendererAnchors.length > 0) {
-    state.playbackBarAnchors = rendererAnchors;
-    state.playbackBarAnchorCount = rendererAnchors.length;
-    state.playbackBarAnchorSource = "renderer:boundsLookup";
-    updateRenderHostDomDiagnostics(state, rootElement, renderHost);
-    updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
-    updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
-    updateDebugField(
-      rootElement,
-      "playback-anchor-strategy-attempts",
-      state.playbackAnchorStrategyAttempts ?? `chosenSource=renderer:boundsLookup,rawBoundsCount=${rendererAnchors.length}`,
-    );
-    return;
-  }
-
-  updateRenderHostDomDiagnostics(state, rootElement, renderHost);
   const isPercussionDefaultLayout =
     state.gpRenderDebugInfo?.isPercussion === true || state.gpRenderDebugInfo?.effectiveStaveProfile === "Default";
   const totalBars = state.totalBars ?? 0;
   const strategyAttempts: string[] = [];
-
-  if (isPercussionDefaultLayout) {
-    const percussionResult = rebuildPercussionPlaybackBarAnchors(renderHost, totalBars);
-    if (percussionResult.anchors !== null) {
-      state.playbackBarAnchors = percussionResult.anchors;
-      state.playbackBarAnchorCount = percussionResult.anchors.length;
-      state.playbackBarAnchorSource = "percussion-authoritative";
-      state.playbackAnchorStrategyAttempts = percussionResult.diagnostics;
+  updateRenderHostDomDiagnostics(state, rootElement, renderHost);
+  if (!isPercussionDefaultLayout) {
+    const rendererAnchors = resolveRendererPlaybackBarAnchors(state, renderHost);
+    if (rendererAnchors.length > 0) {
+      state.playbackBarAnchors = rendererAnchors;
+      state.playbackBarAnchorCount = rendererAnchors.length;
+      state.playbackBarAnchorSource = "renderer:boundsLookup";
       updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
       updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
-      updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+      updateDebugField(
+        rootElement,
+        "playback-anchor-strategy-attempts",
+        state.playbackAnchorStrategyAttempts ?? `chosenSource=renderer-bounds,rawBoundsCount=${rendererAnchors.length}`,
+      );
       return;
     }
-    state.playbackBarAnchors = [];
-    state.playbackBarAnchorCount = 0;
-    state.playbackBarAnchorSource = "percussion-authoritative";
-    state.playbackAnchorStrategyAttempts = `${percussionResult.diagnostics},rejectionReason=validationFailed`;
-    updateDebugField(rootElement, "playback-bar-anchor-count", "0");
-    updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
-    updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
-    return;
+  } else {
+    strategyAttempts.push("renderer:boundsLookup skipped for percussion/default");
   }
 
   const selectorStrategies = [
@@ -1772,15 +1752,16 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
           continue;
         }
 
+        const chosenGenericSource = isPercussionDefaultLayout ? "generic-shared" : strategy.source;
         state.playbackBarAnchors = validatedAnchors;
         state.playbackBarAnchorCount = state.playbackBarAnchors.length;
-        state.playbackBarAnchorSource = strategy.source;
+        state.playbackBarAnchorSource = chosenGenericSource;
         const firstBar = state.playbackBarAnchors[0]?.barNumber ?? null;
         const lastBar = state.playbackBarAnchors[state.playbackBarAnchors.length - 1]?.barNumber ?? null;
         const barsMatchTotal = totalBars > 0 ? state.playbackBarAnchors.length === totalBars : null;
-        state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | diag:noisySkip=no,normalizedBars=${state.playbackBarAnchors.length},firstBar=${firstBar ?? "-"},lastBar=${lastBar ?? "-"},rows=${rowSummaries.length},matchesTotal=${barsMatchTotal === null ? "-" : barsMatchTotal ? "yes" : "no"},validation=pass,fallbackUsed=no,totalBars=${totalBars > 0 ? totalBars : "-"}`;
+        state.playbackAnchorStrategyAttempts = `chosenSource=${chosenGenericSource} | ${strategyAttempts.join(" | ")} | diag:noisySkip=no,normalizedBars=${state.playbackBarAnchors.length},firstBar=${firstBar ?? "-"},lastBar=${lastBar ?? "-"},rows=${rowSummaries.length},matchesTotal=${barsMatchTotal === null ? "-" : barsMatchTotal ? "yes" : "no"},validation=pass,fallbackUsed=no,totalBars=${totalBars > 0 ? totalBars : "-"}`;
         updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
-        updateDebugField(rootElement, "playback-bar-anchor-source", strategy.source);
+        updateDebugField(rootElement, "playback-bar-anchor-source", chosenGenericSource);
         updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
         return;
       }
@@ -2040,6 +2021,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     const medianGap = sortedGaps.length > 0 ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 72;
     const fallbackGap = Math.min(Math.max(medianGap, 32), 220);
 
+    const chosenGenericSource = isPercussionDefaultLayout ? "generic-shared" : strategy.source;
     state.playbackBarAnchors = limitedAnchors.map((anchor, index) => {
       const nextAnchor = limitedAnchors[index + 1];
       const currentRowIndex = anchorRowIndexes[index];
@@ -2070,13 +2052,28 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       };
     });
     state.playbackBarAnchorCount = state.playbackBarAnchors.length;
-    state.playbackBarAnchorSource = strategy.source;
+    state.playbackBarAnchorSource = chosenGenericSource;
     const rowsWithTerminalBoundary = rowSummaries.filter((row) => row.rowTerminalBoundaryX !== null).length;
-    state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | diag:raw=${rawAnchors.length},dedup=${dedupedAnchors.length},filtered=${filteredAnchors.length},used=${limitedAnchors.length},rows=${rowSummaries.length},dropped=${droppedTerminalCount},rowTerminal=${rowsWithTerminalBoundary},totalBars=${totalBars > 0 ? totalBars : "-"}`;
+    state.playbackAnchorStrategyAttempts = `chosenSource=${chosenGenericSource} | ${strategyAttempts.join(" | ")} | diag:raw=${rawAnchors.length},dedup=${dedupedAnchors.length},filtered=${filteredAnchors.length},used=${limitedAnchors.length},rows=${rowSummaries.length},dropped=${droppedTerminalCount},rowTerminal=${rowsWithTerminalBoundary},totalBars=${totalBars > 0 ? totalBars : "-"}`;
     updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
-    updateDebugField(rootElement, "playback-bar-anchor-source", strategy.source);
+    updateDebugField(rootElement, "playback-bar-anchor-source", chosenGenericSource);
     updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
     return;
+  }
+
+  if (isPercussionDefaultLayout) {
+    const percussionResult = rebuildPercussionPlaybackBarAnchors(renderHost, totalBars);
+    if (percussionResult.anchors !== null) {
+      state.playbackBarAnchors = percussionResult.anchors;
+      state.playbackBarAnchorCount = percussionResult.anchors.length;
+      state.playbackBarAnchorSource = "percussion-fallback";
+      state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | chosenSource=percussion-fallback`;
+      updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
+      updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
+      updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+      return;
+    }
+    strategyAttempts.push(`${percussionResult.diagnostics},chosenSource=percussion-fallback,validation=fail`);
   }
 
   state.playbackBarAnchors = [];
