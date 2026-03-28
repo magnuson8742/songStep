@@ -42,6 +42,7 @@ const DEFAULT_TAB_ZOOM_PERCENT = 100;
 const MIN_TAB_ZOOM_PERCENT = 60;
 const MAX_TAB_ZOOM_PERCENT = 160;
 const TAB_ZOOM_STEP_PERCENT = 10;
+const SECTION_LABEL_VERTICAL_NUDGE_PX = 8;
 
 interface AppState {
   currentView: AppView;
@@ -389,6 +390,49 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   markersContainer.style.height = `${Math.max(laneEndPercents.length, 1) * laneHeightPx}px`;
   updateArrangementPlaybackHighlight(state, rootElement);
   updateArrangementSelectionHighlight(state, rootElement);
+}
+
+function nudgeRenderedSectionLabels(rootElement: HTMLElement, state: AppState): void {
+  const sectionMarkers = state.scoreOverview?.sectionMarkers ?? [];
+  if (sectionMarkers.length === 0) {
+    return;
+  }
+
+  const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+  if (!renderHost) {
+    return;
+  }
+
+  const sectionLabelSet = new Set(
+    sectionMarkers.map((marker) => marker.label.trim().toLowerCase()).filter((label) => label.length > 0),
+  );
+  if (sectionLabelSet.size === 0) {
+    return;
+  }
+
+  const svgTexts = Array.from(renderHost.querySelectorAll<SVGTextElement>("svg text"));
+  svgTexts.forEach((textNode) => {
+    if (textNode.dataset.sectionLabelNudged === "true") {
+      return;
+    }
+    const textValue = textNode.textContent?.trim().toLowerCase() ?? "";
+    if (textValue.length === 0 || !sectionLabelSet.has(textValue)) {
+      return;
+    }
+
+    const currentY = textNode.getAttribute("y");
+    if (currentY) {
+      const numericY = Number(currentY);
+      if (Number.isFinite(numericY)) {
+        textNode.setAttribute("y", String(numericY - SECTION_LABEL_VERTICAL_NUDGE_PX));
+        textNode.dataset.sectionLabelNudged = "true";
+        return;
+      }
+    }
+
+    textNode.style.transform = `translateY(-${SECTION_LABEL_VERTICAL_NUDGE_PX}px)`;
+    textNode.dataset.sectionLabelNudged = "true";
+  });
 }
 
 function getActiveManualNavigationTarget(state: AppState): { targetTrackIndex: number; targetBar: number; targetTick: number } | null {
@@ -1242,11 +1286,24 @@ function isSameTrackList(current: GpTrackInfo[], next: GpTrackInfo[]): boolean {
 function setupBottomDockResize(rootElement: HTMLElement, state: AppState): void {
   const layoutShell = rootElement.querySelector<HTMLElement>(".playerLayoutShell");
   const resizeHandle = rootElement.querySelector<HTMLElement>("[data-dock-resize-handle='true']");
-  if (!layoutShell || !resizeHandle) {
+  const headers = rootElement.querySelector<HTMLElement>(".playerDockHeaders");
+  const topBand = rootElement.querySelector<HTMLElement>(".playerDockTopBand");
+  const middleScroll = rootElement.querySelector<HTMLElement>(".playerDockMiddleScroll");
+  const bottomBand = rootElement.querySelector<HTMLElement>(".playerDockBottomBand");
+  if (!layoutShell || !resizeHandle || !headers || !topBand || !middleScroll || !bottomBand) {
     return;
   }
 
+  const resolveDynamicDockMaxHeight = (): number => {
+    const middleContentHeight = Math.max(middleScroll.scrollHeight, middleScroll.clientHeight, MIN_BOTTOM_DOCK_HEIGHT_PX);
+    const measuredContentHeight =
+      resizeHandle.offsetHeight + headers.offsetHeight + topBand.offsetHeight + middleContentHeight + bottomBand.offsetHeight;
+    return Math.min(MAX_BOTTOM_DOCK_HEIGHT_PX, Math.max(MIN_BOTTOM_DOCK_HEIGHT_PX, measuredContentHeight));
+  };
+
   const applyDockHeight = (): void => {
+    const dynamicMaxHeight = resolveDynamicDockMaxHeight();
+    state.bottomDockHeightPx = Math.min(Math.max(state.bottomDockHeightPx, MIN_BOTTOM_DOCK_HEIGHT_PX), dynamicMaxHeight);
     layoutShell.style.setProperty("--player-dock-height", `${state.bottomDockHeightPx}px`);
   };
   applyDockHeight();
@@ -1284,9 +1341,10 @@ function setupBottomDockResize(rootElement: HTMLElement, state: AppState): void 
       return;
     }
     const dragDeltaY = dragStartY - event.clientY;
+    const dynamicMaxHeight = resolveDynamicDockMaxHeight();
     const nextHeight = Math.min(
       Math.max(dragStartHeight + dragDeltaY, MIN_BOTTOM_DOCK_HEIGHT_PX),
-      MAX_BOTTOM_DOCK_HEIGHT_PX,
+      dynamicMaxHeight,
     );
     state.bottomDockHeightPx = nextHeight;
     applyDockHeight();
@@ -2027,6 +2085,7 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onTrackRenderCommitted: (trackIndex) => {
           tryCompletePendingOverviewNavigationAfterRender(state, rootElement, trackIndex);
+          nudgeRenderedSectionLabels(rootElement, state);
         },
         onProgrammaticSeekConfirmed: (trackIndex, tick) => {
           if (
@@ -2086,6 +2145,7 @@ export function startApp(rootElement: HTMLElement): void {
             }
           });
           updateArrangementOverview(state, rootElement);
+          nudgeRenderedSectionLabels(rootElement, state);
           updateTrackControlVisualState(state, rootElement);
           updateTrackRowVisualState(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
