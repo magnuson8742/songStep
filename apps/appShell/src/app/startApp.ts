@@ -390,18 +390,59 @@ function updateArrangementOverview(state: AppState, rootElement: HTMLElement): v
   updateArrangementSelectionHighlight(state, rootElement);
 }
 
+function getActiveManualNavigationTarget(state: AppState): { targetTrackIndex: number; targetBar: number; targetTick: number } | null {
+  const confirmedTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+  if (
+    state.pendingOverviewNavigationBar !== null &&
+    state.pendingOverviewNavigationBar > 0 &&
+    state.pendingOverviewNavigationTrackIndex === confirmedTrackIndex &&
+    state.pendingOverviewNavigationTick !== null
+  ) {
+    return {
+      targetTrackIndex: confirmedTrackIndex,
+      targetBar: state.pendingOverviewNavigationBar,
+      targetTick: state.pendingOverviewNavigationTick,
+    };
+  }
+
+  if (
+    state.selectedNavigationBar !== null &&
+    state.selectedNavigationBar > 0 &&
+    state.selectedNavigationTrackIndex === confirmedTrackIndex &&
+    state.selectedNavigationTick !== null
+  ) {
+    return {
+      targetTrackIndex: confirmedTrackIndex,
+      targetBar: state.selectedNavigationBar,
+      targetTick: state.selectedNavigationTick,
+    };
+  }
+
+  return null;
+}
+
 function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLElement): void {
   const arrangementCells = rootElement.querySelectorAll<HTMLElement>("[data-arrangement-bar-index]");
   arrangementCells.forEach((cell) => {
     cell.classList.remove("isPlaybackCurrentBar");
   });
 
-  if (state.playbackCurrentBar === null || state.playbackCurrentBar <= 0) {
+  const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+  const activeManualTarget = getActiveManualNavigationTarget(state);
+  let playbackBar = state.playbackCurrentBar;
+  if (
+    activeManualTarget &&
+    (!state.playbackIsPlaying ||
+      state.playbackCurrentTick === null ||
+      Math.abs(state.playbackCurrentTick - activeManualTarget.targetTick) <= 1)
+  ) {
+    playbackBar = activeManualTarget.targetBar;
+  }
+  if (playbackBar === null || playbackBar <= 0) {
     return;
   }
 
-  const playbackBarIndex = state.playbackCurrentBar - 1;
-  const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+  const playbackBarIndex = playbackBar - 1;
   const activeTrackRow = rootElement.querySelector<HTMLElement>(`[data-arrangement-track-index="${activeTrackIndex}"]`);
   if (!activeTrackRow) {
     return;
@@ -1871,6 +1912,10 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
 
+          const activeManualTarget = getActiveManualNavigationTarget(state);
+          if (activeManualTarget) {
+            state.gpRenderer.seekToTick(activeManualTarget.targetTick);
+          }
           state.gpRenderer.play();
         },
         onPause: () => {
