@@ -1688,6 +1688,7 @@ function setupLoopHandleDrag(rootElement: HTMLElement, state: AppState): void {
   }
 
   let activePointerId: number | null = null;
+  let activeDragRowIndex: number | null = null;
 
   renderHost.addEventListener("pointerdown", (event) => {
     const targetElement = event.target;
@@ -1704,6 +1705,11 @@ function setupLoopHandleDrag(rootElement: HTMLElement, state: AppState): void {
     }
     activePointerId = event.pointerId;
     state.loopDragHandle = handleType;
+    const activeBarNumber = handleType === "start" ? state.loopStartBar : state.loopEndBar;
+    const activeAnchor = activeBarNumber
+      ? state.playbackBarAnchors.find((anchor) => anchor.barNumber === activeBarNumber) ?? null
+      : null;
+    activeDragRowIndex = activeAnchor && activeAnchor.rowIndex >= 0 ? activeAnchor.rowIndex : null;
     renderHost.setPointerCapture(event.pointerId);
     event.preventDefault();
   });
@@ -1722,7 +1728,35 @@ function setupLoopHandleDrag(rootElement: HTMLElement, state: AppState): void {
 
     const hostRect = renderHost.getBoundingClientRect();
     const localX = event.clientX - hostRect.left + renderHost.scrollLeft;
-    const nearestAnchor = state.playbackBarAnchors.reduce<PlaybackBarAnchor | null>((closest, anchor) => {
+    const localY = event.clientY - hostRect.top + renderHost.scrollTop;
+    const rowBounds = new Map<number, { top: number; bottom: number }>();
+    state.playbackBarAnchors.forEach((anchor) => {
+      if (anchor.rowIndex < 0) {
+        return;
+      }
+      const existing = rowBounds.get(anchor.rowIndex);
+      const top = anchor.y;
+      const bottom = anchor.y + anchor.height;
+      if (!existing) {
+        rowBounds.set(anchor.rowIndex, { top, bottom });
+        return;
+      }
+      existing.top = Math.min(existing.top, top);
+      existing.bottom = Math.max(existing.bottom, bottom);
+    });
+
+    const pointerRowIndex =
+      Array.from(rowBounds.entries()).find(([, bounds]) => localY >= bounds.top && localY <= bounds.bottom)?.[0] ?? null;
+    if (pointerRowIndex !== null) {
+      activeDragRowIndex = pointerRowIndex;
+    }
+
+    const candidateAnchors =
+      activeDragRowIndex !== null
+        ? state.playbackBarAnchors.filter((anchor) => anchor.rowIndex === activeDragRowIndex)
+        : state.playbackBarAnchors;
+    const anchorsForSelection = candidateAnchors.length > 0 ? candidateAnchors : state.playbackBarAnchors;
+    const nearestAnchor = anchorsForSelection.reduce<PlaybackBarAnchor | null>((closest, anchor) => {
       if (!closest) {
         return anchor;
       }
@@ -1766,6 +1800,7 @@ function setupLoopHandleDrag(rootElement: HTMLElement, state: AppState): void {
     }
     renderHost.releasePointerCapture(event.pointerId);
     activePointerId = null;
+    activeDragRowIndex = null;
     state.loopDragHandle = null;
   };
 
