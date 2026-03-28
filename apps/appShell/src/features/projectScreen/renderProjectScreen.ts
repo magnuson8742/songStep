@@ -19,6 +19,8 @@ export interface ProjectScreenActions {
   currentTick: number | null;
   totalBars: number | null;
   tempoBpm: number | null;
+  playbackSpeedPercent: number;
+  effectiveTempoBpm: number | null;
   playbackIsPlaying: boolean | null;
   loopEnabled: boolean;
   loopStartBar: number | null;
@@ -56,6 +58,9 @@ export interface ProjectScreenActions {
   onPause: () => void;
   onStop: () => void;
   onToggleLoop: () => void;
+  onDecreasePlaybackSpeed: () => void;
+  onIncreasePlaybackSpeed: () => void;
+  onSetPlaybackSpeedPercent: (speedPercent: number) => void;
 }
 
 const DEFAULT_TRACK_VOLUME = 80;
@@ -203,6 +208,24 @@ export function renderProjectScreen(
             <span class="playerLoopLabel" data-loop-start-label="true">A: ${renderDebugValue(actions.loopStartBar)}</span>
             <span class="playerLoopLabel" data-loop-end-label="true">B: ${renderDebugValue(actions.loopEndBar)}</span>
           </div>
+          <div class="playerSpeedControls" aria-label="Playback speed controls">
+            <button class="secondaryButton playerSpeedButton" type="button" data-action="decrease-playback-speed" aria-label="Decrease playback speed">−</button>
+            <input
+              class="playerSpeedSlider"
+              type="range"
+              min="15"
+              max="175"
+              step="1"
+              value="${actions.playbackSpeedPercent}"
+              data-action="set-playback-speed"
+              aria-label="Playback speed percent"
+            />
+            <button class="secondaryButton playerSpeedButton" type="button" data-action="increase-playback-speed" aria-label="Increase playback speed">+</button>
+            <div class="playerSpeedReadout">
+              <span class="playerSpeedPercent" data-playback-speed-percent="true">${actions.playbackSpeedPercent}%</span>
+              <span class="playerSpeedBpm" data-playback-speed-bpm="true">${actions.effectiveTempoBpm === null ? "-" : `${actions.effectiveTempoBpm} BPM`}</span>
+            </div>
+          </div>
         </div>
         <dl class="playerTopInfo">
           <dt>Song</dt>
@@ -296,6 +319,9 @@ export function renderProjectScreen(
   const pauseButton = container.querySelector<HTMLButtonElement>('[data-action="pause"]');
   const stopButton = container.querySelector<HTMLButtonElement>('[data-action="stop"]');
   const toggleLoopButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-loop"]');
+  const decreasePlaybackSpeedButton = container.querySelector<HTMLButtonElement>('[data-action="decrease-playback-speed"]');
+  const increasePlaybackSpeedButton = container.querySelector<HTMLButtonElement>('[data-action="increase-playback-speed"]');
+  const playbackSpeedSlider = container.querySelector<HTMLInputElement>('[data-action="set-playback-speed"]');
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
   const openDebugWindowButton = container.querySelector<HTMLButtonElement>('[data-action="open-debug-window"]');
   const leftControls = container.querySelectorAll<HTMLElement>('[data-action="left-controls"]');
@@ -444,6 +470,11 @@ export function renderProjectScreen(
   pauseButton?.addEventListener("click", actions.onPause);
   stopButton?.addEventListener("click", actions.onStop);
   toggleLoopButton?.addEventListener("click", actions.onToggleLoop);
+  decreasePlaybackSpeedButton?.addEventListener("click", actions.onDecreasePlaybackSpeed);
+  increasePlaybackSpeedButton?.addEventListener("click", actions.onIncreasePlaybackSpeed);
+  playbackSpeedSlider?.addEventListener("input", () => {
+    actions.onSetPlaybackSpeedPercent(Number(playbackSpeedSlider.value));
+  });
   backHomeButton?.addEventListener("click", actions.onBackToHome);
   openDebugWindowButton?.addEventListener("click", () => openDebugWindow(actions));
 }

@@ -649,6 +649,40 @@ select {
   flex-wrap: wrap;
 }
 
+.playerSpeedControls {
+  display: grid;
+  grid-template-columns: auto minmax(140px, 220px) auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.playerSpeedButton {
+  min-width: 34px;
+  padding: 7px 10px;
+}
+
+.playerSpeedSlider {
+  width: 100%;
+}
+
+.playerSpeedReadout {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 94px;
+}
+
+.playerSpeedPercent {
+  font-size: 12px;
+  font-weight: 700;
+  color: #dbe8ff;
+}
+
+.playerSpeedBpm {
+  font-size: 11px;
+  color: #a4b8d9;
+}
+
 .playerLoopLabel {
   font-size: 12px;
   color: #b7c7de;

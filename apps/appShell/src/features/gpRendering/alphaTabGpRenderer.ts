@@ -14,6 +14,7 @@ interface AlphaTabApi {
     display?: {
       scale?: number;
     };
+    player?: Record<string, unknown>;
   };
   updateSettings?: () => void;
   render?: () => void;
@@ -247,6 +248,7 @@ export interface GpRendererController {
   seekToBarStart: (barNumber: number) => number | null;
   resolveNearestTickInBar: (barNumber: number, progressInBar: number) => number | null;
   getBarTickRange: (barNumber: number) => { startTick: number; endTickExclusive: number | null } | null;
+  setPlaybackSpeedPercent: (speedPercent: number) => boolean;
   play: () => void;
   pause: () => void;
   stop: () => void;
@@ -651,6 +653,7 @@ export async function createGpRenderer(
   let hasLoggedPlayerStatePayloadShape = false;
   let playbackCapabilityMessage: string | null = null;
   let zoomPercent = Math.max(50, Math.min(200, initialZoomPercent));
+  let playbackSpeedPercent = 100;
   let pendingZoomPercent: number | null = null;
   let zoomRerenderInFlight = false;
   let inPlaceZoomPlaybackContext: InPlaceZoomPlaybackContext | null = null;
@@ -1033,6 +1036,72 @@ export async function createGpRenderer(
     return true;
   };
 
+  const applyPlaybackSpeedPercentToApi = (api: AlphaTabApi, nextSpeedPercent: number): boolean => {
+    const speedRatio = Math.max(0.05, nextSpeedPercent / 100);
+    const unsafeApi = api as AlphaTabApi & {
+      player?: Record<string, unknown>;
+      playbackSpeed?: number;
+      playbackRate?: number;
+      speed?: number;
+    };
+    let speedApplied = false;
+
+    if (typeof unsafeApi.playbackSpeed === "number") {
+      unsafeApi.playbackSpeed = speedRatio;
+      speedApplied = true;
+    }
+    if (typeof unsafeApi.playbackRate === "number") {
+      unsafeApi.playbackRate = speedRatio;
+      speedApplied = true;
+    }
+    if (typeof unsafeApi.speed === "number") {
+      unsafeApi.speed = speedRatio;
+      speedApplied = true;
+    }
+
+    const unsafePlayer = unsafeApi.player;
+    if (unsafePlayer) {
+      if (typeof unsafePlayer.playbackSpeed === "number") {
+        unsafePlayer.playbackSpeed = speedRatio;
+        speedApplied = true;
+      }
+      if (typeof unsafePlayer.playbackRate === "number") {
+        unsafePlayer.playbackRate = speedRatio;
+        speedApplied = true;
+      }
+      if (typeof unsafePlayer.speed === "number") {
+        unsafePlayer.speed = speedRatio;
+        speedApplied = true;
+      }
+    }
+
+    const settingsPlayer = unsafeApi.settings?.player;
+    if (settingsPlayer) {
+      if (typeof settingsPlayer.playbackSpeed === "number") {
+        settingsPlayer.playbackSpeed = speedRatio;
+        speedApplied = true;
+      }
+      if (typeof settingsPlayer.playbackRate === "number") {
+        settingsPlayer.playbackRate = speedRatio;
+        speedApplied = true;
+      }
+      if (typeof settingsPlayer.speed === "number") {
+        settingsPlayer.speed = speedRatio;
+        speedApplied = true;
+      }
+    }
+
+    if (speedApplied && typeof api.updateSettings === "function") {
+      try {
+        api.updateSettings();
+      } catch {
+        return false;
+      }
+    }
+
+    return speedApplied;
+  };
+
   const getBarTickRange = (barNumber: number): { startTick: number; endTickExclusive: number | null } | null => {
     if (!Number.isFinite(barNumber) || barNumber <= 0) {
       return null;
@@ -1342,6 +1411,7 @@ export async function createGpRenderer(
     }
 
     const api = createAlphaTabApi(container, renderPlan, zoomPercent);
+    applyPlaybackSpeedPercentToApi(api, playbackSpeedPercent);
     activeApi = api;
     const playbackAvailable = isPlaybackApiAvailable(api);
     if (!playbackAvailable) {
@@ -1672,6 +1742,14 @@ export async function createGpRenderer(
     resolveNearestTickInBar: (barNumber: number, progressInBar: number) =>
       resolveNearestTickInBarForNavigation(barNumber, progressInBar),
     getBarTickRange: (barNumber: number) => getBarTickRange(barNumber),
+    setPlaybackSpeedPercent: (nextSpeedPercent: number) => {
+      const normalizedSpeedPercent = Math.max(15, Math.min(175, Math.round(nextSpeedPercent)));
+      playbackSpeedPercent = normalizedSpeedPercent;
+      if (!activeApi) {
+        return false;
+      }
+      return applyPlaybackSpeedPercentToApi(activeApi, normalizedSpeedPercent);
+    },
     play: () => {
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
         hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");

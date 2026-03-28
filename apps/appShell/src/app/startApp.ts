@@ -43,6 +43,10 @@ const MIN_TAB_ZOOM_PERCENT = 60;
 const MAX_TAB_ZOOM_PERCENT = 160;
 const TAB_ZOOM_STEP_PERCENT = 10;
 const SECTION_LABEL_VERTICAL_NUDGE_PX = 10;
+const MIN_PLAYBACK_SPEED_PERCENT = 15;
+const MAX_PLAYBACK_SPEED_PERCENT = 175;
+const DEFAULT_PLAYBACK_SPEED_PERCENT = 100;
+const PLAYBACK_SPEED_BUTTON_STEP_PERCENT = 5;
 
 interface AppState {
   currentView: AppView;
@@ -60,6 +64,7 @@ interface AppState {
   scoreTitle: string | null;
   totalBars: number | null;
   tempoBpm: number | null;
+  playbackSpeedPercent: number;
   playbackPositionLabel: string | null;
   playbackCurrentBar: number | null;
   playbackCurrentTick: number | null;
@@ -217,6 +222,38 @@ function renderPlayerFieldValue(value: string | number | null): string {
   return String(value);
 }
 
+function clampPlaybackSpeedPercent(speedPercent: number): number {
+  if (!Number.isFinite(speedPercent)) {
+    return DEFAULT_PLAYBACK_SPEED_PERCENT;
+  }
+  return Math.max(MIN_PLAYBACK_SPEED_PERCENT, Math.min(MAX_PLAYBACK_SPEED_PERCENT, Math.round(speedPercent)));
+}
+
+function formatEffectiveTempoBpm(tempoBpm: number | null, playbackSpeedPercent: number): string {
+  if (tempoBpm === null) {
+    return "-";
+  }
+  const effectiveBpm = (tempoBpm * playbackSpeedPercent) / 100;
+  return `${Number(effectiveBpm.toFixed(1))} BPM`;
+}
+
+function updatePlaybackSpeedVisual(state: AppState, rootElement: HTMLElement): void {
+  const speedPercentLabel = rootElement.querySelector<HTMLElement>("[data-playback-speed-percent='true']");
+  if (speedPercentLabel) {
+    speedPercentLabel.textContent = `${state.playbackSpeedPercent}%`;
+  }
+
+  const speedBpmLabel = rootElement.querySelector<HTMLElement>("[data-playback-speed-bpm='true']");
+  if (speedBpmLabel) {
+    speedBpmLabel.textContent = formatEffectiveTempoBpm(state.tempoBpm, state.playbackSpeedPercent);
+  }
+
+  const speedSlider = rootElement.querySelector<HTMLInputElement>("[data-action='set-playback-speed']");
+  if (speedSlider) {
+    speedSlider.value = String(state.playbackSpeedPercent);
+  }
+}
+
 function updatePlayerRuntimeFields(state: AppState, rootElement: HTMLElement): void {
   const setPlayerField = (fieldName: string, value: string): void => {
     const field = rootElement.querySelector<HTMLElement>(`[data-player-field="${fieldName}"]`);
@@ -235,6 +272,7 @@ function updatePlayerRuntimeFields(state: AppState, rootElement: HTMLElement): v
   setPlayerField("current-bar", renderPlayerFieldValue(state.playbackCurrentBar));
   setPlayerField("total-bars", renderPlayerFieldValue(state.totalBars));
   setPlayerField("tempo", state.tempoBpm === null ? "-" : `${state.tempoBpm} BPM`);
+  updatePlaybackSpeedVisual(state, rootElement);
 }
 
 function updateTrackToggleVisualState(state: AppState, rootElement: HTMLElement): void {
@@ -2004,6 +2042,7 @@ export function startApp(rootElement: HTMLElement): void {
     scoreTitle: null,
     totalBars: null,
     tempoBpm: null,
+    playbackSpeedPercent: DEFAULT_PLAYBACK_SPEED_PERCENT,
     playbackPositionLabel: null,
     playbackCurrentBar: null,
     playbackCurrentTick: null,
@@ -2151,6 +2190,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.lastClickTimestampIso = null;
           state.selectionFired = false;
           state.tabZoomPercent = DEFAULT_TAB_ZOOM_PERCENT;
+          state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
           render();
         },
       });
@@ -2215,6 +2255,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.lastClickTimestampIso = null;
             state.selectionFired = false;
             state.tabZoomPercent = DEFAULT_TAB_ZOOM_PERCENT;
+            state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
             render();
             return project.sourceFile.fileName;
           } catch (error) {
@@ -2247,6 +2288,9 @@ export function startApp(rootElement: HTMLElement): void {
         currentTick: state.playbackCurrentTick,
         totalBars: state.totalBars,
         tempoBpm: state.tempoBpm,
+        playbackSpeedPercent: state.playbackSpeedPercent,
+        effectiveTempoBpm:
+          state.tempoBpm === null ? null : Number(((state.tempoBpm * state.playbackSpeedPercent) / 100).toFixed(1)),
         playbackIsPlaying: state.playbackIsPlaying,
         loopEnabled: state.loopEnabled,
         loopStartBar: state.loopStartBar,
@@ -2456,6 +2500,25 @@ export function startApp(rootElement: HTMLElement): void {
           updateLoopHandlesVisual(state, rootElement);
           updateProjectStatusBanner(rootElement, state.projectStatusMessage);
         },
+        onDecreasePlaybackSpeed: () => {
+          state.playbackSpeedPercent = clampPlaybackSpeedPercent(
+            state.playbackSpeedPercent - PLAYBACK_SPEED_BUTTON_STEP_PERCENT,
+          );
+          state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
+          updatePlaybackSpeedVisual(state, rootElement);
+        },
+        onIncreasePlaybackSpeed: () => {
+          state.playbackSpeedPercent = clampPlaybackSpeedPercent(
+            state.playbackSpeedPercent + PLAYBACK_SPEED_BUTTON_STEP_PERCENT,
+          );
+          state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
+          updatePlaybackSpeedVisual(state, rootElement);
+        },
+        onSetPlaybackSpeedPercent: (speedPercent: number) => {
+          state.playbackSpeedPercent = clampPlaybackSpeedPercent(speedPercent);
+          state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
+          updatePlaybackSpeedVisual(state, rootElement);
+        },
       });
       setupBottomDockResize(rootElement, state);
       setupBottomDockHorizontalSync(rootElement);
@@ -2475,6 +2538,7 @@ export function startApp(rootElement: HTMLElement): void {
       updateTrackRowVisualState(state, rootElement);
       updateLoopControlsVisual(rootElement, state);
       updateLoopHandlesVisual(state, rootElement);
+      updatePlaybackSpeedVisual(state, rootElement);
 
       const project = state.currentProject;
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
@@ -2777,6 +2841,7 @@ export function startApp(rootElement: HTMLElement): void {
       }, state.tabZoomPercent)
         .then((renderer) => {
           state.gpRenderer = renderer;
+          state.gpRenderer.setPlaybackSpeedPercent(state.playbackSpeedPercent);
         })
         .catch((error: unknown) => {
           state.projectStatusMessage =
