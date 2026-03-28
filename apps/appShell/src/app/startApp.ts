@@ -1580,10 +1580,10 @@ function updateLoopHandlesVisual(state: AppState, rootElement: HTMLElement): voi
   }
 
   const existingHandles = renderHost.querySelectorAll<HTMLElement>("[data-loop-handle]");
-  const existingRegion = renderHost.querySelector<HTMLElement>("[data-loop-region='true']");
+  const existingRegionSegments = renderHost.querySelectorAll<HTMLElement>("[data-loop-region-segment='true']");
   if (!state.loopEnabled || state.loopStartBar === null || state.loopEndBar === null) {
     existingHandles.forEach((handle) => handle.remove());
-    existingRegion?.remove();
+    existingRegionSegments.forEach((segment) => segment.remove());
     return;
   }
 
@@ -1591,26 +1591,80 @@ function updateLoopHandlesVisual(state: AppState, rootElement: HTMLElement): voi
   const endAnchor = state.playbackBarAnchors.find((anchor) => anchor.barNumber === state.loopEndBar) ?? null;
   if (!startAnchor || !endAnchor) {
     existingHandles.forEach((handle) => handle.remove());
-    existingRegion?.remove();
+    existingRegionSegments.forEach((segment) => segment.remove());
     return;
   }
+
+  existingRegionSegments.forEach((segment) => segment.remove());
+
+  const orderedLoopStartBar = Math.min(state.loopStartBar, state.loopEndBar);
+  const orderedLoopEndBar = Math.max(state.loopStartBar, state.loopEndBar);
+  const orderedStartAnchor = orderedLoopStartBar === state.loopStartBar ? startAnchor : endAnchor;
+  const orderedEndAnchor = orderedLoopEndBar === state.loopEndBar ? endAnchor : startAnchor;
+  const rowsByIndex = new Map<number, { rowStartX: number; rowEndX: number; rowTop: number; rowBottom: number }>();
+  state.playbackBarAnchors.forEach((anchor) => {
+    if (anchor.rowIndex < 0) {
+      return;
+    }
+    const existing = rowsByIndex.get(anchor.rowIndex);
+    const top = anchor.y;
+    const bottom = anchor.y + anchor.height;
+    if (!existing) {
+      rowsByIndex.set(anchor.rowIndex, {
+        rowStartX: anchor.startX,
+        rowEndX: anchor.endX,
+        rowTop: top,
+        rowBottom: bottom,
+      });
+      return;
+    }
+    existing.rowStartX = Math.min(existing.rowStartX, anchor.startX);
+    existing.rowEndX = Math.max(existing.rowEndX, anchor.endX);
+    existing.rowTop = Math.min(existing.rowTop, top);
+    existing.rowBottom = Math.max(existing.rowBottom, bottom);
+  });
+
+  const segmentRowIndexes =
+    orderedStartAnchor.rowIndex >= 0 && orderedEndAnchor.rowIndex >= 0
+      ? Array.from(
+          { length: orderedEndAnchor.rowIndex - orderedStartAnchor.rowIndex + 1 },
+          (_, offset) => orderedStartAnchor.rowIndex + offset,
+        )
+      : [];
+
+  segmentRowIndexes.forEach((rowIndex, segmentIndex) => {
+    const rowBounds = rowsByIndex.get(rowIndex);
+    if (!rowBounds) {
+      return;
+    }
+
+    const isSingleRowLoop = orderedStartAnchor.rowIndex === orderedEndAnchor.rowIndex;
+    const isFirstRow = segmentIndex === 0;
+    const isLastRow = segmentIndex === segmentRowIndexes.length - 1;
+    const segmentLeft =
+      isSingleRowLoop || isFirstRow
+        ? orderedStartAnchor.startX
+        : rowBounds.rowStartX;
+    const segmentRight =
+      isSingleRowLoop || isLastRow
+        ? orderedEndAnchor.endX
+        : rowBounds.rowEndX;
+    const segmentWidth = Math.max(segmentRight - segmentLeft, 6);
+    const segmentHeight = Math.max(rowBounds.rowBottom - rowBounds.rowTop, 28);
+
+    const segment = document.createElement("div");
+    segment.dataset.loopRegionSegment = "true";
+    segment.className = "loopRegionOverlay";
+    segment.style.left = `${segmentLeft}px`;
+    segment.style.top = `${rowBounds.rowTop}px`;
+    segment.style.width = `${segmentWidth}px`;
+    segment.style.height = `${segmentHeight}px`;
+    renderHost.append(segment);
+  });
 
   const loopRowTop = Math.min(startAnchor.y, endAnchor.y);
   const loopRowBottom = Math.max(startAnchor.y + startAnchor.height, endAnchor.y + endAnchor.height);
   const loopHeight = Math.max(loopRowBottom - loopRowTop, 28);
-  const loopLeft = Math.min(startAnchor.startX, endAnchor.startX);
-  const loopRight = Math.max(startAnchor.endX, endAnchor.endX);
-
-  const loopRegion = existingRegion ?? document.createElement("div");
-  loopRegion.dataset.loopRegion = "true";
-  loopRegion.className = "loopRegionOverlay";
-  loopRegion.style.left = `${loopLeft}px`;
-  loopRegion.style.top = `${loopRowTop}px`;
-  loopRegion.style.width = `${Math.max(loopRight - loopLeft, 6)}px`;
-  loopRegion.style.height = `${loopHeight}px`;
-  if (!existingRegion) {
-    renderHost.append(loopRegion);
-  }
 
   const ensureHandle = (kind: "start" | "end", x: number): void => {
     let handle = renderHost.querySelector<HTMLElement>(`[data-loop-handle='${kind}']`);
