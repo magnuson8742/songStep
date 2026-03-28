@@ -73,7 +73,6 @@ interface AppState {
   playbackFollowTargetFound: boolean;
   playbackFollowSource: string | null;
   lastPlaybackFollowRowIndex: number | null;
-  pendingPlaybackFollowReanchor: boolean;
   playbackBarAnchorCount: number;
   playbackBarAnchorSource: string | null;
   playbackAnchorStrategyAttempts: string | null;
@@ -1265,7 +1264,6 @@ function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElem
 
   if (!isPlaybackInteractionActive(state) || state.playbackCurrentBar === null || state.playbackCurrentBar <= 0) {
     state.lastPlaybackFollowRowIndex = null;
-    state.pendingPlaybackFollowReanchor = false;
     state.playbackFollowTargetFound = false;
     state.playbackFollowSource = "inactive";
     updatePlaybackFollowDiagnostics(rootElement, false, "inactive");
@@ -1280,7 +1278,7 @@ function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElem
     return;
   }
 
-  if (state.lastPlaybackFollowRowIndex === activeAnchor.rowIndex && !state.pendingPlaybackFollowReanchor) {
+  if (state.lastPlaybackFollowRowIndex === activeAnchor.rowIndex) {
     state.playbackFollowTargetFound = true;
     state.playbackFollowSource = "row-unchanged";
     updatePlaybackFollowDiagnostics(rootElement, true, "row-unchanged");
@@ -1325,14 +1323,10 @@ function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElem
   const maxScrollTop = Math.max(0, tabViewport.scrollHeight - tabViewport.clientHeight);
   const clampedTargetScrollTop = Math.min(targetScrollTop, maxScrollTop);
   if (Math.abs(tabViewport.scrollTop - clampedTargetScrollTop) > 4) {
-    tabViewport.scrollTo({
-      top: clampedTargetScrollTop,
-      behavior: "auto",
-    });
+    tabViewport.scrollTop = clampedTargetScrollTop;
   }
 
   state.lastPlaybackFollowRowIndex = activeAnchor.rowIndex;
-  state.pendingPlaybackFollowReanchor = false;
   state.playbackFollowTargetFound = true;
   state.playbackFollowSource = "row-transition-follow";
   updatePlaybackFollowDiagnostics(rootElement, true, "row-transition-follow");
@@ -1510,12 +1504,6 @@ function applyNavigationSelection(
   tick: number | null,
   trackIndex: number,
 ): void {
-  if (isPlaybackInteractionActive(state)) {
-    clearNavigationSelectionState(state, rootElement);
-    state.manualNavigationVisualOverrideActive = false;
-    return;
-  }
-
   state.selectedNavigationBar = barNumber;
   state.selectedNavigationTick = tick;
   state.selectedNavigationTrackIndex = trackIndex;
@@ -1528,7 +1516,19 @@ function applyNavigationSelection(
 function resetPlaybackFollowBaselineAfterSeek(state: AppState): void {
   state.lastPlaybackVisualBarNumber = null;
   state.lastPlaybackFollowRowIndex = null;
-  state.pendingPlaybackFollowReanchor = true;
+}
+
+function haltPlaybackTransportAfterSeek(state: AppState, rootElement: HTMLElement): void {
+  if (!isPlaybackInteractionActive(state) || !state.gpRenderer) {
+    return;
+  }
+  state.gpRenderer.pause();
+  state.playbackTransportActive = false;
+  state.playbackIsPlaying = false;
+  state.playbackFollowTargetFound = false;
+  state.playbackFollowSource = "seek-paused";
+  updatePlaybackFollowDiagnostics(rootElement, false, "seek-paused");
+  resetPlaybackFollowBaselineAfterSeek(state);
 }
 
 function clearNavigationSelectionState(state: AppState, rootElement: HTMLElement): void {
@@ -1555,10 +1555,8 @@ function seekToBarAndApplyNavigationSelection(
     return false;
   }
 
-  if (isPlaybackInteractionActive(state)) {
-    resetPlaybackFollowBaselineAfterSeek(state);
-  }
   applyNavigationSelection(state, rootElement, barNumber, tick, trackIndex);
+  haltPlaybackTransportAfterSeek(state, rootElement);
   return true;
 }
 
@@ -1637,17 +1635,13 @@ function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): 
       if (!didSeek) {
         return;
       }
-      if (isPlaybackInteractionActive(state)) {
-        resetPlaybackFollowBaselineAfterSeek(state);
-      }
       applyNavigationSelection(state, rootElement, clickedAnchor.barNumber, targetTick, activeTrackIndex);
+      haltPlaybackTransportAfterSeek(state, rootElement);
       return;
     }
 
-    if (isPlaybackInteractionActive(state)) {
-      resetPlaybackFollowBaselineAfterSeek(state);
-    }
     applyNavigationSelection(state, rootElement, clickedAnchor.barNumber, targetTick, activeTrackIndex);
+    haltPlaybackTransportAfterSeek(state, rootElement);
   });
 }
 
@@ -1698,6 +1692,7 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
     state.pendingOverviewNavigationTick = targetTick;
     clearNavigationSelectionState(state, rootElement);
     state.manualNavigationVisualOverrideActive = true;
+    haltPlaybackTransportAfterSeek(state, rootElement);
     state.requestedTrackIndex = clickedTrackIndex;
     state.gpRenderer.selectTrack(clickedTrackIndex, targetTick);
   });
@@ -1733,7 +1728,6 @@ export function startApp(rootElement: HTMLElement): void {
     playbackFollowTargetFound: false,
     playbackFollowSource: null,
     lastPlaybackFollowRowIndex: null,
-    pendingPlaybackFollowReanchor: false,
     playbackBarAnchorCount: 0,
     playbackBarAnchorSource: null,
     playbackAnchorStrategyAttempts: null,
@@ -1837,7 +1831,6 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;
-          state.pendingPlaybackFollowReanchor = false;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
@@ -1905,7 +1898,6 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackFollowTargetFound = false;
             state.playbackFollowSource = null;
             state.lastPlaybackFollowRowIndex = null;
-            state.pendingPlaybackFollowReanchor = false;
             state.playbackBarAnchorCount = 0;
             state.playbackBarAnchorSource = null;
             state.playbackAnchorStrategyAttempts = null;
@@ -2135,7 +2127,6 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;
-          state.pendingPlaybackFollowReanchor = false;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
@@ -2208,9 +2199,6 @@ export function startApp(rootElement: HTMLElement): void {
           nudgeRenderedSectionLabels(rootElement, state);
         },
         onProgrammaticSeekConfirmed: (trackIndex, tick) => {
-          if (isPlaybackInteractionActive(state)) {
-            resetPlaybackFollowBaselineAfterSeek(state);
-          }
           if (
             state.pendingOverviewNavigationBar !== null &&
             state.pendingOverviewNavigationTrackIndex === trackIndex &&
@@ -2349,7 +2337,6 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;
-          state.pendingPlaybackFollowReanchor = false;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
@@ -2393,7 +2380,6 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;
-          state.pendingPlaybackFollowReanchor = false;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
