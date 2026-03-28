@@ -66,6 +66,7 @@ interface AppState {
   playbackCurrentBarStartTick: number | null;
   playbackCurrentBarEndTickExclusive: number | null;
   playbackIsPlaying: boolean | null;
+  playbackTransportActive: boolean;
   playerPositionPayloadShape: string | null;
   playerStatePayloadShape: string | null;
   currentBarSourcePath: string | null;
@@ -1249,6 +1250,10 @@ function updatePlaybackFollowDiagnostics(
   updateDebugField(rootElement, "playback-follow-source", followSource ?? "-");
 }
 
+function isPlaybackInteractionActive(state: AppState): boolean {
+  return state.playbackTransportActive || state.playbackIsPlaying === true;
+}
+
 function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElement): void {
   const tabViewport = rootElement.querySelector<HTMLElement>(".playerTabViewport");
   if (!tabViewport) {
@@ -1258,7 +1263,7 @@ function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElem
     return;
   }
 
-  if (state.playbackIsPlaying !== true || state.playbackCurrentBar === null || state.playbackCurrentBar <= 0) {
+  if (!isPlaybackInteractionActive(state) || state.playbackCurrentBar === null || state.playbackCurrentBar <= 0) {
     state.lastPlaybackFollowRowIndex = null;
     state.pendingPlaybackFollowReanchor = false;
     state.playbackFollowTargetFound = false;
@@ -1505,7 +1510,7 @@ function applyNavigationSelection(
   tick: number | null,
   trackIndex: number,
 ): void {
-  if (state.playbackIsPlaying === true) {
+  if (isPlaybackInteractionActive(state)) {
     clearNavigationSelectionState(state, rootElement);
     state.manualNavigationVisualOverrideActive = false;
     return;
@@ -1550,7 +1555,7 @@ function seekToBarAndApplyNavigationSelection(
     return false;
   }
 
-  if (state.playbackIsPlaying === true) {
+  if (isPlaybackInteractionActive(state)) {
     resetPlaybackFollowBaselineAfterSeek(state);
   }
   applyNavigationSelection(state, rootElement, barNumber, tick, trackIndex);
@@ -1632,14 +1637,14 @@ function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): 
       if (!didSeek) {
         return;
       }
-      if (state.playbackIsPlaying === true) {
+      if (isPlaybackInteractionActive(state)) {
         resetPlaybackFollowBaselineAfterSeek(state);
       }
       applyNavigationSelection(state, rootElement, clickedAnchor.barNumber, targetTick, activeTrackIndex);
       return;
     }
 
-    if (state.playbackIsPlaying === true) {
+    if (isPlaybackInteractionActive(state)) {
       resetPlaybackFollowBaselineAfterSeek(state);
     }
     applyNavigationSelection(state, rootElement, clickedAnchor.barNumber, targetTick, activeTrackIndex);
@@ -1721,6 +1726,7 @@ export function startApp(rootElement: HTMLElement): void {
     playbackCurrentBarStartTick: null,
     playbackCurrentBarEndTickExclusive: null,
     playbackIsPlaying: null,
+    playbackTransportActive: false,
     playerPositionPayloadShape: null,
     playerStatePayloadShape: null,
     currentBarSourcePath: null,
@@ -1824,6 +1830,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
           state.playbackIsPlaying = null;
+          state.playbackTransportActive = false;
           state.playerPositionPayloadShape = null;
           state.playerStatePayloadShape = null;
           state.currentBarSourcePath = null;
@@ -1891,6 +1898,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackCurrentBarStartTick = null;
             state.playbackCurrentBarEndTickExclusive = null;
             state.playbackIsPlaying = null;
+            state.playbackTransportActive = false;
             state.playerPositionPayloadShape = null;
             state.playerStatePayloadShape = null;
             state.currentBarSourcePath = null;
@@ -2097,6 +2105,7 @@ export function startApp(rootElement: HTMLElement): void {
           if (activeManualTarget) {
             state.gpRenderer.seekToTick(activeManualTarget.targetTick);
           }
+          state.playbackTransportActive = true;
           clearNavigationSelectionState(state, rootElement);
           state.manualNavigationVisualOverrideActive = false;
           state.gpRenderer.play();
@@ -2108,6 +2117,7 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
 
+          state.playbackTransportActive = false;
           state.gpRenderer.pause();
         },
         onStop: () => {
@@ -2121,6 +2131,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentTick = null;
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
+          state.playbackTransportActive = false;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;
@@ -2197,7 +2208,7 @@ export function startApp(rootElement: HTMLElement): void {
           nudgeRenderedSectionLabels(rootElement, state);
         },
         onProgrammaticSeekConfirmed: (trackIndex, tick) => {
-          if (state.playbackIsPlaying === true) {
+          if (isPlaybackInteractionActive(state)) {
             resetPlaybackFollowBaselineAfterSeek(state);
           }
           if (
@@ -2264,6 +2275,9 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onPlaybackRuntimeInfo: (info) => {
           state.playbackIsPlaying = info.isPlaying;
+          if (info.isPlaying === false) {
+            state.playbackTransportActive = false;
+          }
           state.playbackPositionLabel = info.positionLabel;
           state.playbackCurrentBar = info.currentBar;
           state.playbackCurrentTick = info.currentTick;
@@ -2331,6 +2345,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentTick = null;
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
+          state.playbackTransportActive = false;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;
@@ -2372,7 +2387,8 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackCurrentBar = null;
             state.playbackCurrentTick = null;
             state.playbackCurrentBarStartTick = null;
-            state.playbackCurrentBarEndTickExclusive = null;
+          state.playbackCurrentBarEndTickExclusive = null;
+          state.playbackTransportActive = false;
           }
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
@@ -2413,6 +2429,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;
           state.manualNavigationVisualOverrideActive = false;
+          state.playbackTransportActive = false;
           state.desiredTrackSwitchTick = null;
           state.desiredTrackSwitchBar = null;
           state.desiredTrackSwitchSourceTrackIndex = null;
