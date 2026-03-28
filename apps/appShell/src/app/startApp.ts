@@ -1120,7 +1120,7 @@ function rebuildPercussionPlaybackBarAnchors(
 }
 
 
-function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[] {
+function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElement): PlaybackBarAnchor[] {
   const rawBounds = state.gpRenderer?.getRenderedBarBounds() ?? [];
   if (rawBounds.length === 0) {
     state.playbackAnchorStrategyAttempts =
@@ -1192,24 +1192,6 @@ function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[]
     return [];
   }
 
-  const rowsByIndex = new Map<number, typeof representativeBars>();
-  representativeBars.forEach((bar) => {
-    const rowAnchors = rowsByIndex.get(bar.rowHint) ?? [];
-    rowAnchors.push(bar);
-    rowsByIndex.set(bar.rowHint, rowAnchors);
-  });
-  if (rowsByIndex.size <= 1) {
-    rowsByIndex.clear();
-    representativeBars.forEach((bar) => {
-      const rowAnchors = rowsByIndex.get(0) ?? [];
-      rowAnchors.push(bar);
-      rowsByIndex.set(0, rowAnchors);
-    });
-  }
-
-  const sortedRowIndexes = Array.from(rowsByIndex.keys()).sort((left, right) => left - right);
-  const normalizedAnchors: PlaybackBarAnchor[] = [];
-
   const quantile = (values: number[], ratio: number): number | null => {
     if (values.length === 0) {
       return null;
@@ -1219,36 +1201,185 @@ function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[]
     return sorted[index] ?? null;
   };
 
-  sortedRowIndexes.forEach((rowIndex) => {
-    const rowBars = (rowsByIndex.get(rowIndex) ?? []).sort((left, right) => left.representativeX - right.representativeX);
+  const renderHostRect = renderHost.getBoundingClientRect();
+  const toLocalRect = (rect: DOMRect): { left: number; right: number; top: number; bottom: number; width: number; height: number } => ({
+    left: rect.left - renderHostRect.left + renderHost.scrollLeft,
+    right: rect.right - renderHostRect.left + renderHost.scrollLeft,
+    top: rect.top - renderHostRect.top + renderHost.scrollTop,
+    bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
+    width: rect.width,
+    height: rect.height,
+  });
+
+  const horizontalSegments = [
+    ...Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line"))
+      .filter((line) => {
+        const x1 = Number(line.getAttribute("x1"));
+        const y1 = Number(line.getAttribute("y1"));
+        const x2 = Number(line.getAttribute("x2"));
+        const y2 = Number(line.getAttribute("y2"));
+        if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+          return false;
+        }
+        return Math.abs(y2 - y1) <= 1.6 && Math.abs(x2 - x1) >= 20;
+      })
+      .map((line) => toLocalRect(line.getBoundingClientRect())),
+    ...Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect"))
+      .filter((rect) => {
+        const width = Number(rect.getAttribute("width"));
+        const height = Number(rect.getAttribute("height"));
+        return Number.isFinite(width) && Number.isFinite(height) && width >= 20 && height > 0 && height <= 4;
+      })
+      .map((rect) => toLocalRect(rect.getBoundingClientRect())),
+  ];
+  const verticalSeparators = [
+    ...Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line"))
+      .filter((line) => {
+        const x1 = Number(line.getAttribute("x1"));
+        const y1 = Number(line.getAttribute("y1"));
+        const x2 = Number(line.getAttribute("x2"));
+        const y2 = Number(line.getAttribute("y2"));
+        if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+          return false;
+        }
+        return Math.abs(x2 - x1) <= 1.8 && Math.abs(y2 - y1) >= 14;
+      })
+      .map((line) => toLocalRect(line.getBoundingClientRect())),
+    ...Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect"))
+      .filter((rect) => {
+        const width = Number(rect.getAttribute("width"));
+        const height = Number(rect.getAttribute("height"));
+        return Number.isFinite(width) && Number.isFinite(height) && width <= 5 && height >= 14;
+      })
+      .map((rect) => toLocalRect(rect.getBoundingClientRect())),
+  ];
+
+  const clusterRowsFromDescriptors = (): Array<{ rowKey: number; bars: typeof representativeBars; yCenter: number }> => {
+    const rows: Array<{ rowKey: number; bars: typeof representativeBars; yCenter: number; yMin: number; yMax: number }> = [];
+    representativeBars.forEach((bar) => {
+      const existingRowIndex = rows.findIndex((row) => Math.abs(row.yCenter - bar.representativeY) <= 30);
+      if (existingRowIndex >= 0) {
+        const row = rows[existingRowIndex];
+        if (!row) {
+          return;
+        }
+        row.bars.push(bar);
+        row.yMin = Math.min(row.yMin, bar.rawTop);
+        row.yMax = Math.max(row.yMax, bar.rawBottom);
+        row.yCenter = (row.yMin + row.yMax) / 2;
+        return;
+      }
+      rows.push({
+        rowKey: rows.length,
+        bars: [bar],
+        yCenter: bar.representativeY,
+        yMin: bar.rawTop,
+        yMax: bar.rawBottom,
+      });
+    });
+    return rows
+      .sort((left, right) => left.yCenter - right.yCenter)
+      .map((row, rowIndex) => ({ rowKey: rowIndex, bars: row.bars, yCenter: row.yCenter }));
+  };
+
+  const rowsByHint = new Map<number, typeof representativeBars>();
+  representativeBars.forEach((bar) => {
+    const rowBars = rowsByHint.get(bar.rowHint) ?? [];
+    rowBars.push(bar);
+    rowsByHint.set(bar.rowHint, rowBars);
+  });
+  const hintedRows = Array.from(rowsByHint.entries())
+    .map(([rowKey, bars]) => ({
+      rowKey,
+      bars: [...bars].sort((left, right) => left.representativeX - right.representativeX),
+      yCenter: quantile(bars.map((bar) => bar.representativeY), 0.5) ?? 0,
+    }))
+    .sort((left, right) => left.yCenter - right.yCenter);
+  const rowGroups =
+    hintedRows.length >= 2 || representativeBars.length <= 4
+      ? hintedRows.map((row, rowIndex) => ({ ...row, rowKey: rowIndex }))
+      : clusterRowsFromDescriptors();
+
+  const normalizedAnchors: PlaybackBarAnchor[] = [];
+  let usedSeparatorCount = 0;
+
+  rowGroups.forEach((row, rowIndex) => {
+    const rowBars = [...row.bars].sort((left, right) => left.representativeX - right.representativeX);
     if (rowBars.length === 0) {
       return;
     }
+    const rowRepXs = rowBars.map((bar) => bar.representativeX);
+    const rowYCenter = quantile(rowBars.map((bar) => bar.representativeY), 0.5) ?? row.yCenter;
 
-    const rowStarts = rowBars.map((bar) => bar.representativeX);
-    const rowLeft = quantile(rowStarts, 0.05) ?? rowStarts[0] ?? 0;
-    const rowRight = quantile(rowStarts, 0.95) ?? rowStarts[rowStarts.length - 1] ?? rowLeft + 24;
-    const tops = rowBars.map((bar) => bar.rawTop);
-    const bottoms = rowBars.map((bar) => bar.rawBottom);
-    const rowTop = quantile(tops, 0.4) ?? (tops[0] ?? 0);
-    const rowBottomCandidate = quantile(bottoms, 0.75) ?? (rowTop + 24);
-    const rowBottom = Math.max(rowBottomCandidate, rowTop + 24);
-    const rowHeight = rowBottom - rowTop;
+    const rowHorizontal = horizontalSegments.filter((segment) => Math.abs((segment.top + segment.bottom) / 2 - rowYCenter) <= 48);
+    const rowTopFromStructure = quantile(rowHorizontal.map((segment) => segment.top), 0.2);
+    const rowBottomFromStructure = quantile(rowHorizontal.map((segment) => segment.bottom), 0.8);
+    const rowTopFromBounds = quantile(rowBars.map((bar) => bar.rawTop), 0.4) ?? (rowYCenter - 18);
+    const rowBottomFromBounds = quantile(rowBars.map((bar) => bar.rawBottom), 0.75) ?? (rowYCenter + 18);
+    const rowTop = rowTopFromStructure ?? rowTopFromBounds;
+    const rowBottom = Math.max(rowBottomFromStructure ?? rowBottomFromBounds, rowTop + 24);
 
-    rowBars.forEach((bar, index) => {
-      const previous = rowBars[index - 1];
-      const next = rowBars[index + 1];
-      const leftBoundary =
-        previous === undefined ? rowLeft : (previous.representativeX + bar.representativeX) / 2;
-      const rightBoundary =
-        next === undefined ? Math.max(rowRight, bar.representativeX + 8) : (bar.representativeX + next.representativeX) / 2;
+    const rowSeparatorsRaw = verticalSeparators
+      .filter((segment) => segment.bottom >= rowTop - 6 && segment.top <= rowBottom + 6)
+      .map((segment) => (segment.left + segment.right) / 2)
+      .sort((left, right) => left - right);
+    const dedupedSeparators = rowSeparatorsRaw.filter((value, index) => {
+      if (index === 0) {
+        return true;
+      }
+      const previous = rowSeparatorsRaw[index - 1];
+      return previous === undefined ? true : Math.abs(value - previous) > 3;
+    });
 
+    const expectedBoundaries = rowBars.length + 1;
+    let selectedBoundaries: number[] = [];
+    if (dedupedSeparators.length >= expectedBoundaries) {
+      let bestWindow = dedupedSeparators.slice(0, expectedBoundaries);
+      let bestScore = Number.POSITIVE_INFINITY;
+      for (let start = 0; start <= dedupedSeparators.length - expectedBoundaries; start += 1) {
+        const window = dedupedSeparators.slice(start, start + expectedBoundaries);
+        const windowLeft = window[0] ?? 0;
+        const windowRight = window[window.length - 1] ?? windowLeft;
+        const spanScore = Math.abs(windowLeft - (rowRepXs[0] ?? windowLeft)) + Math.abs(windowRight - (rowRepXs[rowRepXs.length - 1] ?? windowRight));
+        if (spanScore < bestScore) {
+          bestScore = spanScore;
+          bestWindow = window;
+        }
+      }
+      selectedBoundaries = bestWindow;
+    } else {
+      const rowLeft = quantile(rowRepXs, 0.05) ?? rowRepXs[0] ?? 0;
+      const rowRight = quantile(rowRepXs, 0.95) ?? rowRepXs[rowRepXs.length - 1] ?? rowLeft + 24;
+      const fallbackBoundaries: number[] = [rowLeft];
+      for (let index = 0; index < rowBars.length - 1; index += 1) {
+        const current = rowBars[index];
+        const next = rowBars[index + 1];
+        if (!current || !next) {
+          continue;
+        }
+        fallbackBoundaries.push((current.representativeX + next.representativeX) / 2);
+      }
+      fallbackBoundaries.push(Math.max(rowRight, fallbackBoundaries[fallbackBoundaries.length - 1] ?? rowRight));
+      selectedBoundaries = fallbackBoundaries;
+    }
+
+    usedSeparatorCount += dedupedSeparators.length;
+    if (selectedBoundaries.length < expectedBoundaries) {
+      return;
+    }
+
+    rowBars.forEach((bar, barIndex) => {
+      const startX = selectedBoundaries[barIndex];
+      const endX = selectedBoundaries[barIndex + 1];
+      if (startX === undefined || endX === undefined) {
+        return;
+      }
       normalizedAnchors.push({
         barNumber: bar.barNumber,
-        startX: leftBoundary,
-        endX: Math.max(rightBoundary, leftBoundary + 8),
+        startX,
+        endX: Math.max(endX, startX + 8),
         y: rowTop,
-        height: rowHeight,
+        height: Math.max(rowBottom - rowTop, 24),
         rowIndex,
       });
     });
@@ -1270,7 +1401,7 @@ function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[]
   const normalizedContiguous = byBarOrder.every((anchor, index) => anchor.barNumber === index + 1);
   const normalizedMatchesTotal = totalBars > 0 ? byBarOrder.length === totalBars : true;
   const validationPass = normalizedContiguous && normalizedMatchesTotal && rowMonotonic && sameRowNonOverlap && positiveWidths;
-  state.playbackAnchorStrategyAttempts = `chosenSource=renderer:boundsLookup,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=${sortedRowIndexes.length},validation=${validationPass ? "pass" : "fail"},normalizedBy=row-partition`;
+  state.playbackAnchorStrategyAttempts = `chosenSource=renderer+svg-separators,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=${rowGroups.length},separatorCount=${usedSeparatorCount},validation=${validationPass ? "pass" : "fail"},normalizedBy=separator-partition`;
   if (!validationPass) {
     return [];
   }
@@ -1309,7 +1440,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     return;
   }
 
-  const rendererAnchors = resolveRendererPlaybackBarAnchors(state);
+  const rendererAnchors = resolveRendererPlaybackBarAnchors(state, renderHost);
   if (rendererAnchors.length > 0) {
     state.playbackBarAnchors = rendererAnchors;
     state.playbackBarAnchorCount = rendererAnchors.length;
