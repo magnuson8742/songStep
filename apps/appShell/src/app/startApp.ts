@@ -1123,6 +1123,7 @@ function rebuildPercussionPlaybackBarAnchors(
 function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[] {
   const rawBounds = state.gpRenderer?.getRenderedBarBounds() ?? [];
   if (rawBounds.length === 0) {
+    state.playbackAnchorStrategyAttempts = "chosenSource=renderer:boundsLookup,rawBoundsCount=0,calibrated=unknown,rowCount=0,validation=fail";
     return [];
   }
 
@@ -1181,10 +1182,79 @@ function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[]
   const contiguous = anchors.every((anchor, index) => anchor.barNumber === index + 1);
   const matchesTotal = totalBars > 0 ? anchors.length === totalBars : true;
   if (!contiguous || !matchesTotal) {
+    state.playbackAnchorStrategyAttempts = `chosenSource=renderer:boundsLookup,rawBoundsCount=${rawBounds.length},calibrated=yes,rowCount=0,validation=fail`;
     return [];
   }
 
-  return anchors;
+  const rowsByIndex = new Map<number, PlaybackBarAnchor[]>();
+  anchors.forEach((anchor) => {
+    const rowAnchors = rowsByIndex.get(anchor.rowIndex) ?? [];
+    rowAnchors.push(anchor);
+    rowsByIndex.set(anchor.rowIndex, rowAnchors);
+  });
+
+  const sortedRowIndexes = Array.from(rowsByIndex.keys()).sort((left, right) => left - right);
+  const normalizedAnchors: PlaybackBarAnchor[] = [];
+
+  sortedRowIndexes.forEach((rowIndex) => {
+    const rowAnchors = (rowsByIndex.get(rowIndex) ?? []).sort((left, right) => left.startX - right.startX);
+    if (rowAnchors.length === 0) {
+      return;
+    }
+
+    const tops = rowAnchors.map((anchor) => anchor.y).sort((left, right) => left - right);
+    const bottoms = rowAnchors.map((anchor) => anchor.y + anchor.height).sort((left, right) => left - right);
+    const topQuantileIndex = Math.min(tops.length - 1, Math.floor((tops.length - 1) * 0.35));
+    const bottomQuantileIndex = Math.min(bottoms.length - 1, Math.floor((bottoms.length - 1) * 0.75));
+    const conservativeTop = tops[topQuantileIndex] ?? rowAnchors[0]?.y ?? 0;
+    const conservativeBottom = bottoms[bottomQuantileIndex] ?? rowAnchors[0]?.y ?? conservativeTop + 24;
+    const rowTop = Math.min(conservativeTop, conservativeBottom - 24);
+    const rowHeight = Math.max(24, conservativeBottom - rowTop);
+
+    const rowLeft = rowAnchors[0]?.startX ?? 0;
+    const rowRight = rowAnchors[rowAnchors.length - 1]?.endX ?? rowLeft + 24;
+    const centerXByIndex = rowAnchors.map((anchor) => (anchor.startX + anchor.endX) / 2);
+
+    rowAnchors.forEach((anchor, index) => {
+      const previousCenter = centerXByIndex[index - 1];
+      const nextCenter = centerXByIndex[index + 1];
+      const currentCenter = centerXByIndex[index] ?? (anchor.startX + anchor.endX) / 2;
+      const midpointLeft = previousCenter === undefined ? rowLeft : (previousCenter + currentCenter) / 2;
+      const midpointRight = nextCenter === undefined ? rowRight : (currentCenter + nextCenter) / 2;
+      const normalizedStartX = index === 0 ? Math.min(anchor.startX, midpointLeft) : midpointLeft;
+      const normalizedEndX = index === rowAnchors.length - 1 ? Math.max(anchor.endX, midpointRight) : midpointRight;
+
+      normalizedAnchors.push({
+        barNumber: anchor.barNumber,
+        startX: Math.min(normalizedStartX, normalizedEndX - 8),
+        endX: Math.max(normalizedEndX, normalizedStartX + 8),
+        y: rowTop,
+        height: rowHeight,
+        rowIndex,
+      });
+    });
+  });
+
+  const sortedNormalizedAnchors = normalizedAnchors.sort((left, right) => left.barNumber - right.barNumber);
+  const hasOverlap = sortedNormalizedAnchors.some((anchor, index) => {
+    const nextAnchor = sortedNormalizedAnchors[index + 1];
+    if (!nextAnchor) {
+      return false;
+    }
+    if (nextAnchor.rowIndex !== anchor.rowIndex) {
+      return false;
+    }
+    return anchor.endX > nextAnchor.startX + 1;
+  });
+  const normalizedContiguous = sortedNormalizedAnchors.every((anchor, index) => anchor.barNumber === index + 1);
+  const normalizedMatchesTotal = totalBars > 0 ? sortedNormalizedAnchors.length === totalBars : true;
+  const validationPass = normalizedContiguous && normalizedMatchesTotal && !hasOverlap;
+  state.playbackAnchorStrategyAttempts = `chosenSource=renderer:boundsLookup,rawBoundsCount=${rawBounds.length},calibrated=yes,rowCount=${sortedRowIndexes.length},validation=${validationPass ? "pass" : "fail"}`;
+  if (!validationPass) {
+    return [];
+  }
+
+  return sortedNormalizedAnchors;
 }
 function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): void {
   if (!ENABLE_CUSTOM_PLAYHEAD) {
@@ -1223,11 +1293,14 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     state.playbackBarAnchors = rendererAnchors;
     state.playbackBarAnchorCount = rendererAnchors.length;
     state.playbackBarAnchorSource = "renderer:boundsLookup";
-    state.playbackAnchorStrategyAttempts = `renderer:boundsLookup => ${rendererAnchors.length}`;
     updateRenderHostDomDiagnostics(state, rootElement, renderHost);
     updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
     updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
-    updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+    updateDebugField(
+      rootElement,
+      "playback-anchor-strategy-attempts",
+      state.playbackAnchorStrategyAttempts ?? `chosenSource=renderer:boundsLookup,rawBoundsCount=${rendererAnchors.length}`,
+    );
     return;
   }
 

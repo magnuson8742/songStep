@@ -1177,8 +1177,64 @@ export async function createGpRenderer(
       });
     });
 
+    const renderSurfaceSvg = container.querySelector<SVGSVGElement>("svg");
+    const renderHostRect = container.getBoundingClientRect();
+    const svgRect = renderSurfaceSvg?.getBoundingClientRect() ?? null;
+    const svgOffsetX = svgRect ? svgRect.left - renderHostRect.left + container.scrollLeft : 0;
+    const svgOffsetY = svgRect ? svgRect.top - renderHostRect.top + container.scrollTop : 0;
+    const viewBox = renderSurfaceSvg?.viewBox?.baseVal ?? null;
+    const hasViewBox = !!viewBox && viewBox.width > 0 && viewBox.height > 0;
+    const scaleX = hasViewBox && svgRect ? svgRect.width / viewBox.width : 1;
+    const scaleY = hasViewBox && svgRect ? svgRect.height / viewBox.height : 1;
+
+    const maxRawEndX = candidates.reduce((maxValue, item) => Math.max(maxValue, item.endX), 0);
+    const maxRawEndY = candidates.reduce((maxValue, item) => Math.max(maxValue, item.y + item.height), 0);
+    const looksLikeViewBoxCoordinates =
+      !!svgRect &&
+      !!viewBox &&
+      maxRawEndX <= viewBox.width * 1.2 &&
+      maxRawEndY <= viewBox.height * 1.2 &&
+      (Math.abs(viewBox.width - svgRect.width) > 6 || Math.abs(viewBox.height - svgRect.height) > 6);
+    const looksLikeSvgPixelCoordinates =
+      !!svgRect &&
+      maxRawEndX <= svgRect.width * 1.2 &&
+      maxRawEndY <= svgRect.height * 1.2 &&
+      !looksLikeViewBoxCoordinates;
+
+    const calibratedCandidates = candidates.map((candidate) => {
+      if (!svgRect) {
+        return candidate;
+      }
+
+      if (looksLikeViewBoxCoordinates && viewBox) {
+        const calibratedStartX = svgOffsetX + (candidate.startX - viewBox.x) * scaleX;
+        const calibratedEndX = svgOffsetX + (candidate.endX - viewBox.x) * scaleX;
+        const calibratedY = svgOffsetY + (candidate.y - viewBox.y) * scaleY;
+        const calibratedHeight = candidate.height * scaleY;
+        return {
+          barNumber: candidate.barNumber,
+          startX: calibratedStartX,
+          endX: calibratedEndX,
+          y: calibratedY,
+          height: calibratedHeight,
+        };
+      }
+
+      if (looksLikeSvgPixelCoordinates) {
+        return {
+          barNumber: candidate.barNumber,
+          startX: svgOffsetX + candidate.startX,
+          endX: svgOffsetX + candidate.endX,
+          y: svgOffsetY + candidate.y,
+          height: candidate.height,
+        };
+      }
+
+      return candidate;
+    });
+
     const byBar = new Map<number, { startX: number; endX: number; y: number; height: number }>();
-    candidates.forEach((candidate) => {
+    calibratedCandidates.forEach((candidate) => {
       const existing = byBar.get(candidate.barNumber);
       if (!existing) {
         byBar.set(candidate.barNumber, {
