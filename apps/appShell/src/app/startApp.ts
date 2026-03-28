@@ -867,6 +867,164 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
 
   if (isPercussionDefaultLayout) {
     const renderHostRect = renderHost.getBoundingClientRect();
+    const verticalLineCandidates = Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line"))
+      .map((line) => {
+        const x1 = Number(line.getAttribute("x1"));
+        const y1 = Number(line.getAttribute("y1"));
+        const x2 = Number(line.getAttribute("x2"));
+        const y2 = Number(line.getAttribute("y2"));
+        if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+          return null;
+        }
+        const verticalDelta = Math.abs(y2 - y1);
+        const horizontalDelta = Math.abs(x2 - x1);
+        if (verticalDelta < 24 || horizontalDelta > 1.4) {
+          return null;
+        }
+        const rect = line.getBoundingClientRect();
+        return {
+          x: rect.left - renderHostRect.left + renderHost.scrollLeft,
+          top: rect.top - renderHostRect.top + renderHost.scrollTop,
+          bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
+          height: rect.height,
+        };
+      })
+      .filter((candidate): candidate is { x: number; top: number; bottom: number; height: number } => candidate !== null);
+    const verticalRectCandidates = Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect"))
+      .map((rect) => {
+        const width = Number(rect.getAttribute("width"));
+        const height = Number(rect.getAttribute("height"));
+        if (!Number.isFinite(width) || !Number.isFinite(height)) {
+          return null;
+        }
+        if (width <= 0 || width > 4 || height < 24) {
+          return null;
+        }
+        const candidateRect = rect.getBoundingClientRect();
+        return {
+          x: candidateRect.left - renderHostRect.left + renderHost.scrollLeft,
+          top: candidateRect.top - renderHostRect.top + renderHost.scrollTop,
+          bottom: candidateRect.bottom - renderHostRect.top + renderHost.scrollTop,
+          height: candidateRect.height,
+        };
+      })
+      .filter((candidate): candidate is { x: number; top: number; bottom: number; height: number } => candidate !== null);
+    const verticalCandidates = [...verticalLineCandidates, ...verticalRectCandidates];
+
+    const horizontalLineCandidates = Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line"))
+      .map((line) => {
+        const x1 = Number(line.getAttribute("x1"));
+        const y1 = Number(line.getAttribute("y1"));
+        const x2 = Number(line.getAttribute("x2"));
+        const y2 = Number(line.getAttribute("y2"));
+        if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+          return null;
+        }
+        const horizontalSpan = Math.abs(x2 - x1);
+        const verticalDelta = Math.abs(y2 - y1);
+        if (horizontalSpan < 48 || verticalDelta > 1.4) {
+          return null;
+        }
+        const rect = line.getBoundingClientRect();
+        return {
+          top: rect.top - renderHostRect.top + renderHost.scrollTop,
+          bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
+        };
+      })
+      .filter((candidate): candidate is { top: number; bottom: number } => candidate !== null);
+    const horizontalRectCandidates = Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect"))
+      .map((rect) => {
+        const width = Number(rect.getAttribute("width"));
+        const height = Number(rect.getAttribute("height"));
+        if (!Number.isFinite(width) || !Number.isFinite(height)) {
+          return null;
+        }
+        if (width < 48 || height <= 0 || height > 4) {
+          return null;
+        }
+        const candidateRect = rect.getBoundingClientRect();
+        return {
+          top: candidateRect.top - renderHostRect.top + renderHost.scrollTop,
+          bottom: candidateRect.bottom - renderHostRect.top + renderHost.scrollTop,
+        };
+      })
+      .filter((candidate): candidate is { top: number; bottom: number } => candidate !== null);
+
+    const rowBands: Array<{ yMin: number; yMax: number; yCenter: number }> = [];
+    [...horizontalLineCandidates, ...horizontalRectCandidates].forEach((candidate) => {
+      const yCenter = (candidate.top + candidate.bottom) / 2;
+      const existingRowIndex = rowBands.findIndex((row) => Math.abs(row.yCenter - yCenter) <= 10);
+      if (existingRowIndex >= 0) {
+        const row = rowBands[existingRowIndex] as { yMin: number; yMax: number; yCenter: number };
+        row.yMin = Math.min(row.yMin, candidate.top);
+        row.yMax = Math.max(row.yMax, candidate.bottom);
+        row.yCenter = (row.yMin + row.yMax) / 2;
+      } else {
+        rowBands.push({ yMin: candidate.top, yMax: candidate.bottom, yCenter });
+      }
+    });
+
+    const percussionBarlineAnchors: PlaybackBarAnchor[] = [];
+    rowBands
+      .sort((left, right) => left.yCenter - right.yCenter)
+      .forEach((row, rowIndex) => {
+        const rowHeight = Math.max(row.yMax - row.yMin, 18);
+        const rowBoundaries = verticalCandidates
+          .filter((candidate) => {
+            const overlapTop = Math.max(candidate.top, row.yMin - 6);
+            const overlapBottom = Math.min(candidate.bottom, row.yMax + 6);
+            const overlapHeight = Math.max(overlapBottom - overlapTop, 0);
+            return overlapHeight >= rowHeight * 0.6 || candidate.height >= rowHeight * 0.8;
+          })
+          .map((candidate) => candidate.x)
+          .sort((left, right) => left - right);
+        if (rowBoundaries.length < 2) {
+          return;
+        }
+
+        const collapsedBoundaries: number[] = [];
+        rowBoundaries.forEach((boundaryX) => {
+          const previous = collapsedBoundaries[collapsedBoundaries.length - 1];
+          if (previous === undefined || Math.abs(boundaryX - previous) > 4) {
+            collapsedBoundaries.push(boundaryX);
+          } else {
+            collapsedBoundaries[collapsedBoundaries.length - 1] = (previous + boundaryX) / 2;
+          }
+        });
+
+        for (let index = 0; index < collapsedBoundaries.length - 1; index += 1) {
+          const startX = collapsedBoundaries[index] as number;
+          const endX = collapsedBoundaries[index + 1] as number;
+          if (endX <= startX + 6) {
+            continue;
+          }
+          percussionBarlineAnchors.push({
+            barNumber: percussionBarlineAnchors.length + 1,
+            startX,
+            endX,
+            rowIndex,
+            y: row.yMin,
+            height: Math.max(row.yMax - row.yMin, 28),
+          });
+        }
+      });
+
+    const matchesTotalBars = totalBars > 0 ? percussionBarlineAnchors.length === totalBars : true;
+    const validBarlines = percussionBarlineAnchors.every((anchor, index) => anchor.barNumber === index + 1);
+    if (percussionBarlineAnchors.length > 0 && matchesTotalBars && validBarlines) {
+      state.playbackBarAnchors = percussionBarlineAnchors;
+      state.playbackBarAnchorCount = percussionBarlineAnchors.length;
+      state.playbackBarAnchorSource = "percussion:barline-boundaries";
+      state.playbackAnchorStrategyAttempts = `strategy=percussion-barlines | verticalCandidates=${verticalCandidates.length},collapsedBoundaries=${percussionBarlineAnchors.length + rowBands.length},normalizedBars=${percussionBarlineAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${matchesTotalBars ? "yes" : "no"},validation=pass`;
+      updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
+      updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
+      updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+      return;
+    }
+    strategyAttempts.push(
+      `strategy=percussion-barlines,verticalCandidates=${verticalCandidates.length},normalizedBars=${percussionBarlineAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${matchesTotalBars ? "yes" : "no"},validation=fail`,
+    );
+
     const measureNumberMarkers = Array.from(renderHost.querySelectorAll<SVGTextElement>("svg text"))
       .map((textNode) => {
         const rawText = textNode.textContent?.trim() ?? "";
