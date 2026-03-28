@@ -938,37 +938,64 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     }
 
     if (strategy.source === "dom:[data-bar-index]") {
-      const anchorsByBarNumber = new Map<number, { x: number; y: number; height: number; right: number }>();
+      const glyphsByBarNumber = new Map<number, Array<{ left: number; right: number; top: number; bottom: number }>>();
       rawAnchors.forEach((anchor) => {
         if (!anchor.barNumber || anchor.barNumber <= 0) {
           return;
         }
-        const existing = anchorsByBarNumber.get(anchor.barNumber);
-        if (!existing) {
-          anchorsByBarNumber.set(anchor.barNumber, {
-            x: anchor.x,
-            y: anchor.y,
-            height: anchor.height,
-            right: anchor.right,
-          });
-          return;
-        }
-        existing.x = Math.min(existing.x, anchor.x);
-        existing.y = Math.min(existing.y, anchor.y);
-        existing.height = Math.max(existing.height, anchor.height);
-        existing.right = Math.max(existing.right, anchor.right);
+        const glyphs = glyphsByBarNumber.get(anchor.barNumber) ?? [];
+        glyphs.push({
+          left: anchor.x,
+          right: anchor.right,
+          top: anchor.y,
+          bottom: anchor.y + anchor.height,
+        });
+        glyphsByBarNumber.set(anchor.barNumber, glyphs);
       });
 
-      const barAnchors = Array.from(anchorsByBarNumber.entries())
-        .map(([barNumber, anchor]) => ({ barNumber, ...anchor }))
+      const barRepresentatives = Array.from(glyphsByBarNumber.entries())
+        .map(([barNumber, glyphs]) => {
+          const sortedTops = glyphs.map((glyph) => glyph.top).sort((left, right) => left - right);
+          const medianTop =
+            sortedTops.length > 0 ? sortedTops[Math.floor(sortedTops.length / 2)] : glyphs[0]?.top ?? 0;
+          const left = glyphs.reduce((value, glyph) => Math.min(value, glyph.left), Number.POSITIVE_INFINITY);
+          const right = glyphs.reduce((value, glyph) => Math.max(value, glyph.right), Number.NEGATIVE_INFINITY);
+          const top = glyphs.reduce((value, glyph) => Math.min(value, glyph.top), Number.POSITIVE_INFINITY);
+          const bottom = glyphs.reduce((value, glyph) => Math.max(value, glyph.bottom), Number.NEGATIVE_INFINITY);
+          const width = Math.max(right - left, 12);
+          return {
+            barNumber,
+            left,
+            right,
+            centerX: left + width / 2,
+            representativeY: medianTop,
+            top,
+            bottom,
+          };
+        })
         .sort((left, right) => left.barNumber - right.barNumber);
-      const limitedBarAnchors = totalBars > 0 ? barAnchors.filter((anchor) => anchor.barNumber <= totalBars) : barAnchors;
-      if (limitedBarAnchors.length > 0) {
-        const rowTolerance = 14;
-        const rowSummaries: Array<{ yCenter: number; yMin: number; yMax: number; rowStartX: number; rowEndX: number; barNumbers: number[] }> = [];
+      const limitedBars =
+        totalBars > 0 ? barRepresentatives.filter((bar) => bar.barNumber <= totalBars) : barRepresentatives;
+      if (limitedBars.length > 0) {
+        const rowTolerance = 22;
+        const rowSummaries: Array<{
+          yCenter: number;
+          yMin: number;
+          yMax: number;
+          rowStartX: number;
+          rowEndX: number;
+          bars: Array<{
+            barNumber: number;
+            left: number;
+            right: number;
+            centerX: number;
+            top: number;
+            bottom: number;
+          }>;
+        }> = [];
         const rowIndexByBarNumber = new Map<number, number>();
-        limitedBarAnchors.forEach((anchor) => {
-          const rowIndex = rowSummaries.findIndex((row) => Math.abs(row.yCenter - anchor.y) <= rowTolerance);
+        limitedBars.forEach((bar) => {
+          const rowIndex = rowSummaries.findIndex((row) => Math.abs(row.yCenter - bar.representativeY) <= rowTolerance);
           if (rowIndex >= 0) {
             const row = rowSummaries[rowIndex] as {
               yCenter: number;
@@ -976,51 +1003,87 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
               yMax: number;
               rowStartX: number;
               rowEndX: number;
-              barNumbers: number[];
+              bars: Array<{
+                barNumber: number;
+                left: number;
+                right: number;
+                centerX: number;
+                top: number;
+                bottom: number;
+              }>;
             };
-            row.yMin = Math.min(row.yMin, anchor.y);
-            row.yMax = Math.max(row.yMax, anchor.y + anchor.height);
+            row.yMin = Math.min(row.yMin, bar.top);
+            row.yMax = Math.max(row.yMax, bar.bottom);
             row.yCenter = (row.yMin + row.yMax) / 2;
-            row.rowStartX = Math.min(row.rowStartX, anchor.x);
-            row.rowEndX = Math.max(row.rowEndX, anchor.right);
-            row.barNumbers.push(anchor.barNumber);
-            rowIndexByBarNumber.set(anchor.barNumber, rowIndex);
+            row.rowStartX = Math.min(row.rowStartX, bar.left);
+            row.rowEndX = Math.max(row.rowEndX, bar.right);
+            row.bars.push({
+              barNumber: bar.barNumber,
+              left: bar.left,
+              right: bar.right,
+              centerX: bar.centerX,
+              top: bar.top,
+              bottom: bar.bottom,
+            });
+            rowIndexByBarNumber.set(bar.barNumber, rowIndex);
             return;
           }
 
           rowSummaries.push({
-            yCenter: anchor.y,
-            yMin: anchor.y,
-            yMax: anchor.y + anchor.height,
-            rowStartX: anchor.x,
-            rowEndX: anchor.right,
-            barNumbers: [anchor.barNumber],
+            yCenter: bar.representativeY,
+            yMin: bar.top,
+            yMax: bar.bottom,
+            rowStartX: bar.left,
+            rowEndX: bar.right,
+            bars: [
+              {
+                barNumber: bar.barNumber,
+                left: bar.left,
+                right: bar.right,
+                centerX: bar.centerX,
+                top: bar.top,
+                bottom: bar.bottom,
+              },
+            ],
           });
-          rowIndexByBarNumber.set(anchor.barNumber, rowSummaries.length - 1);
+          rowIndexByBarNumber.set(bar.barNumber, rowSummaries.length - 1);
         });
 
-        state.playbackBarAnchors = limitedBarAnchors.map((anchor, index) => {
-          const nextAnchor = limitedBarAnchors[index + 1];
-          const rowIndex = rowIndexByBarNumber.get(anchor.barNumber) ?? -1;
-          const row = rowIndex >= 0 ? rowSummaries[rowIndex] : null;
-          const nextSameRow = nextAnchor && rowIndexByBarNumber.get(nextAnchor.barNumber) === rowIndex ? nextAnchor : null;
-          const endX = nextSameRow
-            ? Math.max(anchor.x + 12, nextSameRow.x - 2)
-            : Math.max(anchor.x + 12, row ? row.rowEndX - 2 : anchor.right);
-          return {
-            barNumber: anchor.barNumber,
-            startX: anchor.x,
-            endX,
-            rowIndex,
-            y: row ? row.yMin : anchor.y,
-            height: row ? Math.max(row.yMax - row.yMin, 28) : anchor.height,
-          };
+        const normalizedAnchors: PlaybackBarAnchor[] = [];
+        rowSummaries.forEach((row, rowIndex) => {
+          const sortedRowBars = [...row.bars].sort((left, right) => left.left - right.left);
+          if (sortedRowBars.length === 0) {
+            return;
+          }
+          const rowStart = Math.min(row.rowStartX - 6, sortedRowBars[0]?.left ?? row.rowStartX);
+          const rowEnd = Math.max(row.rowEndX + 6, sortedRowBars[sortedRowBars.length - 1]?.right ?? row.rowEndX);
+
+          sortedRowBars.forEach((bar, position) => {
+            const previousBar = sortedRowBars[position - 1];
+            const nextBar = sortedRowBars[position + 1];
+            const startBoundary =
+              previousBar === undefined ? rowStart : (previousBar.centerX + bar.centerX) / 2;
+            const endBoundary =
+              nextBar === undefined ? rowEnd : (bar.centerX + nextBar.centerX) / 2;
+            const startX = Math.min(startBoundary, endBoundary - 12);
+            const endX = Math.max(endBoundary, startBoundary + 12);
+            normalizedAnchors.push({
+              barNumber: bar.barNumber,
+              startX,
+              endX,
+              rowIndex,
+              y: row.yMin,
+              height: Math.max(row.yMax - row.yMin, 28),
+            });
+          });
         });
+        state.playbackBarAnchors = normalizedAnchors.sort((left, right) => left.barNumber - right.barNumber);
         state.playbackBarAnchorCount = state.playbackBarAnchors.length;
         state.playbackBarAnchorSource = strategy.source;
         const firstBar = state.playbackBarAnchors[0]?.barNumber ?? null;
         const lastBar = state.playbackBarAnchors[state.playbackBarAnchors.length - 1]?.barNumber ?? null;
-        state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | diag:indexed=${limitedBarAnchors.length},firstBar=${firstBar ?? "-"},lastBar=${lastBar ?? "-"},rows=${rowSummaries.length},totalBars=${totalBars > 0 ? totalBars : "-"}`;
+        const barsMatchTotal = totalBars > 0 ? state.playbackBarAnchors.length === totalBars : null;
+        state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | diag:normalizedBars=${state.playbackBarAnchors.length},firstBar=${firstBar ?? "-"},lastBar=${lastBar ?? "-"},rows=${rowSummaries.length},matchesTotal=${barsMatchTotal === null ? "-" : barsMatchTotal ? "yes" : "no"},totalBars=${totalBars > 0 ? totalBars : "-"}`;
         updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
         updateDebugField(rootElement, "playback-bar-anchor-source", strategy.source);
         updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
