@@ -71,6 +71,7 @@ interface AppState {
   currentBarSourcePath: string | null;
   playbackFollowTargetFound: boolean;
   playbackFollowSource: string | null;
+  lastPlaybackFollowRowIndex: number | null;
   playbackBarAnchorCount: number;
   playbackBarAnchorSource: string | null;
   playbackAnchorStrategyAttempts: string | null;
@@ -1248,9 +1249,85 @@ function updatePlaybackFollowDiagnostics(
 }
 
 function updatePlaybackFollowInRenderHost(state: AppState, rootElement: HTMLElement): void {
-  state.playbackFollowTargetFound = false;
-  state.playbackFollowSource = "disabled";
-  updatePlaybackFollowDiagnostics(rootElement, false, "disabled");
+  const tabViewport = rootElement.querySelector<HTMLElement>(".playerTabViewport");
+  if (!tabViewport) {
+    state.playbackFollowTargetFound = false;
+    state.playbackFollowSource = "missing-viewport";
+    updatePlaybackFollowDiagnostics(rootElement, false, "missing-viewport");
+    return;
+  }
+
+  if (state.playbackIsPlaying !== true || state.playbackCurrentBar === null || state.playbackCurrentBar <= 0) {
+    state.lastPlaybackFollowRowIndex = null;
+    state.playbackFollowTargetFound = false;
+    state.playbackFollowSource = "inactive";
+    updatePlaybackFollowDiagnostics(rootElement, false, "inactive");
+    return;
+  }
+
+  const activeAnchor = state.playbackBarAnchors.find((anchor) => anchor.barNumber === state.playbackCurrentBar) ?? null;
+  if (!activeAnchor || activeAnchor.rowIndex < 0) {
+    state.playbackFollowTargetFound = false;
+    state.playbackFollowSource = "missing-active-row";
+    updatePlaybackFollowDiagnostics(rootElement, false, "missing-active-row");
+    return;
+  }
+
+  if (state.lastPlaybackFollowRowIndex === activeAnchor.rowIndex) {
+    state.playbackFollowTargetFound = true;
+    state.playbackFollowSource = "row-unchanged";
+    updatePlaybackFollowDiagnostics(rootElement, true, "row-unchanged");
+    return;
+  }
+
+  const rowsByIndex = new Map<number, { minY: number; maxY: number }>();
+  state.playbackBarAnchors.forEach((anchor) => {
+    if (anchor.rowIndex < 0) {
+      return;
+    }
+    const existingRow = rowsByIndex.get(anchor.rowIndex);
+    if (!existingRow) {
+      rowsByIndex.set(anchor.rowIndex, {
+        minY: anchor.y,
+        maxY: anchor.y + anchor.height,
+      });
+      return;
+    }
+    existingRow.minY = Math.min(existingRow.minY, anchor.y);
+    existingRow.maxY = Math.max(existingRow.maxY, anchor.y + anchor.height);
+  });
+
+  const orderedRows = Array.from(rowsByIndex.entries())
+    .sort((left, right) => left[1].minY - right[1].minY)
+    .map(([rowIndex, bounds]) => ({
+      rowIndex,
+      minY: bounds.minY,
+      maxY: bounds.maxY,
+    }));
+  const activeRowOrderIndex = orderedRows.findIndex((row) => row.rowIndex === activeAnchor.rowIndex);
+  if (activeRowOrderIndex < 0) {
+    state.playbackFollowTargetFound = false;
+    state.playbackFollowSource = "row-order-missing";
+    updatePlaybackFollowDiagnostics(rootElement, false, "row-order-missing");
+    return;
+  }
+
+  const targetTopRowOrderIndex = Math.max(0, activeRowOrderIndex - 1);
+  const targetTopRow = orderedRows[targetTopRowOrderIndex];
+  const targetScrollTop = Math.max(0, targetTopRow.minY - 8);
+  const maxScrollTop = Math.max(0, tabViewport.scrollHeight - tabViewport.clientHeight);
+  const clampedTargetScrollTop = Math.min(targetScrollTop, maxScrollTop);
+  if (Math.abs(tabViewport.scrollTop - clampedTargetScrollTop) > 4) {
+    tabViewport.scrollTo({
+      top: clampedTargetScrollTop,
+      behavior: "auto",
+    });
+  }
+
+  state.lastPlaybackFollowRowIndex = activeAnchor.rowIndex;
+  state.playbackFollowTargetFound = true;
+  state.playbackFollowSource = "row-transition-follow";
+  updatePlaybackFollowDiagnostics(rootElement, true, "row-transition-follow");
 }
 
 function updateProjectStatusBanner(rootElement: HTMLElement, message: string): void {
@@ -1625,6 +1702,7 @@ export function startApp(rootElement: HTMLElement): void {
     currentBarSourcePath: null,
     playbackFollowTargetFound: false,
     playbackFollowSource: null,
+    lastPlaybackFollowRowIndex: null,
     playbackBarAnchorCount: 0,
     playbackBarAnchorSource: null,
     playbackAnchorStrategyAttempts: null,
@@ -1726,6 +1804,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentBarSourcePath = null;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
+          state.lastPlaybackFollowRowIndex = null;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
@@ -1791,6 +1870,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.currentBarSourcePath = null;
             state.playbackFollowTargetFound = false;
             state.playbackFollowSource = null;
+            state.lastPlaybackFollowRowIndex = null;
             state.playbackBarAnchorCount = 0;
             state.playbackBarAnchorSource = null;
             state.playbackAnchorStrategyAttempts = null;
@@ -2016,6 +2096,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentBarEndTickExclusive = null;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
+          state.lastPlaybackFollowRowIndex = null;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
@@ -2221,6 +2302,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentBarEndTickExclusive = null;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
+          state.lastPlaybackFollowRowIndex = null;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
@@ -2262,6 +2344,7 @@ export function startApp(rootElement: HTMLElement): void {
           }
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
+          state.lastPlaybackFollowRowIndex = null;
           state.playbackPlayheadVisible = false;
           state.playbackBarAnchorCount = 0;
           state.playbackBarAnchorSource = null;
