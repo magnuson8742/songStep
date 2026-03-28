@@ -864,7 +864,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
   const selectorStrategies = [
     {
       source: "dom:[data-bar-index]",
-      resolveAnchors: () => Array.from(renderHost.querySelectorAll<HTMLElement>("[data-bar-index]")),
+      resolveAnchors: () => Array.from(renderHost.querySelectorAll<HTMLElement>("svg [data-bar-index]")),
     },
     {
       source: "geometry:svg-line-vertical",
@@ -903,6 +903,13 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
 
   for (const strategy of selectorStrategies) {
     const elements = strategy.resolveAnchors();
+    if (strategy.source === "dom:[data-bar-index]" && totalBars > 0) {
+      const noisyThreshold = Math.max(totalBars * 120, 4000);
+      if (elements.length > noisyThreshold) {
+        strategyAttempts.push(`${strategy.source}:noisySkip=yes,elements=${elements.length},threshold=${noisyThreshold}`);
+        continue;
+      }
+    }
     strategyAttempts.push(`${strategy.source} => ${elements.length}`);
     if (elements.length === 0) {
       continue;
@@ -1077,13 +1084,65 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
             });
           });
         });
-        state.playbackBarAnchors = normalizedAnchors.sort((left, right) => left.barNumber - right.barNumber);
+        const validatedAnchors = normalizedAnchors.sort((left, right) => left.barNumber - right.barNumber);
+        const validationErrors: string[] = [];
+        if (totalBars > 0 && validatedAnchors.length !== totalBars) {
+          validationErrors.push("countMismatch");
+        }
+        for (let index = 0; index < validatedAnchors.length; index += 1) {
+          const anchor = validatedAnchors[index];
+          if (!anchor) {
+            continue;
+          }
+          const expectedBar = index + 1;
+          if (totalBars > 0 && anchor.barNumber !== expectedBar) {
+            validationErrors.push("barSequence");
+            break;
+          }
+          const validGeometry =
+            Number.isFinite(anchor.startX) &&
+            Number.isFinite(anchor.endX) &&
+            Number.isFinite(anchor.y) &&
+            Number.isFinite(anchor.height) &&
+            anchor.endX > anchor.startX + 2 &&
+            anchor.height > 0;
+          if (!validGeometry || anchor.rowIndex < 0) {
+            validationErrors.push("invalidGeometry");
+            break;
+          }
+
+          const nextAnchor = validatedAnchors[index + 1];
+          if (!nextAnchor) {
+            continue;
+          }
+          if (nextAnchor.barNumber <= anchor.barNumber) {
+            validationErrors.push("barOrder");
+            break;
+          }
+          if (nextAnchor.rowIndex < anchor.rowIndex) {
+            validationErrors.push("rowOrder");
+            break;
+          }
+          if (nextAnchor.rowIndex === anchor.rowIndex && anchor.endX > nextAnchor.startX + 4) {
+            validationErrors.push("rowOverlap");
+            break;
+          }
+        }
+
+        if (validationErrors.length > 0) {
+          strategyAttempts.push(
+            `${strategy.source}:validation=fail,normalizedBars=${validatedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},reason=${validationErrors.join("+")},fallbackUsed=yes`,
+          );
+          continue;
+        }
+
+        state.playbackBarAnchors = validatedAnchors;
         state.playbackBarAnchorCount = state.playbackBarAnchors.length;
         state.playbackBarAnchorSource = strategy.source;
         const firstBar = state.playbackBarAnchors[0]?.barNumber ?? null;
         const lastBar = state.playbackBarAnchors[state.playbackBarAnchors.length - 1]?.barNumber ?? null;
         const barsMatchTotal = totalBars > 0 ? state.playbackBarAnchors.length === totalBars : null;
-        state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | diag:normalizedBars=${state.playbackBarAnchors.length},firstBar=${firstBar ?? "-"},lastBar=${lastBar ?? "-"},rows=${rowSummaries.length},matchesTotal=${barsMatchTotal === null ? "-" : barsMatchTotal ? "yes" : "no"},totalBars=${totalBars > 0 ? totalBars : "-"}`;
+        state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | diag:noisySkip=no,normalizedBars=${state.playbackBarAnchors.length},firstBar=${firstBar ?? "-"},lastBar=${lastBar ?? "-"},rows=${rowSummaries.length},matchesTotal=${barsMatchTotal === null ? "-" : barsMatchTotal ? "yes" : "no"},validation=pass,fallbackUsed=no,totalBars=${totalBars > 0 ? totalBars : "-"}`;
         updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
         updateDebugField(rootElement, "playback-bar-anchor-source", strategy.source);
         updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
