@@ -1602,6 +1602,73 @@ export async function createGpRenderer(
       }
       return { x, y, w, h };
     };
+    const toFiniteNumber = (value: string | null): number | null => {
+      if (value === null) {
+        return null;
+      }
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const segmentOverlapsRange = (segStart: number, segEnd: number, rangeStart: number, rangeEnd: number): boolean => {
+      const left = Math.min(segStart, segEnd);
+      const right = Math.max(segStart, segEnd);
+      return right >= rangeStart && left <= rangeEnd;
+    };
+    const collectHorizontalLineYs = (svgRoot: SVGSVGElement | null, rangeStartX: number, rangeEndX: number): number[] => {
+      if (!svgRoot || !Number.isFinite(rangeStartX) || !Number.isFinite(rangeEndX)) {
+        return [];
+      }
+      const xMin = Math.min(rangeStartX, rangeEndX);
+      const xMax = Math.max(rangeStartX, rangeEndX);
+      const yValues: number[] = [];
+      const lineNodes = Array.from(svgRoot.querySelectorAll("line"));
+      lineNodes.forEach((lineNode) => {
+        const x1 = toFiniteNumber(lineNode.getAttribute("x1"));
+        const x2 = toFiniteNumber(lineNode.getAttribute("x2"));
+        const y1 = toFiniteNumber(lineNode.getAttribute("y1"));
+        const y2 = toFiniteNumber(lineNode.getAttribute("y2"));
+        if (x1 === null || x2 === null || y1 === null || y2 === null || Math.abs(y1 - y2) > 0.8) {
+          return;
+        }
+        if (!segmentOverlapsRange(x1, x2, xMin, xMax)) {
+          return;
+        }
+        yValues.push((y1 + y2) / 2);
+      });
+      const rectNodes = Array.from(svgRoot.querySelectorAll("rect"));
+      rectNodes.forEach((rectNode) => {
+        const x = toFiniteNumber(rectNode.getAttribute("x"));
+        const y = toFiniteNumber(rectNode.getAttribute("y"));
+        const w = toFiniteNumber(rectNode.getAttribute("width"));
+        const h = toFiniteNumber(rectNode.getAttribute("height"));
+        if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0 || h > 2.5) {
+          return;
+        }
+        if (!segmentOverlapsRange(x, x + w, xMin, xMax)) {
+          return;
+        }
+        yValues.push(y + h * 0.5);
+      });
+      return yValues;
+    };
+    const clusterYValues = (values: number[], tolerance: number): number[][] => {
+      if (values.length === 0) {
+        return [];
+      }
+      const sorted = [...values].sort((left, right) => left - right);
+      const clusters: number[][] = [[sorted[0] ?? 0]];
+      for (let index = 1; index < sorted.length; index += 1) {
+        const current = sorted[index] ?? 0;
+        const activeCluster = clusters[clusters.length - 1];
+        const activeLast = activeCluster[activeCluster.length - 1] ?? current;
+        if (Math.abs(current - activeLast) <= tolerance) {
+          activeCluster.push(current);
+        } else {
+          clusters.push([current]);
+        }
+      }
+      return clusters;
+    };
     const directStaffSystemEntries: Array<{ sourcePath: string; systems: unknown[] }> = [];
     const directStaffSystemPaths = [
       "renderer.boundsLookup.staffSystems",
@@ -1613,6 +1680,7 @@ export async function createGpRenderer(
         directStaffSystemEntries.push({ sourcePath: `api.${path}`, systems });
       }
     });
+    const horizontalAnchorSvg = container.querySelector<SVGSVGElement>("svg");
     const familyResults: Array<{
       sourcePath: string;
       rects: RenderedBarBound[];
@@ -1783,7 +1851,22 @@ export async function createGpRenderer(
             calibratedY = systemVerticalBounds.y;
             calibratedH = systemVerticalBounds.h;
           }
-          const clusterRowBottom = matchedCluster?.rowBottom ?? calibratedY + calibratedH;
+          const barRangeStartX = calibratedX;
+          const barRangeEndX = calibratedX + barBounds.w;
+          const detectedHorizontalLineYs = collectHorizontalLineYs(horizontalAnchorSvg, barRangeStartX, barRangeEndX);
+          const yClusterTolerance = Math.max(0.5, Math.min(3, calibratedH * 0.04));
+          const horizontalLineClusters = clusterYValues(detectedHorizontalLineYs, yClusterTolerance);
+          const currentRowBottomHint = matchedCluster?.rowBottom ?? calibratedY + calibratedH;
+          const chosenLineCluster =
+            horizontalLineClusters.length > 0
+              ? [...horizontalLineClusters].sort((left, right) => {
+                  const leftBottom = Math.max(...left);
+                  const rightBottom = Math.max(...right);
+                  return Math.abs(leftBottom - currentRowBottomHint) - Math.abs(rightBottom - currentRowBottomHint);
+                })[0]
+              : null;
+          const chosenRowBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
+          const clusterRowBottom = chosenRowBottomLineY ?? currentRowBottomHint;
           const structuralBottomBoundary =
             parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
               ? parentSystemOuterBounds.y + parentSystemOuterBounds.h
@@ -1808,7 +1891,9 @@ export async function createGpRenderer(
               totalBarsInSystem: bars.length,
               rowClusterCount: rowClusterBands.length,
               firstBarClusterIndex: matchedClusterIndex,
+              detectedHorizontalLineYs: detectedHorizontalLineYs.slice(0, 24),
               firstBarRowBottom: clusterRowBottom,
+              chosenRowBottomLineY,
               firstBarHeight: calibratedH,
               chosenVerticalSource,
               systemVisualBounds,
