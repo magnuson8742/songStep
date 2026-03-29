@@ -1236,19 +1236,26 @@ export async function createGpRenderer(
       });
     };
 
-    rootCandidates.forEach((root) => {
-      if (!root || typeof root !== "object") {
+    const visited = new WeakSet<object>();
+    const visitNode = (node: unknown, depth: number): void => {
+      if (!node || typeof node !== "object" || depth > 8) {
         return;
       }
-      const values = Object.values(root as Record<string, unknown>);
-      values.forEach((value) => {
-        if (Array.isArray(value)) {
-          value.forEach((item) => tryExtractFromItem(item));
-        } else {
-          tryExtractFromItem(value);
-        }
-      });
-    });
+      const nodeObject = node as object;
+      if (visited.has(nodeObject)) {
+        return;
+      }
+      visited.add(nodeObject);
+      tryExtractFromItem(node);
+      if (Array.isArray(node)) {
+        node.forEach((entry) => visitNode(entry, depth + 1));
+        return;
+      }
+      const values = Object.values(node as Record<string, unknown>);
+      values.forEach((value) => visitNode(value, depth + 1));
+    };
+
+    rootCandidates.forEach((root) => visitNode(root, 0));
 
     const renderSurfaceSvg = container.querySelector<SVGSVGElement>("svg");
     const renderHostRect = container.getBoundingClientRect();

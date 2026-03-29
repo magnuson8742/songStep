@@ -1233,8 +1233,7 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
 
   const representativeBars = Array.from(deduped.values()).sort((left, right) => left.barNumber - right.barNumber);
   const contiguous = representativeBars.every((bar, index) => bar.barNumber === index + 1);
-  const matchesTotal = totalBars > 0 ? representativeBars.length === totalBars : true;
-  if (!contiguous || !matchesTotal) {
+  if (!contiguous) {
     state.playbackAnchorStrategyAttempts = `chosenSource=renderer+svg-separators,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=0,rawVerticalCount=0,spanningVerticalCount=0,separatorCount=0,usedFallbackMidpoints=no,validation=fail,normalizedBy=separator-partition`;
     return [];
   }
@@ -1539,9 +1538,6 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     const errors: string[] = [];
     if (anchors.length === 0) {
       return ["empty"];
-    }
-    if (totalBars > 0 && anchors.length !== totalBars) {
-      errors.push("countMismatch");
     }
     for (let index = 0; index < anchors.length; index += 1) {
       const anchor = anchors[index];
