@@ -1847,10 +1847,23 @@ export async function createGpRenderer(
           toXywhRect(systemBoundsContainer) ??
           toXywhRect(systemRecord);
         const resolvedVerticalCandidates: Array<{ source: string; rect: { x: number; y: number; w: number; h: number } }> = [
+          ...(toXywhRect(systemBoundsContainer?.lineAlignedBounds)
+            ? [{ source: "staffSystemBounds.lineAlignedBounds", rect: toXywhRect(systemBoundsContainer?.lineAlignedBounds)! }]
+            : []),
+          ...(toXywhRect(systemRecord.lineAlignedBounds)
+            ? [{ source: "system.lineAlignedBounds", rect: toXywhRect(systemRecord.lineAlignedBounds)! }]
+            : []),
+          ...(toXywhRect(systemBoundsContainer?.systemAlignedBounds)
+            ? [{ source: "staffSystemBounds.systemAlignedBounds", rect: toXywhRect(systemBoundsContainer?.systemAlignedBounds)! }]
+            : []),
+          ...(toXywhRect(systemRecord.systemAlignedBounds)
+            ? [{ source: "system.systemAlignedBounds", rect: toXywhRect(systemRecord.systemAlignedBounds)! }]
+            : []),
           ...(systemVisualBounds ? [{ source: "system.visualBounds", rect: systemVisualBounds }] : []),
           ...(systemRealBounds ? [{ source: "system.realBounds", rect: systemRealBounds }] : []),
           ...(parentSystemOuterBounds ? [{ source: "system.outerBounds", rect: parentSystemOuterBounds }] : []),
         ];
+        const chosenParentVerticalCandidate = resolvedVerticalCandidates[0] ?? null;
         const systemCalibrationBounds =
           toXywhRect(systemBoundsContainer?.visualBounds) ??
           toXywhRect(systemBoundsContainer?.realBounds) ??
@@ -1961,8 +1974,13 @@ export async function createGpRenderer(
               : barBounds.x;
           const matchedClusterIndex = rowClusterBands.findIndex((cluster) => cluster.barIndexSet.has(barIndexInSystem));
           const matchedCluster = matchedClusterIndex >= 0 ? rowClusterBands[matchedClusterIndex] : null;
-          let systemVerticalBounds = matchedCluster ? { x: 0, y: matchedCluster.y, w: 0, h: matchedCluster.h } : null;
-          let chosenVerticalSource: string = systemVerticalBounds ? "staffSystem.rowClusterBand" : "bar-local-fallback";
+          let systemVerticalBounds =
+            chosenParentVerticalCandidate?.rect ?? (matchedCluster ? { x: 0, y: matchedCluster.y, w: 0, h: matchedCluster.h } : null);
+          let chosenVerticalSource: string = chosenParentVerticalCandidate
+            ? chosenParentVerticalCandidate.source
+            : systemVerticalBounds
+              ? "staffSystem.rowClusterBand"
+              : "bar-local-fallback";
           if (systemVerticalBounds && parentSystemOuterBounds) {
             const clampedTop = Math.max(systemVerticalBounds.y, parentSystemOuterBounds.y);
             const clampedBottom = Math.min(
@@ -1971,7 +1989,9 @@ export async function createGpRenderer(
             );
             if (clampedBottom > clampedTop + 1) {
               systemVerticalBounds = { ...systemVerticalBounds, y: clampedTop, h: clampedBottom - clampedTop };
-              chosenVerticalSource = "staffSystem.rowClusterBand-clamped";
+              chosenVerticalSource = chosenParentVerticalCandidate
+                ? `${chosenParentVerticalCandidate.source}-clamped`
+                : "staffSystem.rowClusterBand-clamped";
             }
           } else if (!systemVerticalBounds && parentSystemOuterBounds) {
             systemVerticalBounds = parentSystemOuterBounds;
@@ -2008,21 +2028,18 @@ export async function createGpRenderer(
           const chosenRowBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
           const clusterRowBottom = chosenRowBottomLineY ?? currentRowBottomHint;
           const chosenRowClusterIndex = chosenLineCluster ? horizontalLineClusters.indexOf(chosenLineCluster) : -1;
-          let chosenVerticalAnchorMode: "top" | "bottom" = "bottom";
-          let rowAnchoredY = clusterRowBottom - calibratedH;
-          if (chosenRowTopLineY !== null && chosenRowBottomLineY !== null) {
-            const rowLineSpan = Math.max(chosenRowBottomLineY - chosenRowTopLineY, 0);
-            const topAnchoredY = chosenRowTopLineY;
-            const bottomAnchoredY = chosenRowBottomLineY - calibratedH;
-            chosenVerticalAnchorMode =
-              calibratedH > rowLineSpan + yClusterTolerance || bottomAnchoredY > topAnchoredY + rowLineSpan * 0.25
-                ? "top"
-                : "bottom";
-            rowAnchoredY = chosenVerticalAnchorMode === "top" ? topAnchoredY : bottomAnchoredY;
-          }
+          let chosenVerticalAnchorMode: "parent-primary" | "line-refine" | "cluster-fallback" =
+            chosenParentVerticalCandidate ? "parent-primary" : "cluster-fallback";
+          let rowAnchoredY = calibratedY;
           if (chosenRowBottomLineY !== null) {
-            chosenVerticalSource =
-              chosenVerticalAnchorMode === "top" ? "svg.horizontalRowTopLine" : "svg.horizontalRowBottomLine";
+            const bottomAnchoredY = chosenRowBottomLineY - calibratedH;
+            if (bottomAnchoredY < rowAnchoredY) {
+              rowAnchoredY = bottomAnchoredY;
+              chosenVerticalAnchorMode = "line-refine";
+              chosenVerticalSource = chosenParentVerticalCandidate
+                ? `${chosenParentVerticalCandidate.source}+svg.horizontalRowBottomLine`
+                : "svg.horizontalRowBottomLine";
+            }
           }
           const structuralBottomBoundary =
             parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
@@ -2045,6 +2062,10 @@ export async function createGpRenderer(
                 .map((candidate) => ({ source: candidate.source, height: candidate.rect.h }))
                 .sort((left, right) => left.height - right.height)
                 .slice(0, 10),
+              parentSystemCandidateRects: resolvedVerticalCandidates
+                .map((candidate) => ({ source: candidate.source, rect: candidate.rect }))
+                .slice(0, 8),
+              chosenParentVerticalRectSource: chosenParentVerticalCandidate?.source ?? null,
               totalBarsInSystem: bars.length,
               rowClusterCount: rowClusterBands.length,
               firstBarClusterIndex: chosenRowClusterIndex >= 0 ? chosenRowClusterIndex : matchedClusterIndex,
@@ -2054,6 +2075,7 @@ export async function createGpRenderer(
               firstBarRowBottom: clusterRowBottom,
               chosenRowBottomLineY,
               chosenVerticalAnchorMode,
+              finalVerticalSourcePath: chosenParentVerticalCandidate ? "parent-system-primary" : "cluster-fallback",
               firstBarHeight: calibratedH,
               chosenVerticalSource,
               systemVisualBounds,
