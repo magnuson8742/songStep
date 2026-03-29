@@ -21,6 +21,7 @@ import {
 } from "../features/projectPersistence/projectPersistence";
 import { renderProjectScreen } from "../features/projectScreen/renderProjectScreen";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
 
 type AppView = "home" | "newProject" | "openProject" | "project";
 
@@ -160,25 +161,14 @@ function summarizeCollection<T>(items: T[], headLimit: number, tailLimit: number
 
 interface SessionDebugLogger {
   filePath: string;
-  queue: string[];
-  flushing: boolean;
 }
 
-const SESSION_DEBUG_DIRECTORY = "C:\\Programs\\songStep\\debug";
-
-function buildSessionDebugFilePath(): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `${SESSION_DEBUG_DIRECTORY}\\songstep-session-debug-${timestamp}.jsonl`;
-}
+let reportSessionDebugAppendFailure: ((message: string) => void) | null = null;
 
 async function createSessionDebugLogger(): Promise<SessionDebugLogger> {
-  const filePath = buildSessionDebugFilePath();
-  await mkdir(SESSION_DEBUG_DIRECTORY, { recursive: true });
-  await writeTextFile(filePath, "");
+  const filePath = await invoke<string>("get_session_debug_log_path");
   return {
     filePath,
-    queue: [],
-    flushing: false,
   };
 }
 
@@ -186,20 +176,11 @@ function appendSessionDebugEvent(logger: SessionDebugLogger | null, event: Recor
   if (!logger) {
     return;
   }
-  logger.queue.push(`${JSON.stringify(event)}\n`);
-  if (logger.flushing) {
-    return;
-  }
-  logger.flushing = true;
-  const flush = async (): Promise<void> => {
-    while (logger.queue.length > 0) {
-      const chunk = logger.queue.splice(0, 20).join("");
-      await writeTextFile(logger.filePath, chunk, { append: true });
-    }
-    logger.flushing = false;
-  };
-  void flush().catch(() => {
-    logger.flushing = false;
+  const eventJson = JSON.stringify(event);
+  void invoke("append_session_debug_event", { eventJson }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("append_session_debug_event failed", error);
+    reportSessionDebugAppendFailure?.(message);
   });
 }
 
@@ -3373,20 +3354,14 @@ export function startApp(rootElement: HTMLElement): void {
     state.gpRenderer = null;
   };
 
+  reportSessionDebugAppendFailure = (message: string): void => {
+    state.projectStatusMessage = `Debug logger append failed: ${message}`;
+  };
+
   void createSessionDebugLogger()
     .then((logger) => {
       state.sessionDebugLogger = logger;
       state.sessionDebugLogPath = logger.filePath;
-      appendSessionDebugEvent(logger, {
-        type: "session-start",
-        timestamp: new Date().toISOString(),
-        selectedTrackIndex: state.selectedTrackIndex,
-      });
-      appendSessionDebugEvent(logger, {
-        type: "logger-ready",
-        timestamp: new Date().toISOString(),
-        filePath: logger.filePath,
-      });
       appendSessionDebugEvent(logger, {
         type: "app-start",
         timestamp: new Date().toISOString(),
