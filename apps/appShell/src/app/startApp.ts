@@ -21,7 +21,6 @@ import {
 } from "../features/projectPersistence/projectPersistence";
 import { renderProjectScreen } from "../features/projectScreen/renderProjectScreen";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
-import { openPath } from "@tauri-apps/plugin-opener";
 
 type AppView = "home" | "newProject" | "openProject" | "project";
 
@@ -3383,6 +3382,15 @@ export function startApp(rootElement: HTMLElement): void {
         timestamp: new Date().toISOString(),
         selectedTrackIndex: state.selectedTrackIndex,
       });
+      appendSessionDebugEvent(logger, {
+        type: "logger-ready",
+        timestamp: new Date().toISOString(),
+        filePath: logger.filePath,
+      });
+      appendSessionDebugEvent(logger, {
+        type: "app-start",
+        timestamp: new Date().toISOString(),
+      });
     })
     .catch((error) => {
       state.projectStatusMessage = `Debug logger init failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -3760,9 +3768,6 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onExportAnchorDebug: () => {
           void exportAnchorDebugSnapshot();
-        },
-        onOpenDebugFolder: () => {
-          void openPath(SESSION_DEBUG_DIRECTORY);
         },
         onToggleTrackMute: (trackIndex) => {
           const isMuted = state.mutedTrackIndexes.includes(trackIndex);
