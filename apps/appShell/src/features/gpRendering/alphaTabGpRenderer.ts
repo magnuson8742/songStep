@@ -2003,20 +2003,26 @@ export async function createGpRenderer(
           const detectedHorizontalLineSources = Array.from(new Set(detectedHorizontalLineEntries.map((entry) => entry.source)));
           const yClusterTolerance = Math.max(0.5, Math.min(3, calibratedH * 0.04));
           const horizontalLineClusters = clusterYValues(detectedHorizontalLineYs, yClusterTolerance);
+          const clusterSummaries = horizontalLineClusters.map((cluster, clusterIndex) => {
+            const top = Math.min(...cluster);
+            const bottom = Math.max(...cluster);
+            return {
+              index: clusterIndex,
+              top,
+              bottom,
+              center: (top + bottom) * 0.5,
+              count: cluster.length,
+            };
+          });
           const currentBarCenterY = barBounds.y + barBounds.h * 0.5;
           const currentRowBottomHint = matchedCluster?.rowBottom ?? calibratedY + calibratedH;
           const nearestCenterClusterIndex =
-            horizontalLineClusters.length > 0
-              ? horizontalLineClusters
-                  .map((cluster, clusterIndex) => {
-                    const clusterTop = Math.min(...cluster);
-                    const clusterBottom = Math.max(...cluster);
-                    const clusterCenter = (clusterTop + clusterBottom) * 0.5;
-                    return {
-                      clusterIndex,
-                      centerDistance: Math.abs(clusterCenter - currentBarCenterY),
-                    };
-                  })
+            clusterSummaries.length > 0
+              ? clusterSummaries
+                  .map((cluster) => ({
+                    clusterIndex: cluster.index,
+                    centerDistance: Math.abs(cluster.center - currentBarCenterY),
+                  }))
                   .sort((left, right) => left.centerDistance - right.centerDistance)[0]?.clusterIndex ?? -1
               : -1;
           const nearestCenterCluster =
@@ -2040,23 +2046,28 @@ export async function createGpRenderer(
             chosenVerticalSource =
               chosenVerticalAnchorMode === "top" ? "svg.horizontalRowTopLine" : "svg.horizontalRowBottomLine";
           }
+          const restoredBottomY = restoredY + calibratedH;
+          const rowBandTop = matchedCluster?.y ?? restoredY;
+          const rowBandBottom = matchedCluster ? matchedCluster.y + matchedCluster.h : restoredBottomY;
+          const rowLocalWindowPad = Math.max(2, yClusterTolerance * 4, calibratedH * 0.25);
+          const previousGlobalLowestClusterIndex =
+            clusterSummaries
+              .filter((cluster) => cluster.count >= 2)
+              .sort((left, right) => right.bottom - left.bottom || right.count - left.count)[0]?.index ?? -1;
+          const rowLocalTabClusterCandidates = clusterSummaries.filter(
+            (cluster) =>
+              cluster.count >= 2 &&
+              cluster.bottom >= rowBandTop - rowLocalWindowPad &&
+              cluster.top <= rowBandBottom + rowLocalWindowPad,
+          );
+          const chosenRowLocalTabClusterIndex =
+            rowLocalTabClusterCandidates.sort((left, right) => right.bottom - left.bottom || right.count - left.count)[0]?.index ??
+            -1;
           const chosenTabClusterIndex =
-            horizontalLineClusters.length > 0
-              ? horizontalLineClusters
-                  .map((cluster, clusterIndex) => ({
-                    clusterIndex,
-                    clusterTop: Math.min(...cluster),
-                    clusterBottom: Math.max(...cluster),
-                    count: cluster.length,
-                  }))
-                  .filter((cluster) => cluster.count >= 2)
-                  .sort((left, right) => right.clusterBottom - left.clusterBottom || right.count - left.count)[0]
-                  ?.clusterIndex ?? nearestCenterClusterIndex
-              : -1;
+            chosenRowLocalTabClusterIndex >= 0 ? chosenRowLocalTabClusterIndex : nearestCenterClusterIndex;
           const chosenLineCluster =
             chosenTabClusterIndex >= 0 ? horizontalLineClusters[chosenTabClusterIndex] ?? null : null;
           const targetTabBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
-          const restoredBottomY = restoredY + calibratedH;
           const appliedYOffsetCorrection = targetTabBottomLineY !== null ? targetTabBottomLineY - restoredBottomY : 0;
           const correctedY = restoredY + appliedYOffsetCorrection;
           const correctedBottomY = correctedY + calibratedH;
@@ -2103,6 +2114,9 @@ export async function createGpRenderer(
               totalBarsInSystem: bars.length,
               rowClusterCount: rowClusterBands.length,
               firstBarClusterIndex: chosenRowClusterIndex >= 0 ? chosenRowClusterIndex : matchedClusterIndex,
+              matchedClusterBand: matchedCluster
+                ? { top: matchedCluster.y, bottom: matchedCluster.y + matchedCluster.h, height: matchedCluster.h }
+                : null,
               restoredVerticalSource: chosenVerticalSource,
               restoredCalibratedRectBeforeYCorrection: {
                 x: calibratedX,
@@ -2111,14 +2125,12 @@ export async function createGpRenderer(
                 h: calibratedH,
               },
               detectedHorizontalLineYs: detectedHorizontalLineYs.slice(0, 24),
-              horizontalLineClusters: horizontalLineClusters.map((cluster, clusterIndex) => ({
-                index: clusterIndex,
-                top: Math.min(...cluster),
-                bottom: Math.max(...cluster),
-                count: cluster.length,
-              })),
+              horizontalLineClusters: clusterSummaries,
+              rowLocalFilteredClusters: rowLocalTabClusterCandidates,
               detectedHorizontalLineSources,
               nearestCenterClusterIndex,
+              previousGlobalLowestClusterIndex,
+              chosenRowLocalTabClusterIndex,
               chosenTabClusterIndex,
               targetTabBottomLineY,
               restoredBottomY,
