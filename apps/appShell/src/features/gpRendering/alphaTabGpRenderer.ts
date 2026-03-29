@@ -1768,8 +1768,9 @@ export async function createGpRenderer(
               : 0;
           const localInsetBasis = localTopInsetToBar > 0 ? localTopInsetToBar : localTopInsetToParent;
           const localLineGapEstimate = localInsetBasis > 0 ? localInsetBasis / 3 : 0;
-          const appliedVerticalOffset = localLineGapEstimate * 3;
-          const shiftedYBeforeClamp = calibratedY - appliedVerticalOffset;
+          const previousAppliedVerticalOffset = localLineGapEstimate * 3;
+          const newAppliedVerticalOffset = localLineGapEstimate * 1.5;
+          const shiftedYBeforeClamp = calibratedY - newAppliedVerticalOffset;
           const structuralTopBoundary = parentSystemOuterBounds?.y ?? systemVerticalBounds?.y ?? calibratedY;
           calibratedY = Math.max(shiftedYBeforeClamp, structuralTopBoundary);
           const shiftedFinalRect = {
@@ -1791,9 +1792,10 @@ export async function createGpRenderer(
               systemRealBounds,
               chosenVerticalSourceHeight: systemVerticalBounds?.h ?? null,
               barLocalRect: barBounds,
-              currentFinalRect,
+              previousFinalRect: currentFinalRect,
               localLineGapEstimate,
-              appliedVerticalOffset,
+              previousAppliedVerticalOffset,
+              newAppliedVerticalOffset,
               shiftedFinalRect,
             });
           }
