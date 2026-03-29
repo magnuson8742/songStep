@@ -1656,14 +1656,17 @@ export async function createGpRenderer(
           toXywhRect(systemBoundsContainer?.realBounds) ??
           toXywhRect(systemBoundsContainer);
 
-        const rawBarBounds = bars
-          .map((barItem) => (barItem && typeof barItem === "object" ? (barItem as Record<string, unknown>) : null))
-          .map((barRecord) =>
-            barRecord
-              ? toXywhRect(barRecord.lineAlignedBounds) ?? toXywhRect(barRecord.visualBounds) ?? toXywhRect(barRecord.realBounds)
-              : null,
-          )
-          .filter((rect): rect is { x: number; y: number; w: number; h: number } => rect !== null);
+        const barBoundsByIndex = bars.map((barItem) => {
+          if (!barItem || typeof barItem !== "object") {
+            return null;
+          }
+          const barRecord = barItem as Record<string, unknown>;
+          return toXywhRect(barRecord.lineAlignedBounds) ?? toXywhRect(barRecord.visualBounds) ?? toXywhRect(barRecord.realBounds);
+        });
+        const indexedBarBounds = barBoundsByIndex
+          .map((rect, barIndexInSystem) => (rect ? { barIndexInSystem, rect } : null))
+          .filter((entry): entry is { barIndexInSystem: number; rect: { x: number; y: number; w: number; h: number } } => entry !== null);
+        const rawBarBounds = indexedBarBounds.map((entry) => entry.rect);
         const absXInsideCount =
           systemCalibrationBounds === null
             ? 0
@@ -1692,19 +1695,32 @@ export async function createGpRenderer(
           systemCalibrationBounds && localXInsideCount > absXInsideCount ? "local-to-system" : "absolute";
         const calibrationModeY: "local-to-system" | "absolute" =
           systemCalibrationBounds && localYInsideCount > absYInsideCount ? "local-to-system" : "absolute";
-        const systemContentBand =
-          rawBarBounds.length > 0
-            ? (() => {
-                const top = rawBarBounds.reduce((minValue, rect) => Math.min(minValue, rect.y), Number.POSITIVE_INFINITY);
-                const bottom = rawBarBounds.reduce(
-                  (maxValue, rect) => Math.max(maxValue, rect.y + rect.h),
-                  Number.NEGATIVE_INFINITY,
-                );
-                return Number.isFinite(top) && Number.isFinite(bottom) && bottom > top
-                  ? { x: 0, y: top, w: 0, h: bottom - top }
-                  : null;
-              })()
-            : null;
+        const sortedClusterSeedRects = [...indexedBarBounds].sort((left, right) => left.rect.y - right.rect.y);
+        const heightValues = sortedClusterSeedRects.map((entry) => entry.rect.h).sort((left, right) => left - right);
+        const medianHeight =
+          heightValues.length > 0 ? heightValues[Math.floor(heightValues.length / 2)] ?? heightValues[0] ?? 0 : 0;
+        const clusterTolerance = medianHeight > 0 ? Math.max(1, medianHeight * 0.08) : 1;
+        const rowClusters: Array<{ top: number; bottom: number; barIndices: number[] }> = [];
+        sortedClusterSeedRects.forEach(({ barIndexInSystem, rect }) => {
+          const rectTop = rect.y;
+          const rectBottom = rect.y + rect.h;
+          const clusterIndex = rowClusters.findIndex(
+            (cluster) => rectBottom >= cluster.top - clusterTolerance && rectTop <= cluster.bottom + clusterTolerance,
+          );
+          if (clusterIndex >= 0) {
+            const cluster = rowClusters[clusterIndex];
+            cluster.top = Math.min(cluster.top, rectTop);
+            cluster.bottom = Math.max(cluster.bottom, rectBottom);
+            cluster.barIndices.push(barIndexInSystem);
+            return;
+          }
+          rowClusters.push({ top: rectTop, bottom: rectBottom, barIndices: [barIndexInSystem] });
+        });
+        const rowClusterBands = rowClusters.map((cluster) => ({
+          y: cluster.top,
+          h: cluster.bottom - cluster.top,
+          barIndexSet: new Set(cluster.barIndices),
+        }));
 
         bars.forEach((barItem, barIndexInSystem) => {
           if (!barItem || typeof barItem !== "object") {
@@ -1733,8 +1749,10 @@ export async function createGpRenderer(
             systemCalibrationBounds && calibrationModeX === "local-to-system"
               ? systemCalibrationBounds.x + barBounds.x
               : barBounds.x;
-          let systemVerticalBounds = systemContentBand ? { ...systemContentBand } : null;
-          let chosenVerticalSource: string = systemVerticalBounds ? "staffSystem.barContentBand" : "bar-local-fallback";
+          const matchedClusterIndex = rowClusterBands.findIndex((cluster) => cluster.barIndexSet.has(barIndexInSystem));
+          const matchedCluster = matchedClusterIndex >= 0 ? rowClusterBands[matchedClusterIndex] : null;
+          let systemVerticalBounds = matchedCluster ? { x: 0, y: matchedCluster.y, w: 0, h: matchedCluster.h } : null;
+          let chosenVerticalSource: string = systemVerticalBounds ? "staffSystem.rowClusterBand" : "bar-local-fallback";
           if (systemVerticalBounds && parentSystemOuterBounds) {
             const clampedTop = Math.max(systemVerticalBounds.y, parentSystemOuterBounds.y);
             const clampedBottom = Math.min(
@@ -1743,7 +1761,7 @@ export async function createGpRenderer(
             );
             if (clampedBottom > clampedTop + 1) {
               systemVerticalBounds = { ...systemVerticalBounds, y: clampedTop, h: clampedBottom - clampedTop };
-              chosenVerticalSource = "staffSystem.barContentBand-clamped";
+              chosenVerticalSource = "staffSystem.rowClusterBand-clamped";
             }
           } else if (!systemVerticalBounds && parentSystemOuterBounds) {
             systemVerticalBounds = parentSystemOuterBounds;
@@ -1786,17 +1804,20 @@ export async function createGpRenderer(
                 .map((candidate) => ({ source: candidate.source, height: candidate.rect.h }))
                 .sort((left, right) => left.height - right.height)
                 .slice(0, 10),
+              totalBarsInSystem: bars.length,
+              rowClusterCount: rowClusterBands.length,
+              firstBarClusterIndex: matchedClusterIndex,
+              firstBarClusterBand: matchedCluster ? { y: matchedCluster.y, h: matchedCluster.h } : null,
               chosenVerticalSource,
-              systemContentBand,
               systemVisualBounds,
               systemRealBounds,
               chosenVerticalSourceHeight: systemVerticalBounds?.h ?? null,
-              barLocalRect: barBounds,
+              firstBarRawRect: barBounds,
               previousFinalRect: currentFinalRect,
               localLineGapEstimate,
               previousAppliedVerticalOffset,
               newAppliedVerticalOffset,
-              shiftedFinalRect,
+              firstBarFinalRect: shiftedFinalRect,
             });
           }
           if (!familyCalibrationSummary) {
