@@ -57,6 +57,7 @@ export interface ProjectScreenActions {
   onSaveProject: () => Promise<void>;
   onSaveProjectAs: () => Promise<void>;
   onExportAnchorDebug: () => void;
+  onOpenDebugFolder: () => void;
   onPlay: () => void;
   onPause: () => void;
   onStop: () => void;
@@ -195,6 +196,7 @@ export function renderProjectScreen(
             <summary>Debug</summary>
             <button type="button" class="playerMenuItem" data-action="open-debug-window">Open Debug Window</button>
             <button type="button" class="playerMenuItem" data-action="export-anchor-debug">Export Anchor Debug</button>
+            <button type="button" class="playerMenuItem" data-action="open-debug-folder">Open Debug Folder</button>
           </details>
         </div>
       </header>
@@ -355,6 +357,7 @@ export function renderProjectScreen(
   const backHomeButton = container.querySelector<HTMLButtonElement>('[data-action="back-home"]');
   const openDebugWindowButton = container.querySelector<HTMLButtonElement>('[data-action="open-debug-window"]');
   const exportAnchorDebugButton = container.querySelector<HTMLButtonElement>('[data-action="export-anchor-debug"]');
+  const openDebugFolderButton = container.querySelector<HTMLButtonElement>('[data-action="open-debug-folder"]');
   const leftControls = container.querySelectorAll<HTMLElement>('[data-action="left-controls"]');
 
   const handleTrackSelection = (eventTarget: EventTarget | null): void => {
@@ -513,4 +516,5 @@ export function renderProjectScreen(
   backHomeButton?.addEventListener("click", actions.onBackToHome);
   openDebugWindowButton?.addEventListener("click", () => openDebugWindow(actions));
   exportAnchorDebugButton?.addEventListener("click", actions.onExportAnchorDebug);
+  openDebugFolderButton?.addEventListener("click", actions.onOpenDebugFolder);
 }

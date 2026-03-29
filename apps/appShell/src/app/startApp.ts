@@ -21,6 +21,7 @@ import {
 } from "../features/projectPersistence/projectPersistence";
 import { renderProjectScreen } from "../features/projectScreen/renderProjectScreen";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
+import { openPath } from "@tauri-apps/plugin-opener";
 
 type AppView = "home" | "newProject" | "openProject" | "project";
 
@@ -127,6 +128,9 @@ interface AppState {
   latestAnchorStrategyDebug: Record<string, unknown>[];
   latestPercussionAnchorDebug: Record<string, unknown> | null;
   latestAnchorDebugSnapshot: Record<string, unknown> | null;
+  sessionDebugLogger: SessionDebugLogger | null;
+  sessionDebugLogPath: string | null;
+  sessionDebugBannerShown: boolean;
 }
 
 function triggerJsonDownload(fileName: string, payload: unknown): void {
@@ -153,6 +157,51 @@ function summarizeCollection<T>(items: T[], headLimit: number, tailLimit: number
   const sampleStep = Math.max(Math.floor(totalCount / 20), 1);
   const sampled = items.filter((_, index) => index % sampleStep === 0).slice(0, 120);
   return { totalCount, head, tail, sampled };
+}
+
+interface SessionDebugLogger {
+  filePath: string;
+  queue: string[];
+  flushing: boolean;
+}
+
+const SESSION_DEBUG_DIRECTORY = "C:\\Programs\\songStep\\debug";
+
+function buildSessionDebugFilePath(): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${SESSION_DEBUG_DIRECTORY}\\songstep-session-debug-${timestamp}.jsonl`;
+}
+
+async function createSessionDebugLogger(): Promise<SessionDebugLogger> {
+  const filePath = buildSessionDebugFilePath();
+  await mkdir(SESSION_DEBUG_DIRECTORY, { recursive: true });
+  await writeTextFile(filePath, "");
+  return {
+    filePath,
+    queue: [],
+    flushing: false,
+  };
+}
+
+function appendSessionDebugEvent(logger: SessionDebugLogger | null, event: Record<string, unknown>): void {
+  if (!logger) {
+    return;
+  }
+  logger.queue.push(`${JSON.stringify(event)}\n`);
+  if (logger.flushing) {
+    return;
+  }
+  logger.flushing = true;
+  const flush = async (): Promise<void> => {
+    while (logger.queue.length > 0) {
+      const chunk = logger.queue.splice(0, 20).join("");
+      await writeTextFile(logger.filePath, chunk, { append: true });
+    }
+    logger.flushing = false;
+  };
+  void flush().catch(() => {
+    logger.flushing = false;
+  });
 }
 
 function updateDebugField(rootElement: HTMLElement, fieldName: string, value: string): void {
@@ -1631,6 +1680,31 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
   const strategyAttempts: string[] = [];
   const strategyDebugResults: Record<string, unknown>[] = [];
   state.latestPercussionAnchorDebug = null;
+  const logAnchorRebuildOutcome = (outcome: string): void => {
+    const rowCount = new Set(state.playbackBarAnchors.map((anchor) => anchor.rowIndex)).size;
+    appendSessionDebugEvent(state.sessionDebugLogger, {
+      type: "anchor-rebuild",
+      timestamp: new Date().toISOString(),
+      outcome,
+      selectedTrackIndex: state.selectedTrackIndex,
+      confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+      confirmedTrackName: state.gpRenderDebugInfo?.confirmedActiveTrackName ?? null,
+      isPercussion: state.gpRenderDebugInfo?.isPercussion ?? null,
+      effectiveStaveProfile: state.gpRenderDebugInfo?.effectiveStaveProfile ?? null,
+      playbackBarAnchorSource: state.playbackBarAnchorSource,
+      playbackBarAnchorCount: state.playbackBarAnchorCount,
+      playbackAnchorStrategyAttempts: state.playbackAnchorStrategyAttempts,
+      finalAnchorsSummary: {
+        count: state.playbackBarAnchors.length,
+        firstBar: state.playbackBarAnchors[0]?.barNumber ?? null,
+        lastBar: state.playbackBarAnchors[state.playbackBarAnchors.length - 1]?.barNumber ?? null,
+        rowCount,
+        first20: state.playbackBarAnchors.slice(0, 20),
+        last20: state.playbackBarAnchors.slice(Math.max(state.playbackBarAnchors.length - 20, 0)),
+      },
+      strategyDebug: strategyDebugResults,
+    });
+  };
   updateRenderHostDomDiagnostics(state, rootElement, renderHost);
   if (!isPercussionDefaultLayout) {
     const rendererAnchors = resolveRendererPlaybackBarAnchors(state, renderHost);
@@ -1653,6 +1727,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
         "playback-anchor-strategy-attempts",
         state.playbackAnchorStrategyAttempts ?? `chosenSource=renderer-bounds,rawBoundsCount=${rendererAnchors.length}`,
       );
+      logAnchorRebuildOutcome("renderer-bounds-success");
       return;
     }
   } else {
@@ -1961,6 +2036,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
         updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
         updateDebugField(rootElement, "playback-bar-anchor-source", chosenGenericSource);
         updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+        logAnchorRebuildOutcome("generic-success");
         return;
       }
     }
@@ -2264,6 +2340,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
     updateDebugField(rootElement, "playback-bar-anchor-source", chosenGenericSource);
     updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+    logAnchorRebuildOutcome("generic-success");
     return;
   }
 
@@ -2278,6 +2355,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
       updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
       updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
+      logAnchorRebuildOutcome("percussion-fallback-success");
       return;
     }
     strategyAttempts.push(`${percussionResult.diagnostics},chosenSource=percussion-fallback,validation=fail`);
@@ -2298,6 +2376,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       ? state.playbackAnchorStrategyAttempts
       : "-",
   );
+  logAnchorRebuildOutcome("anchor-empty");
 }
 
 function schedulePlaybackBarAnchorRebuild(state: AppState, rootElement: HTMLElement): void {
@@ -3270,6 +3349,9 @@ export function startApp(rootElement: HTMLElement): void {
     latestAnchorStrategyDebug: [],
     latestPercussionAnchorDebug: null,
     latestAnchorDebugSnapshot: null,
+    sessionDebugLogger: null,
+    sessionDebugLogPath: null,
+    sessionDebugBannerShown: false,
   };
 
   const cleanupRenderer = (): void => {
@@ -3292,10 +3374,49 @@ export function startApp(rootElement: HTMLElement): void {
     state.gpRenderer = null;
   };
 
+  void createSessionDebugLogger()
+    .then((logger) => {
+      state.sessionDebugLogger = logger;
+      state.sessionDebugLogPath = logger.filePath;
+      appendSessionDebugEvent(logger, {
+        type: "session-start",
+        timestamp: new Date().toISOString(),
+        selectedTrackIndex: state.selectedTrackIndex,
+      });
+    })
+    .catch((error) => {
+      state.projectStatusMessage = `Debug logger init failed: ${error instanceof Error ? error.message : String(error)}`;
+    });
+
+  window.addEventListener("error", (event) => {
+    appendSessionDebugEvent(state.sessionDebugLogger, {
+      type: "window-error",
+      timestamp: new Date().toISOString(),
+      message: event.message,
+      source: event.filename,
+      lineno: event.lineno,
+      colno: event.colno,
+    });
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    appendSessionDebugEvent(state.sessionDebugLogger, {
+      type: "unhandled-rejection",
+      timestamp: new Date().toISOString(),
+      reason: String(event.reason),
+    });
+  });
+
   const exportAnchorDebugSnapshot = async (): Promise<void> => {
     const trackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const fileName = `songstep-anchor-debug-track-${trackIndex}-${timestamp}.json`;
+    appendSessionDebugEvent(state.sessionDebugLogger, {
+      type: "anchor-export-invoked",
+      timestamp: new Date().toISOString(),
+      selectedTrackIndex: state.selectedTrackIndex,
+      confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+      targetFileName: fileName,
+    });
     try {
       await new Promise<void>((resolve) => {
         requestAnimationFrame(() => resolve());
@@ -3307,8 +3428,18 @@ export function startApp(rootElement: HTMLElement): void {
       await mkdir(debugDirectory, { recursive: true });
       await writeTextFile(fullPath, JSON.stringify(snapshot, null, 2));
       state.projectStatusMessage = `Anchor debug exported to ${fullPath}`;
+      appendSessionDebugEvent(state.sessionDebugLogger, {
+        type: "anchor-export-success",
+        timestamp: new Date().toISOString(),
+        fullPath,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      appendSessionDebugEvent(state.sessionDebugLogger, {
+        type: "anchor-export-failed",
+        timestamp: new Date().toISOString(),
+        error: message,
+      });
       try {
         const snapshot = state.latestAnchorDebugSnapshot ?? buildAnchorDebugSnapshot(state, rootElement);
         triggerJsonDownload(fileName, snapshot);
@@ -3486,6 +3617,10 @@ export function startApp(rootElement: HTMLElement): void {
 
     if (state.currentView === "project" && state.currentProject) {
       cleanupRenderer();
+      if (state.sessionDebugLogPath && !state.sessionDebugBannerShown) {
+        state.projectStatusMessage = `Debug logging active: ${state.sessionDebugLogPath}`;
+        state.sessionDebugBannerShown = true;
+      }
 
       renderProjectScreen(rootElement, state.currentProject, {
         statusMessage: state.projectStatusMessage,
@@ -3534,6 +3669,13 @@ export function startApp(rootElement: HTMLElement): void {
         mutedTrackIndexes: state.mutedTrackIndexes,
         soloTrackIndexes: state.soloTrackIndexes,
         onTrackSelectionChange: (trackIndex: number) => {
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            type: "track-select-requested",
+            timestamp: new Date().toISOString(),
+            requestedTrackIndex: trackIndex,
+            previousSelectedTrackIndex: state.selectedTrackIndex,
+            currentPlaybackBar: state.playbackCurrentBar,
+          });
           clearLoopState(state);
           const preservedTick = state.selectedNavigationTick ?? state.playbackCurrentTick ?? state.playbackCurrentBarStartTick;
           state.desiredTrackSwitchTick = preservedTick;
@@ -3618,6 +3760,9 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onExportAnchorDebug: () => {
           void exportAnchorDebugSnapshot();
+        },
+        onOpenDebugFolder: () => {
+          void openPath(SESSION_DEBUG_DIRECTORY);
         },
         onToggleTrackMute: (trackIndex) => {
           const isMuted = state.mutedTrackIndexes.includes(trackIndex);
@@ -3844,8 +3989,21 @@ export function startApp(rootElement: HTMLElement): void {
       updateMetronomeToggleVisual(state, rootElement);
 
       const project = state.currentProject;
+      appendSessionDebugEvent(state.sessionDebugLogger, {
+        type: "project-screen-init",
+        timestamp: new Date().toISOString(),
+        projectTitle: project.title,
+        sourceFileName: project.sourceFile.fileName,
+        selectedTrackIndex: state.selectedTrackIndex,
+      });
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
         onTracksLoaded: (tracks) => {
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            type: "tracks-loaded",
+            timestamp: new Date().toISOString(),
+            trackCount: tracks.length,
+            trackIndexes: tracks.map((track) => track.index),
+          });
           const trackListChanged = !isSameTrackList(state.gpTracks, tracks);
           if (!trackListChanged) {
             return;
@@ -3865,6 +4023,15 @@ export function startApp(rootElement: HTMLElement): void {
           render();
         },
         onDebugInfo: (debugInfo) => {
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            type: "renderer-debug-info",
+            timestamp: new Date().toISOString(),
+            renderCycleCounter: debugInfo.renderCycleCounter,
+            confirmedActiveTrackIndex: debugInfo.confirmedActiveTrackIndex,
+            renderMode: debugInfo.renderMode,
+            isPercussion: debugInfo.isPercussion,
+            effectiveStaveProfile: debugInfo.effectiveStaveProfile,
+          });
           state.gpRenderDebugInfo = debugInfo;
           state.activeTrackName = debugInfo.confirmedActiveTrackName ?? null;
           updateProjectDebugInfoPanel(rootElement, debugInfo);
@@ -3880,6 +4047,11 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onTrackRenderCommitted: (trackIndex) => {
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            type: "track-render-committed",
+            timestamp: new Date().toISOString(),
+            trackIndex,
+          });
           tryCompletePendingOverviewNavigationAfterRender(state, rootElement, trackIndex);
           nudgeRenderedSectionLabels(rootElement, state);
           updateLoopHandlesVisual(state, rootElement);
@@ -4039,6 +4211,11 @@ export function startApp(rootElement: HTMLElement): void {
           updateLoopHandlesVisual(state, rootElement);
         },
         onRuntimeNotice: (message) => {
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            type: "runtime-notice",
+            timestamp: new Date().toISOString(),
+            message,
+          });
           state.projectStatusMessage = message;
           clearLoopState(state);
           state.playbackCurrentBar = null;
@@ -4069,6 +4246,11 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
         },
         onActiveTrackConfirmed: (trackIndex) => {
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            type: "active-track-confirmed",
+            timestamp: new Date().toISOString(),
+            trackIndex,
+          });
           const isPendingOverviewTrackSwitch =
             state.pendingOverviewNavigationBar !== null &&
             state.pendingOverviewNavigationTrackIndex === trackIndex &&
@@ -4128,6 +4310,11 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
         },
         onRenderError: (message) => {
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            type: "render-error",
+            timestamp: new Date().toISOString(),
+            message,
+          });
           state.projectStatusMessage = message;
           cancelCountIn(state, rootElement);
           stopPlaybackMetronome(state);
