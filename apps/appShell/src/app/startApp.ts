@@ -1051,18 +1051,32 @@ function resolveSharedStructuralPlaybackBarAnchors(
     }),
   ].filter((row): row is { top: number; bottom: number } => row !== null);
 
+  const sortedRowBandCandidates = [...rowBandCandidates].sort((left, right) => left.top - right.top);
   const rowBands: Array<{ yMin: number; yMax: number; yCenter: number }> = [];
-  rowBandCandidates.forEach((band) => {
-    const yCenter = (band.top + band.bottom) / 2;
-    const existingIndex = rowBands.findIndex((row) => Math.abs(row.yCenter - yCenter) <= 10);
-    if (existingIndex >= 0) {
-      const row = rowBands[existingIndex] as { yMin: number; yMax: number; yCenter: number };
-      row.yMin = Math.min(row.yMin, band.top);
-      row.yMax = Math.max(row.yMax, band.bottom);
-      row.yCenter = (row.yMin + row.yMax) / 2;
+  const SYSTEM_ROW_MERGE_GAP_PX = 28;
+  const SYSTEM_ROW_PADDING_PX = 6;
+  sortedRowBandCandidates.forEach((band) => {
+    const currentRow = rowBands[rowBands.length - 1];
+    if (!currentRow) {
+      rowBands.push({
+        yMin: band.top,
+        yMax: band.bottom,
+        yCenter: (band.top + band.bottom) / 2,
+      });
       return;
     }
-    rowBands.push({ yMin: band.top, yMax: band.bottom, yCenter });
+    const gapFromCurrent = band.top - currentRow.yMax;
+    if (gapFromCurrent <= SYSTEM_ROW_MERGE_GAP_PX) {
+      currentRow.yMin = Math.min(currentRow.yMin, band.top);
+      currentRow.yMax = Math.max(currentRow.yMax, band.bottom);
+      currentRow.yCenter = (currentRow.yMin + currentRow.yMax) / 2;
+      return;
+    }
+    rowBands.push({
+      yMin: band.top,
+      yMax: band.bottom,
+      yCenter: (band.top + band.bottom) / 2,
+    });
   });
 
   const verticalCandidates = [
@@ -1112,16 +1126,24 @@ function resolveSharedStructuralPlaybackBarAnchors(
     }),
   ].filter((candidate): candidate is { x: number; top: number; bottom: number } => candidate !== null);
 
-  const sortedRows = [...rowBands].sort((left, right) => left.yCenter - right.yCenter);
+  const sortedRows = [...rowBands]
+    .sort((left, right) => left.yCenter - right.yCenter)
+    .map((row) => ({
+      yMin: row.yMin - SYSTEM_ROW_PADDING_PX,
+      yMax: row.yMax + SYSTEM_ROW_PADDING_PX,
+      yCenter: row.yCenter,
+    }));
   const anchors: PlaybackBarAnchor[] = [];
   let currentBar = 1;
   sortedRows.forEach((row, rowIndex) => {
-    const rowHeight = Math.max(row.yMax - row.yMin, 16);
+    const rowHeight = Math.max(row.yMax - row.yMin, 24);
     const separators = verticalCandidates
       .filter((candidate) => {
         const overlapTop = Math.max(candidate.top, row.yMin - 8);
         const overlapBottom = Math.min(candidate.bottom, row.yMax + 8);
-        return overlapBottom - overlapTop >= rowHeight * 0.65;
+        const overlapHeight = overlapBottom - overlapTop;
+        const candidateHeight = candidate.bottom - candidate.top;
+        return overlapHeight >= rowHeight * 0.82 && candidateHeight >= rowHeight * 0.82;
       })
       .map((candidate) => candidate.x)
       .sort((left, right) => left - right);
