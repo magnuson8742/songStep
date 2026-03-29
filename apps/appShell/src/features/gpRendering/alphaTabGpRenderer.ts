@@ -237,6 +237,8 @@ export interface GpRenderDebugInfo {
     } | null;
     transformSummary?: {
       coordinateSpaceMode: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
+      coordinateSpaceModeX?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
+      coordinateSpaceModeY?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
       modeReason: string;
       hostLocalScore: number;
       svgPixelScore: number;
@@ -247,7 +249,10 @@ export interface GpRenderDebugInfo {
       transformScaleY: number;
       transformOffsetX: number;
       transformOffsetY: number;
+      transformAppliedX?: boolean;
+      transformAppliedY?: boolean;
       firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
+      firstBarCalibratedRect?: { x: number; y: number; w: number; h: number } | null;
       firstBarFinalRect: { x: number; y: number; w: number; h: number } | null;
     } | null;
   } | null;
@@ -424,6 +429,8 @@ interface BarBoundsExtractionDiagnostics {
   } | null;
   transformSummary?: {
     coordinateSpaceMode: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
+    coordinateSpaceModeX?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
+    coordinateSpaceModeY?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
     modeReason: string;
     hostLocalScore: number;
     svgPixelScore: number;
@@ -434,7 +441,10 @@ interface BarBoundsExtractionDiagnostics {
     transformScaleY: number;
     transformOffsetX: number;
     transformOffsetY: number;
+    transformAppliedX?: boolean;
+    transformAppliedY?: boolean;
     firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
+    firstBarCalibratedRect?: { x: number; y: number; w: number; h: number } | null;
     firstBarFinalRect: { x: number; y: number; w: number; h: number } | null;
   } | null;
 }
@@ -2111,35 +2121,43 @@ export async function createGpRenderer(
         : svgPixelScore >= hostLocalScore
           ? "svg-pixel-to-host"
           : "host-local";
+    const coordinateSpaceModeX: "host-local" | "svg-pixel-to-host" | "viewbox-to-host" = coordinateSpaceMode;
+    const coordinateSpaceModeY: "host-local" | "svg-pixel-to-host" | "viewbox-to-host" =
+      coordinateSpaceMode === "svg-pixel-to-host" ? "host-local" : coordinateSpaceMode;
     const modeReason =
       coordinateSpaceMode === "viewbox-to-host"
         ? `viewboxScore=${viewBoxScore} dominates`
         : coordinateSpaceMode === "svg-pixel-to-host"
           ? `svgPixelScore=${svgPixelScore} dominates`
           : `hostLocalScore=${hostLocalScore} dominates`;
+    let transformAppliedX = false;
+    let transformAppliedY = false;
     const transformedCandidateRects = candidateRects.map((rect) => {
       const width = Math.max(rect.endX - rect.startX, 1);
-      if (coordinateSpaceMode === "viewbox-to-host" && svgViewBox) {
-        const mappedX = offsetX + (rect.startX - svgViewBox.x) * scaleX;
-        const mappedY = offsetY + (rect.y - svgViewBox.y) * scaleY;
-        return {
-          ...rect,
-          startX: mappedX,
-          endX: mappedX + width * scaleX,
-          y: mappedY,
-          height: rect.height * scaleY,
-        };
+      let mappedStartX = rect.startX;
+      let mappedWidth = width;
+      if (coordinateSpaceModeX === "viewbox-to-host" && svgViewBox) {
+        transformAppliedX = true;
+        mappedStartX = offsetX + (rect.startX - svgViewBox.x) * scaleX;
+        mappedWidth = width * scaleX;
+      } else if (coordinateSpaceModeX === "svg-pixel-to-host") {
+        transformAppliedX = true;
+        mappedStartX = offsetX + rect.startX;
       }
-      if (coordinateSpaceMode === "svg-pixel-to-host") {
-        return {
-          ...rect,
-          startX: offsetX + rect.startX,
-          endX: offsetX + rect.endX,
-          y: offsetY + rect.y,
-          height: rect.height,
-        };
+      let mappedY = rect.y;
+      let mappedHeight = rect.height;
+      if (coordinateSpaceModeY === "viewbox-to-host" && svgViewBox) {
+        transformAppliedY = true;
+        mappedY = offsetY + (rect.y - svgViewBox.y) * scaleY;
+        mappedHeight = rect.height * scaleY;
       }
-      return rect;
+      return {
+        ...rect,
+        startX: mappedStartX,
+        endX: mappedStartX + mappedWidth,
+        y: mappedY,
+        height: mappedHeight,
+      };
     });
     const firstFinalRectForTransform =
       transformedCandidateRects.length > 0
@@ -2218,6 +2236,8 @@ export async function createGpRenderer(
       calibrationSummary: authoritativeFamily?.calibrationSummary ?? null,
       transformSummary: {
         coordinateSpaceMode,
+        coordinateSpaceModeX,
+        coordinateSpaceModeY,
         modeReason,
         hostLocalScore,
         svgPixelScore,
@@ -2240,7 +2260,10 @@ export async function createGpRenderer(
         transformScaleY: scaleY,
         transformOffsetX: offsetX,
         transformOffsetY: offsetY,
+        transformAppliedX,
+        transformAppliedY,
         firstBarRawRect: firstRawRectForTransform,
+        firstBarCalibratedRect: firstRawRectForTransform,
         firstBarFinalRect: firstFinalRectForTransform,
       },
     };
