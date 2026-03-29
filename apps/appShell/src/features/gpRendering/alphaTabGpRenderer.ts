@@ -2012,35 +2012,52 @@ export async function createGpRenderer(
           const horizontalLineClusters = clusterYValues(detectedHorizontalLineYs, yClusterTolerance);
           const currentBarCenterY = barBounds.y + barBounds.h * 0.5;
           const currentRowBottomHint = matchedCluster?.rowBottom ?? calibratedY + calibratedH;
-          const chosenLineCluster =
+          const nearestCenterClusterIndex =
             horizontalLineClusters.length > 0
-              ? [...horizontalLineClusters].sort((left, right) => {
-                  const leftTop = Math.min(...left);
-                  const leftBottom = Math.max(...left);
-                  const rightTop = Math.min(...right);
-                  const rightBottom = Math.max(...right);
-                  const leftCenter = (leftTop + leftBottom) * 0.5;
-                  const rightCenter = (rightTop + rightBottom) * 0.5;
-                  return Math.abs(leftCenter - currentBarCenterY) - Math.abs(rightCenter - currentBarCenterY);
-                })[0]
-              : null;
+              ? horizontalLineClusters
+                  .map((cluster, clusterIndex) => {
+                    const clusterTop = Math.min(...cluster);
+                    const clusterBottom = Math.max(...cluster);
+                    const clusterCenter = (clusterTop + clusterBottom) * 0.5;
+                    return {
+                      clusterIndex,
+                      centerDistance: Math.abs(clusterCenter - currentBarCenterY),
+                    };
+                  })
+                  .sort((left, right) => left.centerDistance - right.centerDistance)[0]?.clusterIndex ?? -1
+              : -1;
+          const chosenTabClusterIndex =
+            horizontalLineClusters.length > 0
+              ? horizontalLineClusters
+                  .map((cluster, clusterIndex) => ({
+                    clusterIndex,
+                    clusterTop: Math.min(...cluster),
+                    clusterBottom: Math.max(...cluster),
+                    count: cluster.length,
+                  }))
+                  .filter((cluster) => cluster.count >= 2)
+                  .sort((left, right) => right.clusterBottom - left.clusterBottom || right.count - left.count)[0]
+                  ?.clusterIndex ?? nearestCenterClusterIndex
+              : -1;
+          const chosenLineCluster =
+            chosenTabClusterIndex >= 0 ? horizontalLineClusters[chosenTabClusterIndex] ?? null : null;
           const chosenRowTopLineY = chosenLineCluster ? Math.min(...chosenLineCluster) : null;
           const chosenRowBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
           const clusterRowBottom = chosenRowBottomLineY ?? currentRowBottomHint;
-          const chosenRowClusterIndex = chosenLineCluster ? horizontalLineClusters.indexOf(chosenLineCluster) : -1;
+          const chosenRowClusterIndex = chosenTabClusterIndex;
           let chosenVerticalAnchorMode: "parent-primary" | "line-refine" | "cluster-fallback" =
             chosenParentVerticalCandidate ? "parent-primary" : "cluster-fallback";
-          let rowAnchoredY = calibratedY;
+          const calibratedYBeforeTabAnchor = calibratedY;
+          let rowAnchoredY = calibratedYBeforeTabAnchor;
           if (chosenRowBottomLineY !== null) {
-            const bottomAnchoredY = chosenRowBottomLineY - calibratedH;
-            if (bottomAnchoredY < rowAnchoredY) {
-              rowAnchoredY = bottomAnchoredY;
-              chosenVerticalAnchorMode = "line-refine";
-              chosenVerticalSource = chosenParentVerticalCandidate
-                ? `${chosenParentVerticalCandidate.source}+svg.horizontalRowBottomLine`
-                : "svg.horizontalRowBottomLine";
-            }
+            const targetY = chosenRowBottomLineY - calibratedH;
+            rowAnchoredY = targetY;
+            chosenVerticalAnchorMode = "line-refine";
+            chosenVerticalSource = chosenParentVerticalCandidate
+              ? `${chosenParentVerticalCandidate.source}+svg.horizontalRowBottomLine`
+              : "svg.horizontalRowBottomLine";
           }
+          const calibratedYAfterTabAnchor = rowAnchoredY;
           const structuralBottomBoundary =
             parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
               ? parentSystemOuterBounds.y + parentSystemOuterBounds.h
@@ -2055,7 +2072,7 @@ export async function createGpRenderer(
             w: barBounds.w,
             h: calibratedH,
           };
-          if (!didLogVerticalSelection) {
+          if (!didLogVerticalSelection && systemIndex === 0 && barIndexInSystem === 0) {
             didLogVerticalSelection = true;
             console.debug("[alphaTabGpRenderer] bar bounds vertical source", {
               availableVerticalSources: resolvedVerticalCandidates
@@ -2070,10 +2087,19 @@ export async function createGpRenderer(
               rowClusterCount: rowClusterBands.length,
               firstBarClusterIndex: chosenRowClusterIndex >= 0 ? chosenRowClusterIndex : matchedClusterIndex,
               detectedHorizontalLineYs: detectedHorizontalLineYs.slice(0, 24),
+              horizontalLineClusters: horizontalLineClusters.map((cluster) => ({
+                top: Math.min(...cluster),
+                bottom: Math.max(...cluster),
+                count: cluster.length,
+              })),
               detectedHorizontalLineSources,
+              nearestCenterClusterIndex,
+              chosenTabClusterIndex,
               chosenRowTopLineY,
               firstBarRowBottom: clusterRowBottom,
               chosenRowBottomLineY,
+              calibratedYBeforeTabAnchor,
+              calibratedYAfterTabAnchor,
               chosenVerticalAnchorMode,
               finalVerticalSourcePath: chosenParentVerticalCandidate ? "parent-system-primary" : "cluster-fallback",
               firstBarHeight: calibratedH,
@@ -2082,7 +2108,7 @@ export async function createGpRenderer(
               systemRealBounds,
               chosenVerticalSourceHeight: systemVerticalBounds?.h ?? null,
               firstBarRawRect: barBounds,
-              firstBarFinalRect: finalRect,
+              finalRect,
             });
           }
           if (!familyCalibrationSummary) {
