@@ -1530,7 +1530,92 @@ export async function createGpRenderer(
       }
       return null;
     };
-    dedupedSystems.forEach((systemEntry) => {
+    const toXywhRect = (value: unknown): { x: number; y: number; w: number; h: number } | null => {
+      if (!value || typeof value !== "object") {
+        return null;
+      }
+      const record = value as Record<string, unknown>;
+      const x = typeof record.x === "number" ? record.x : null;
+      const y = typeof record.y === "number" ? record.y : null;
+      const w = typeof record.w === "number" ? record.w : null;
+      const h = typeof record.h === "number" ? record.h : null;
+      if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) {
+        return null;
+      }
+      return { x, y, w, h };
+    };
+    const directStaffSystemEntries: Array<{ sourcePath: string; systems: unknown[] }> = [];
+    const directStaffSystemPaths = [
+      "renderer.boundsLookup.staffSystems",
+      "renderer._instance.boundsLookup.staffSystems",
+    ];
+    directStaffSystemPaths.forEach((path) => {
+      const systems = readPath(unsafeApi, path);
+      if (Array.isArray(systems)) {
+        directStaffSystemEntries.push({ sourcePath: `api.${path}`, systems });
+      }
+    });
+    directStaffSystemEntries.forEach(({ sourcePath, systems }) => {
+      usedLayoutPaths.add(sourcePath);
+      systems.forEach((systemItem, systemIndex) => {
+        if (!systemItem || typeof systemItem !== "object") {
+          return;
+        }
+        const systemRecord = systemItem as Record<string, unknown>;
+        const bars = Array.isArray(systemRecord.bars) ? (systemRecord.bars as unknown[]) : [];
+        if (bars.length === 0) {
+          return;
+        }
+        discoveredBarCollectionCount += 1;
+        usedBarCollectionPaths.add("bars");
+        const systemBoundsContainer =
+          (systemRecord.staffSystemBounds as Record<string, unknown> | undefined) ??
+          (systemRecord.bounds as Record<string, unknown> | undefined) ??
+          null;
+        const systemVerticalBounds =
+          toXywhRect(systemBoundsContainer?.visualBounds) ??
+          toXywhRect(systemBoundsContainer?.realBounds) ??
+          toXywhRect(systemBoundsContainer);
+
+        bars.forEach((barItem, barIndexInSystem) => {
+          if (!barItem || typeof barItem !== "object") {
+            return;
+          }
+          const barRecord = barItem as Record<string, unknown>;
+          const barNumberRaw =
+            typeof barRecord.index === "number"
+              ? barRecord.index
+              : readNumberPath(barRecord, ["masterBar.index", "bar.index", "masterBarIndex", "barIndex"]);
+          if (barNumberRaw === null) {
+            summarizeBarItem(systemIndex, barIndexInSystem, barRecord);
+            return;
+          }
+          const barNumber = Math.round(barNumberRaw) + 1;
+          if (barNumber <= 0 || (totalBars !== null && totalBars > 0 && barNumber > totalBars)) {
+            return;
+          }
+          const barBounds =
+            toXywhRect(barRecord.lineAlignedBounds) ?? toXywhRect(barRecord.visualBounds) ?? toXywhRect(barRecord.realBounds);
+          if (!barBounds) {
+            summarizeBarItem(systemIndex, barIndexInSystem, barRecord);
+            return;
+          }
+          const verticalY = systemVerticalBounds?.y ?? barBounds.y;
+          const verticalH = systemVerticalBounds?.h ?? barBounds.h;
+          candidateRects.push({
+            barNumber,
+            startX: barBounds.x,
+            endX: barBounds.x + barBounds.w,
+            y: verticalY,
+            height: verticalH,
+            rowIndex: systemIndex,
+          });
+        });
+      });
+    });
+
+    if (candidateRects.length === 0) {
+      dedupedSystems.forEach((systemEntry) => {
       const { system, systemOrder } = systemEntry;
       const barItems: unknown[] = [];
       const structuralCollectionCandidates: Array<{ key: string; length: number }> = [];
@@ -1620,7 +1705,8 @@ export async function createGpRenderer(
           rowIndex: systemOrder,
         });
       });
-    });
+      });
+    }
 
     const byBarNumber = new Map<number, RenderedBarBound>();
     candidateRects.forEach((candidate) => {
