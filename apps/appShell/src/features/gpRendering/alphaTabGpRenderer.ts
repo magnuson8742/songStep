@@ -2122,8 +2122,7 @@ export async function createGpRenderer(
           ? "svg-pixel-to-host"
           : "host-local";
     const coordinateSpaceModeX: "host-local" | "svg-pixel-to-host" | "viewbox-to-host" = coordinateSpaceMode;
-    const coordinateSpaceModeY: "host-local" | "svg-pixel-to-host" | "viewbox-to-host" =
-      coordinateSpaceMode === "svg-pixel-to-host" ? "host-local" : coordinateSpaceMode;
+    const coordinateSpaceModeY: "host-local" | "svg-pixel-to-host" | "viewbox-to-host" = "host-local";
     const modeReason =
       coordinateSpaceMode === "viewbox-to-host"
         ? `viewboxScore=${viewBoxScore} dominates`
@@ -2146,11 +2145,6 @@ export async function createGpRenderer(
       }
       let mappedY = rect.y;
       let mappedHeight = rect.height;
-      if (coordinateSpaceModeY === "viewbox-to-host" && svgViewBox) {
-        transformAppliedY = true;
-        mappedY = offsetY + (rect.y - svgViewBox.y) * scaleY;
-        mappedHeight = rect.height * scaleY;
-      }
       return {
         ...rect,
         startX: mappedStartX,
