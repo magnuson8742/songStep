@@ -1883,16 +1883,17 @@ export async function createGpRenderer(
           const chosenRowTopLineY = chosenLineCluster ? Math.min(...chosenLineCluster) : null;
           const chosenRowBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
           const clusterRowBottom = chosenRowBottomLineY ?? currentRowBottomHint;
-          const topAnchoredY = chosenRowTopLineY ?? calibratedY;
-          const bottomAnchoredY = clusterRowBottom - calibratedH;
-          const chosenVerticalAnchorMode: "top" | "bottom" =
-            Math.abs(topAnchoredY - calibratedY) <= Math.abs(bottomAnchoredY - calibratedY) ? "top" : "bottom";
-          const rowAnchoredY = chosenVerticalAnchorMode === "top" ? topAnchoredY : bottomAnchoredY;
+          const chosenRowClusterIndex = chosenLineCluster ? horizontalLineClusters.indexOf(chosenLineCluster) : -1;
+          const chosenVerticalAnchorMode: "bottom" = "bottom";
+          if (chosenRowBottomLineY !== null) {
+            chosenVerticalSource = "svg.horizontalRowBottomLine";
+          }
           const structuralBottomBoundary =
             parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
               ? parentSystemOuterBounds.y + parentSystemOuterBounds.h
               : Number.POSITIVE_INFINITY;
           const maxTopFromBottomBoundary = structuralBottomBoundary - calibratedH;
+          const rowAnchoredY = clusterRowBottom - calibratedH;
           calibratedY = Math.min(rowAnchoredY, maxTopFromBottomBoundary);
           const structuralTopBoundary = parentSystemOuterBounds?.y ?? systemVerticalBounds?.y ?? calibratedY;
           calibratedY = Math.max(calibratedY, structuralTopBoundary);
@@ -1911,7 +1912,7 @@ export async function createGpRenderer(
                 .slice(0, 10),
               totalBarsInSystem: bars.length,
               rowClusterCount: rowClusterBands.length,
-              firstBarClusterIndex: matchedClusterIndex,
+              firstBarClusterIndex: chosenRowClusterIndex >= 0 ? chosenRowClusterIndex : matchedClusterIndex,
               detectedHorizontalLineYs: detectedHorizontalLineYs.slice(0, 24),
               chosenRowTopLineY,
               firstBarRowBottom: clusterRowBottom,
