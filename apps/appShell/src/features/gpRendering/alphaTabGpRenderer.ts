@@ -1700,7 +1700,7 @@ export async function createGpRenderer(
         const medianHeight =
           heightValues.length > 0 ? heightValues[Math.floor(heightValues.length / 2)] ?? heightValues[0] ?? 0 : 0;
         const clusterTolerance = medianHeight > 0 ? Math.max(1, medianHeight * 0.08) : 1;
-        const rowClusters: Array<{ top: number; bottom: number; barIndices: number[] }> = [];
+        const rowClusters: Array<{ top: number; bottom: number; barIndices: number[]; bottoms: number[] }> = [];
         sortedClusterSeedRects.forEach(({ barIndexInSystem, rect }) => {
           const rectTop = rect.y;
           const rectBottom = rect.y + rect.h;
@@ -1712,13 +1712,23 @@ export async function createGpRenderer(
             cluster.top = Math.min(cluster.top, rectTop);
             cluster.bottom = Math.max(cluster.bottom, rectBottom);
             cluster.barIndices.push(barIndexInSystem);
+            cluster.bottoms.push(rectBottom);
             return;
           }
-          rowClusters.push({ top: rectTop, bottom: rectBottom, barIndices: [barIndexInSystem] });
+          rowClusters.push({ top: rectTop, bottom: rectBottom, barIndices: [barIndexInSystem], bottoms: [rectBottom] });
         });
+        const toMedian = (values: number[]): number => {
+          if (values.length === 0) {
+            return 0;
+          }
+          const sorted = [...values].sort((left, right) => left - right);
+          const midIndex = Math.floor(sorted.length / 2);
+          return sorted[midIndex] ?? sorted[0] ?? 0;
+        };
         const rowClusterBands = rowClusters.map((cluster) => ({
           y: cluster.top,
           h: cluster.bottom - cluster.top,
+          rowBottom: toMedian(cluster.bottoms),
           barIndexSet: new Set(cluster.barIndices),
         }));
 
@@ -1773,25 +1783,16 @@ export async function createGpRenderer(
             calibratedY = systemVerticalBounds.y;
             calibratedH = systemVerticalBounds.h;
           }
-          const currentFinalRect = {
-            x: calibratedX,
-            y: calibratedY,
-            w: barBounds.w,
-            h: calibratedH,
-          };
-          const localTopInsetToBar = Math.max(0, barBounds.y - calibratedY);
-          const localTopInsetToParent =
-            parentSystemOuterBounds && systemVerticalBounds
-              ? Math.max(0, systemVerticalBounds.y - parentSystemOuterBounds.y)
-              : 0;
-          const localInsetBasis = localTopInsetToBar > 0 ? localTopInsetToBar : localTopInsetToParent;
-          const localLineGapEstimate = localInsetBasis > 0 ? localInsetBasis / 3 : 0;
-          const previousAppliedVerticalOffset = localLineGapEstimate * 3;
-          const newAppliedVerticalOffset = localLineGapEstimate * 1.5;
-          const shiftedYBeforeClamp = calibratedY - newAppliedVerticalOffset;
+          const clusterRowBottom = matchedCluster?.rowBottom ?? calibratedY + calibratedH;
+          const structuralBottomBoundary =
+            parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
+              ? parentSystemOuterBounds.y + parentSystemOuterBounds.h
+              : Number.POSITIVE_INFINITY;
+          const boundedRowBottom = Math.min(clusterRowBottom, structuralBottomBoundary);
+          calibratedY = boundedRowBottom - calibratedH;
           const structuralTopBoundary = parentSystemOuterBounds?.y ?? systemVerticalBounds?.y ?? calibratedY;
-          calibratedY = Math.max(shiftedYBeforeClamp, structuralTopBoundary);
-          const shiftedFinalRect = {
+          calibratedY = Math.max(calibratedY, structuralTopBoundary);
+          const finalRect = {
             x: calibratedX,
             y: calibratedY,
             w: barBounds.w,
@@ -1807,17 +1808,14 @@ export async function createGpRenderer(
               totalBarsInSystem: bars.length,
               rowClusterCount: rowClusterBands.length,
               firstBarClusterIndex: matchedClusterIndex,
-              firstBarClusterBand: matchedCluster ? { y: matchedCluster.y, h: matchedCluster.h } : null,
+              firstBarRowBottom: clusterRowBottom,
+              firstBarHeight: calibratedH,
               chosenVerticalSource,
               systemVisualBounds,
               systemRealBounds,
               chosenVerticalSourceHeight: systemVerticalBounds?.h ?? null,
               firstBarRawRect: barBounds,
-              previousFinalRect: currentFinalRect,
-              localLineGapEstimate,
-              previousAppliedVerticalOffset,
-              newAppliedVerticalOffset,
-              firstBarFinalRect: shiftedFinalRect,
+              firstBarFinalRect: finalRect,
             });
           }
           if (!familyCalibrationSummary) {
