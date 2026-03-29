@@ -228,6 +228,8 @@ export interface GpRenderDebugInfo {
       calibrationModeY: "local-to-system" | "absolute";
       systemOriginX: number | null;
       systemOriginY: number | null;
+      chosenVerticalSource?: string | null;
+      parentSystemRect?: { x: number; y: number; w: number; h: number } | null;
       firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
       firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
     } | null;
@@ -411,6 +413,8 @@ interface BarBoundsExtractionDiagnostics {
     calibrationModeY: "local-to-system" | "absolute";
     systemOriginX: number | null;
     systemOriginY: number | null;
+    chosenVerticalSource?: string | null;
+    parentSystemRect?: { x: number; y: number; w: number; h: number } | null;
     firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
     firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
   } | null;
@@ -1614,6 +1618,7 @@ export async function createGpRenderer(
       usedLayoutPaths.add(sourcePath);
       const familyRects: RenderedBarBound[] = [];
       let familyCalibrationSummary: BarBoundsExtractionDiagnostics["calibrationSummary"] = null;
+      let didLogVerticalSelection = false;
       systems.forEach((systemItem, systemIndex) => {
         if (!systemItem || typeof systemItem !== "object") {
           return;
@@ -1629,10 +1634,21 @@ export async function createGpRenderer(
           (systemRecord.staffSystemBounds as Record<string, unknown> | undefined) ??
           (systemRecord.bounds as Record<string, unknown> | undefined) ??
           null;
-        const systemVerticalBounds =
-          toXywhRect(systemBoundsContainer?.visualBounds) ??
-          toXywhRect(systemBoundsContainer?.realBounds) ??
-          toXywhRect(systemBoundsContainer);
+        const verticalCandidates: Array<{ source: string; rect: { x: number; y: number; w: number; h: number } | null }> = [
+          { source: "staffSystemBounds.lineAlignedBounds", rect: toXywhRect(systemBoundsContainer?.lineAlignedBounds) },
+          { source: "staffSystemBounds.systemAlignedBounds", rect: toXywhRect(systemBoundsContainer?.systemAlignedBounds) },
+          { source: "system.lineAlignedBounds", rect: toXywhRect(systemRecord.lineAlignedBounds) },
+          { source: "system.systemAlignedBounds", rect: toXywhRect(systemRecord.systemAlignedBounds) },
+          { source: "staffSystemBounds.visualBounds", rect: toXywhRect(systemBoundsContainer?.visualBounds) },
+          { source: "system.visualBounds", rect: toXywhRect(systemRecord.visualBounds) },
+          { source: "staffSystemBounds.realBounds", rect: toXywhRect(systemBoundsContainer?.realBounds) },
+          { source: "system.realBounds", rect: toXywhRect(systemRecord.realBounds) },
+          { source: "staffSystemBounds", rect: toXywhRect(systemBoundsContainer) },
+          { source: "system", rect: toXywhRect(systemRecord) },
+        ];
+        const chosenVertical = verticalCandidates.find((candidate) => candidate.rect !== null) ?? null;
+        const systemVerticalBounds = chosenVertical?.rect ?? null;
+        const chosenVerticalSource = chosenVertical?.source ?? "bar-local-fallback";
 
         const rawBarBounds = bars
           .map((barItem) => (barItem && typeof barItem === "object" ? (barItem as Record<string, unknown>) : null))
@@ -1698,12 +1714,22 @@ export async function createGpRenderer(
             systemVerticalBounds && calibrationModeY === "local-to-system" ? systemVerticalBounds.y + barBounds.y : barBounds.y;
           let calibratedH = barBounds.h;
           if (systemVerticalBounds) {
-            const clippedTop = Math.max(calibratedY, systemVerticalBounds.y);
-            const clippedBottom = Math.min(calibratedY + calibratedH, systemVerticalBounds.y + systemVerticalBounds.h);
-            if (clippedBottom > clippedTop + 1) {
-              calibratedY = clippedTop;
-              calibratedH = clippedBottom - clippedTop;
-            }
+            calibratedY = systemVerticalBounds.y;
+            calibratedH = systemVerticalBounds.h;
+          }
+          if (!didLogVerticalSelection) {
+            didLogVerticalSelection = true;
+            console.debug("[alphaTabGpRenderer] bar bounds vertical source", {
+              chosenVerticalSource,
+              barLocalRect: barBounds,
+              parentSystemRect: systemVerticalBounds,
+              finalRect: {
+                x: calibratedX,
+                y: calibratedY,
+                w: barBounds.w,
+                h: calibratedH,
+              },
+            });
           }
           if (!familyCalibrationSummary) {
             familyCalibrationSummary = {
@@ -1711,6 +1737,8 @@ export async function createGpRenderer(
               calibrationModeY,
               systemOriginX: systemVerticalBounds?.x ?? null,
               systemOriginY: systemVerticalBounds?.y ?? null,
+              chosenVerticalSource,
+              parentSystemRect: systemVerticalBounds,
               firstBarRawRect: barBounds,
               firstBarCalibratedRect: {
                 x: calibratedX,
