@@ -1002,241 +1002,28 @@ function buildAnchorDebugSnapshot(state: AppState, rootElement: HTMLElement): Re
   };
 }
 
-function resolveSharedStructuralPlaybackBarAnchors(
-  renderHost: HTMLElement,
-  totalBars: number,
-): { anchors: PlaybackBarAnchor[] | null; diagnostics: string; details: Record<string, unknown> } {
-  const renderHostRect = renderHost.getBoundingClientRect();
-  const rowBandCandidates = [
-    ...Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line")).map((line) => {
-      const x1 = Number(line.getAttribute("x1"));
-      const y1 = Number(line.getAttribute("y1"));
-      const x2 = Number(line.getAttribute("x2"));
-      const y2 = Number(line.getAttribute("y2"));
-      if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
-        return null;
-      }
-      const horizontalSpan = Math.abs(x2 - x1);
-      const verticalDelta = Math.abs(y2 - y1);
-      if (horizontalSpan < 48 || verticalDelta > 1.5) {
-        return null;
-      }
-      const rect = line.getBoundingClientRect();
-      return {
-        top: rect.top - renderHostRect.top + renderHost.scrollTop,
-        bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
-      };
-    }),
-    ...Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect")).map((rect) => {
-      const width = Number(rect.getAttribute("width"));
-      const height = Number(rect.getAttribute("height"));
-      if (!Number.isFinite(width) || !Number.isFinite(height) || width < 48 || height <= 0 || height > 5) {
-        return null;
-      }
-      const box = rect.getBoundingClientRect();
-      return {
-        top: box.top - renderHostRect.top + renderHost.scrollTop,
-        bottom: box.bottom - renderHostRect.top + renderHost.scrollTop,
-      };
-    }),
-    ...Array.from(renderHost.querySelectorAll<SVGPathElement>("svg path")).map((path) => {
-      const box = path.getBoundingClientRect();
-      if (box.width < 48 || box.height <= 0 || box.height > 5) {
-        return null;
-      }
-      return {
-        top: box.top - renderHostRect.top + renderHost.scrollTop,
-        bottom: box.bottom - renderHostRect.top + renderHost.scrollTop,
-      };
-    }),
-  ].filter((row): row is { top: number; bottom: number } => row !== null);
-
-  const verticalCandidates = [
-    ...Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line")).map((line) => {
-      const x1 = Number(line.getAttribute("x1"));
-      const y1 = Number(line.getAttribute("y1"));
-      const x2 = Number(line.getAttribute("x2"));
-      const y2 = Number(line.getAttribute("y2"));
-      if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
-        return null;
-      }
-      const verticalDelta = Math.abs(y2 - y1);
-      const horizontalDelta = Math.abs(x2 - x1);
-      if (verticalDelta < 24 || horizontalDelta > 1.5) {
-        return null;
-      }
-      const rect = line.getBoundingClientRect();
-      return {
-        x: rect.left - renderHostRect.left + renderHost.scrollLeft,
-        top: rect.top - renderHostRect.top + renderHost.scrollTop,
-        bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
-      };
-    }),
-    ...Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect")).map((rect) => {
-      const width = Number(rect.getAttribute("width"));
-      const height = Number(rect.getAttribute("height"));
-      if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0.6 || width > 6 || height < 24) {
-        return null;
-      }
-      const box = rect.getBoundingClientRect();
-      return {
-        x: box.left - renderHostRect.left + renderHost.scrollLeft,
-        top: box.top - renderHostRect.top + renderHost.scrollTop,
-        bottom: box.bottom - renderHostRect.top + renderHost.scrollTop,
-      };
-    }),
-    ...Array.from(renderHost.querySelectorAll<SVGPathElement>("svg path")).map((path) => {
-      const box = path.getBoundingClientRect();
-      if (box.width > 6 || box.height < 24) {
-        return null;
-      }
-      return {
-        x: box.left - renderHostRect.left + renderHost.scrollLeft,
-        top: box.top - renderHostRect.top + renderHost.scrollTop,
-        bottom: box.bottom - renderHostRect.top + renderHost.scrollTop,
-      };
-    }),
-  ].filter((candidate): candidate is { x: number; top: number; bottom: number } => candidate !== null);
-
-  const sortedRowBandCandidates = [...rowBandCandidates].sort((left, right) => left.top - right.top);
-  const SYSTEM_ROW_PADDING_PX = 6;
-  const SIGNATURE_SCAN_PADDING_PX = 18;
-  const signatureTolerancePx = 6;
-  const toSignature = (band: { top: number; bottom: number }): number[] => {
-    const yTop = band.top - SIGNATURE_SCAN_PADDING_PX;
-    const yBottom = band.bottom + SIGNATURE_SCAN_PADDING_PX;
-    const xValues = verticalCandidates
-      .filter((candidate) => candidate.bottom >= yTop && candidate.top <= yBottom)
-      .map((candidate) => candidate.x)
-      .sort((left, right) => left - right);
-    const collapsed: number[] = [];
-    xValues.forEach((x) => {
-      const previous = collapsed[collapsed.length - 1];
-      if (previous === undefined || Math.abs(previous - x) > signatureTolerancePx) {
-        collapsed.push(x);
-      } else {
-        collapsed[collapsed.length - 1] = (previous + x) / 2;
-      }
-    });
-    return collapsed;
-  };
-  const signatureOverlap = (left: number[], right: number[]): number => {
-    if (left.length === 0 || right.length === 0) {
-      return 0;
-    }
-    let matches = 0;
-    left.forEach((value) => {
-      const found = right.some((candidate) => Math.abs(candidate - value) <= signatureTolerancePx);
-      if (found) {
-        matches += 1;
-      }
-    });
-    return matches / Math.max(left.length, right.length);
-  };
-
-  const rowSystems: Array<{ yMin: number; yMax: number; signature: number[] }> = [];
-  sortedRowBandCandidates.forEach((band) => {
-    const signature = toSignature(band);
-    const bestMatchIndex = rowSystems.findIndex((system) => signatureOverlap(system.signature, signature) >= 0.6);
-    if (bestMatchIndex >= 0) {
-      const system = rowSystems[bestMatchIndex] as { yMin: number; yMax: number; signature: number[] };
-      system.yMin = Math.min(system.yMin, band.top);
-      system.yMax = Math.max(system.yMax, band.bottom);
-      if (signature.length > system.signature.length) {
-        system.signature = signature;
-      }
-      return;
-    }
-    rowSystems.push({
-      yMin: band.top,
-      yMax: band.bottom,
-      signature,
-    });
-  });
-
-  const sortedRows = [...rowSystems]
-    .sort((left, right) => (left.yMin + left.yMax) / 2 - (right.yMin + right.yMax) / 2)
-    .map((row) => ({
-      yMin: row.yMin - SYSTEM_ROW_PADDING_PX,
-      yMax: row.yMax + SYSTEM_ROW_PADDING_PX,
-      yCenter: (row.yMin + row.yMax) / 2,
-    }));
-  const anchors: PlaybackBarAnchor[] = [];
-  let currentBar = 1;
-  sortedRows.forEach((row, rowIndex) => {
-    const rowHeight = Math.max(row.yMax - row.yMin, 24);
-    const separators = verticalCandidates
-      .filter((candidate) => {
-        const overlapTop = Math.max(candidate.top, row.yMin - 8);
-        const overlapBottom = Math.min(candidate.bottom, row.yMax + 8);
-        const overlapHeight = overlapBottom - overlapTop;
-        const candidateHeight = candidate.bottom - candidate.top;
-        return overlapHeight >= rowHeight * 0.82 && candidateHeight >= rowHeight * 0.82;
-      })
-      .map((candidate) => candidate.x)
-      .sort((left, right) => left - right);
-
-    const collapsedSeparators: number[] = [];
-    separators.forEach((x) => {
-      const previous = collapsedSeparators[collapsedSeparators.length - 1];
-      if (previous === undefined || Math.abs(previous - x) > 4) {
-        collapsedSeparators.push(x);
-      } else {
-        collapsedSeparators[collapsedSeparators.length - 1] = (previous + x) / 2;
-      }
-    });
-
-    for (let index = 0; index < collapsedSeparators.length - 1; index += 1) {
-      const startX = collapsedSeparators[index] as number;
-      const endX = collapsedSeparators[index + 1] as number;
-      if (endX <= startX + 10) {
-        continue;
-      }
-      anchors.push({
-        barNumber: currentBar,
-        startX,
-        endX,
-        rowIndex,
-        y: row.yMin,
-        height: Math.max(row.yMax - row.yMin, 28),
-      });
-      currentBar += 1;
-    }
-  });
-
-  const diagnostics = `strategy=shared-structural-separators,rowBands=${sortedRows.length},verticalCandidates=${verticalCandidates.length},normalizedBars=${anchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},validation=${anchors.length > 0 ? "pending" : "fail"},rejectionReason=${anchors.length > 0 ? "-" : "noStructuralSeparators"}`;
-  return {
-    anchors: anchors.length > 0 ? anchors : null,
-    diagnostics,
-    details: {
-      rowBandCount: sortedRows.length,
-      verticalCandidateCount: verticalCandidates.length,
-      normalizedAnchors: anchors,
-    },
-  };
-}
-
-
-function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElement): PlaybackBarAnchor[] {
+function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[] {
   const rawBounds = state.gpRenderer?.getRenderedBarBounds() ?? [];
   if (rawBounds.length === 0) {
     state.playbackAnchorStrategyAttempts =
-      "chosenSource=renderer+svg-separators,rawBoundsCount=0,representativeBarsCount=0,rowCount=0,rawVerticalCount=0,spanningVerticalCount=0,separatorCount=0,usedFallbackMidpoints=no,validation=fail,normalizedBy=separator-partition";
+      "chosenSource=renderer:layout-rectangles,rawBoundsCount=0,normalizedBars=0,rowCount=0,validation=fail,reason=noBounds";
     return [];
   }
 
   const totalBars = state.totalBars ?? 0;
-  const descriptors = rawBounds
+  const normalized = rawBounds
     .filter((bound) => {
-      const hasDescriptor =
+      const valid =
         Number.isFinite(bound.barNumber) &&
-        Number.isFinite(bound.representativeX) &&
-        Number.isFinite(bound.representativeY) &&
-        Number.isFinite(bound.rawTop) &&
-        Number.isFinite(bound.rawBottom) &&
-        Number.isFinite(bound.rowHint) &&
-        bound.barNumber > 0;
-      if (!hasDescriptor) {
+        Number.isFinite(bound.startX) &&
+        Number.isFinite(bound.endX) &&
+        Number.isFinite(bound.y) &&
+        Number.isFinite(bound.height) &&
+        Number.isFinite(bound.rowIndex) &&
+        bound.barNumber > 0 &&
+        bound.endX > bound.startX + 1 &&
+        bound.height > 0;
+      if (!valid) {
         return false;
       }
       if (totalBars > 0 && bound.barNumber > totalBars) {
@@ -1246,257 +1033,37 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
     })
     .map((bound) => ({
       barNumber: Math.round(bound.barNumber),
-      representativeX: bound.representativeX,
-      representativeY: bound.representativeY,
-      rawTop: Math.min(bound.rawTop, bound.rawBottom),
-      rawBottom: Math.max(bound.rawBottom, bound.rawTop),
-      rowHint: Number.isFinite(bound.rowHint) ? Math.max(0, Math.round(bound.rowHint)) : 0,
+      startX: bound.startX,
+      endX: bound.endX,
+      y: bound.y,
+      height: bound.height,
+      rowIndex: Math.max(0, Math.round(bound.rowIndex)),
     }))
     .sort((left, right) => left.barNumber - right.barNumber);
 
-  if (descriptors.length === 0) {
-    return [];
-  }
-
-  const deduped = new Map<
-    number,
-    { barNumber: number; representativeX: number; representativeY: number; rawTop: number; rawBottom: number; rowHint: number }
-  >();
-  descriptors.forEach((bound) => {
-    const existing = deduped.get(bound.barNumber);
+  const dedupedByBar = new Map<number, PlaybackBarAnchor>();
+  normalized.forEach((item) => {
+    const existing = dedupedByBar.get(item.barNumber);
     if (!existing) {
-      deduped.set(bound.barNumber, bound);
-      return;
-    }
-    const leftRepresentativeX = Math.min(existing.representativeX, bound.representativeX);
-    const conservativeTop = Math.max(existing.rawTop, bound.rawTop);
-    const conservativeBottom = Math.min(existing.rawBottom, bound.rawBottom);
-    deduped.set(bound.barNumber, {
-      barNumber: bound.barNumber,
-      representativeX: leftRepresentativeX,
-      representativeY: (existing.representativeY + bound.representativeY) / 2,
-      rawTop: conservativeTop,
-      rawBottom: conservativeBottom > conservativeTop ? conservativeBottom : Math.max(existing.rawBottom, bound.rawBottom),
-      rowHint: Math.min(existing.rowHint, bound.rowHint),
-    });
-  });
-
-  const representativeBars = Array.from(deduped.values()).sort((left, right) => left.barNumber - right.barNumber);
-  const contiguous = representativeBars.every((bar, index) => bar.barNumber === index + 1);
-  if (!contiguous) {
-    state.playbackAnchorStrategyAttempts = `chosenSource=renderer+svg-separators,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=0,rawVerticalCount=0,spanningVerticalCount=0,separatorCount=0,usedFallbackMidpoints=no,validation=fail,normalizedBy=separator-partition`;
-    return [];
-  }
-
-  const quantile = (values: number[], ratio: number): number | null => {
-    if (values.length === 0) {
-      return null;
-    }
-    const sorted = [...values].sort((left, right) => left - right);
-    const index = Math.max(0, Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio)));
-    return sorted[index] ?? null;
-  };
-
-  const renderHostRect = renderHost.getBoundingClientRect();
-  const toLocalRect = (rect: DOMRect): { left: number; right: number; top: number; bottom: number; width: number; height: number } => ({
-    left: rect.left - renderHostRect.left + renderHost.scrollLeft,
-    right: rect.right - renderHostRect.left + renderHost.scrollLeft,
-    top: rect.top - renderHostRect.top + renderHost.scrollTop,
-    bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
-    width: rect.width,
-    height: rect.height,
-  });
-
-  const horizontalSegments = [
-    ...Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line"))
-      .filter((line) => {
-        const x1 = Number(line.getAttribute("x1"));
-        const y1 = Number(line.getAttribute("y1"));
-        const x2 = Number(line.getAttribute("x2"));
-        const y2 = Number(line.getAttribute("y2"));
-        if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
-          return false;
-        }
-        return Math.abs(y2 - y1) <= 1.6 && Math.abs(x2 - x1) >= 48;
-      })
-      .map((line) => toLocalRect(line.getBoundingClientRect())),
-    ...Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect"))
-      .filter((rect) => {
-        const width = Number(rect.getAttribute("width"));
-        const height = Number(rect.getAttribute("height"));
-        return Number.isFinite(width) && Number.isFinite(height) && width >= 48 && height > 0 && height <= 4;
-      })
-      .map((rect) => toLocalRect(rect.getBoundingClientRect())),
-  ];
-  const verticalSeparators = [
-    ...Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line"))
-      .filter((line) => {
-        const x1 = Number(line.getAttribute("x1"));
-        const y1 = Number(line.getAttribute("y1"));
-        const x2 = Number(line.getAttribute("x2"));
-        const y2 = Number(line.getAttribute("y2"));
-        if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
-          return false;
-        }
-        return Math.abs(x2 - x1) <= 1.8 && Math.abs(y2 - y1) >= 14;
-      })
-      .map((line) => toLocalRect(line.getBoundingClientRect())),
-    ...Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect"))
-      .filter((rect) => {
-        const width = Number(rect.getAttribute("width"));
-        const height = Number(rect.getAttribute("height"));
-        return Number.isFinite(width) && Number.isFinite(height) && width <= 5 && height >= 14;
-      })
-      .map((rect) => toLocalRect(rect.getBoundingClientRect())),
-  ];
-
-  const clusterRowsFromDescriptors = (): Array<{ rowKey: number; bars: typeof representativeBars; yCenter: number }> => {
-    const rows: Array<{ rowKey: number; bars: typeof representativeBars; yCenter: number; yMin: number; yMax: number }> = [];
-    representativeBars.forEach((bar) => {
-      const existingRowIndex = rows.findIndex((row) => Math.abs(row.yCenter - bar.representativeY) <= 30);
-      if (existingRowIndex >= 0) {
-        const row = rows[existingRowIndex];
-        if (!row) {
-          return;
-        }
-        row.bars.push(bar);
-        row.yMin = Math.min(row.yMin, bar.rawTop);
-        row.yMax = Math.max(row.yMax, bar.rawBottom);
-        row.yCenter = (row.yMin + row.yMax) / 2;
-        return;
-      }
-      rows.push({
-        rowKey: rows.length,
-        bars: [bar],
-        yCenter: bar.representativeY,
-        yMin: bar.rawTop,
-        yMax: bar.rawBottom,
-      });
-    });
-    return rows
-      .sort((left, right) => left.yCenter - right.yCenter)
-      .map((row, rowIndex) => ({ rowKey: rowIndex, bars: row.bars, yCenter: row.yCenter }));
-  };
-
-  const rowsByHint = new Map<number, typeof representativeBars>();
-  representativeBars.forEach((bar) => {
-    const rowBars = rowsByHint.get(bar.rowHint) ?? [];
-    rowBars.push(bar);
-    rowsByHint.set(bar.rowHint, rowBars);
-  });
-  const hintedRows = Array.from(rowsByHint.entries())
-    .map(([rowKey, bars]) => ({
-      rowKey,
-      bars: [...bars].sort((left, right) => left.representativeX - right.representativeX),
-      yCenter: quantile(bars.map((bar) => bar.representativeY), 0.5) ?? 0,
-    }))
-    .sort((left, right) => left.yCenter - right.yCenter);
-  const rowGroups =
-    hintedRows.length >= 2 || representativeBars.length <= 4
-      ? hintedRows.map((row, rowIndex) => ({ ...row, rowKey: rowIndex }))
-      : clusterRowsFromDescriptors();
-
-  const normalizedAnchors: PlaybackBarAnchor[] = [];
-  let usedSeparatorCount = 0;
-  let rawVerticalCount = 0;
-  let spanningVerticalCount = 0;
-  let usedFallbackMidpoints = false;
-
-  rowGroups.forEach((row, rowIndex) => {
-    const rowBars = [...row.bars].sort((left, right) => left.representativeX - right.representativeX);
-    if (rowBars.length === 0) {
-      return;
-    }
-    const rowRepXs = rowBars.map((bar) => bar.representativeX);
-    const rowYCenter = quantile(rowBars.map((bar) => bar.representativeY), 0.5) ?? row.yCenter;
-
-    const rowHorizontal = horizontalSegments.filter((segment) => Math.abs((segment.top + segment.bottom) / 2 - rowYCenter) <= 56);
-    const rowTopFromStructure = rowHorizontal.length > 0 ? Math.min(...rowHorizontal.map((segment) => segment.top)) : null;
-    const rowBottomFromStructure = rowHorizontal.length > 0 ? Math.max(...rowHorizontal.map((segment) => segment.bottom)) : null;
-    const rowTopFromBounds = quantile(rowBars.map((bar) => bar.rawTop), 0.4) ?? (rowYCenter - 18);
-    const rowBottomFromBounds = quantile(rowBars.map((bar) => bar.rawBottom), 0.75) ?? (rowYCenter + 18);
-    const rowTop = rowTopFromStructure !== null ? rowTopFromStructure - 2 : rowTopFromBounds;
-    const rowBottom = rowBottomFromStructure !== null ? rowBottomFromStructure + 2 : Math.max(rowBottomFromBounds, rowTop + 24);
-    const rowHeight = Math.max(rowBottom - rowTop, 24);
-
-    const rowVerticalRaw = verticalSeparators.filter((segment) => segment.bottom >= rowTop - 6 && segment.top <= rowBottom + 6);
-    rawVerticalCount += rowVerticalRaw.length;
-    const rowSeparatorsRaw = rowVerticalRaw
-      .filter((segment) => {
-        const overlapTop = Math.max(segment.top, rowTop);
-        const overlapBottom = Math.min(segment.bottom, rowBottom);
-        const overlapHeight = Math.max(overlapBottom - overlapTop, 0);
-        const overlapRatio = overlapHeight / rowHeight;
-        const spanRatio = segment.height / rowHeight;
-        return overlapRatio >= 0.82 && spanRatio >= 0.82;
-      })
-      .map((segment) => (segment.left + segment.right) / 2)
-      .sort((left, right) => left - right);
-    spanningVerticalCount += rowSeparatorsRaw.length;
-    const dedupedSeparators = rowSeparatorsRaw.filter((value, index) => {
-      if (index === 0) {
-        return true;
-      }
-      const previous = rowSeparatorsRaw[index - 1];
-      return previous === undefined ? true : Math.abs(value - previous) > 3;
-    });
-
-    const expectedBoundaries = rowBars.length + 1;
-    let selectedBoundaries: number[] = [];
-    if (dedupedSeparators.length >= expectedBoundaries) {
-      let bestWindow = dedupedSeparators.slice(0, expectedBoundaries);
-      let bestScore = Number.POSITIVE_INFINITY;
-      for (let start = 0; start <= dedupedSeparators.length - expectedBoundaries; start += 1) {
-        const window = dedupedSeparators.slice(start, start + expectedBoundaries);
-        const windowLeft = window[0] ?? 0;
-        const windowRight = window[window.length - 1] ?? windowLeft;
-        const spanScore = Math.abs(windowLeft - (rowRepXs[0] ?? windowLeft)) + Math.abs(windowRight - (rowRepXs[rowRepXs.length - 1] ?? windowRight));
-        if (spanScore < bestScore) {
-          bestScore = spanScore;
-          bestWindow = window;
-        }
-      }
-      selectedBoundaries = bestWindow;
-    } else {
-      usedFallbackMidpoints = true;
-      const rowLeft = quantile(rowRepXs, 0.05) ?? rowRepXs[0] ?? 0;
-      const rowRight = quantile(rowRepXs, 0.95) ?? rowRepXs[rowRepXs.length - 1] ?? rowLeft + 24;
-      const fallbackBoundaries: number[] = [rowLeft];
-      for (let index = 0; index < rowBars.length - 1; index += 1) {
-        const current = rowBars[index];
-        const next = rowBars[index + 1];
-        if (!current || !next) {
-          continue;
-        }
-        fallbackBoundaries.push((current.representativeX + next.representativeX) / 2);
-      }
-      fallbackBoundaries.push(Math.max(rowRight, fallbackBoundaries[fallbackBoundaries.length - 1] ?? rowRight));
-      selectedBoundaries = fallbackBoundaries;
-    }
-
-    usedSeparatorCount += dedupedSeparators.length;
-    if (selectedBoundaries.length < expectedBoundaries) {
+      dedupedByBar.set(item.barNumber, item);
       return;
     }
 
-    rowBars.forEach((bar, barIndex) => {
-      const startX = selectedBoundaries[barIndex];
-      const endX = selectedBoundaries[barIndex + 1];
-      if (startX === undefined || endX === undefined) {
-        return;
-      }
-      normalizedAnchors.push({
-        barNumber: bar.barNumber,
-        startX,
-        endX: Math.max(endX, startX + 8),
-        y: rowTop,
-        height: rowHeight,
-        rowIndex,
-      });
+    const mergedTop = Math.min(existing.y, item.y);
+    const mergedBottom = Math.max(existing.y + existing.height, item.y + item.height);
+    dedupedByBar.set(item.barNumber, {
+      barNumber: item.barNumber,
+      startX: Math.min(existing.startX, item.startX),
+      endX: Math.max(existing.endX, item.endX),
+      y: mergedTop,
+      height: Math.max(mergedBottom - mergedTop, 12),
+      rowIndex: Math.min(existing.rowIndex, item.rowIndex),
     });
   });
 
-  const byBarOrder = [...normalizedAnchors].sort((left, right) => left.barNumber - right.barNumber);
+  const byBarOrder = Array.from(dedupedByBar.values()).sort((left, right) => left.barNumber - right.barNumber);
+  const normalizedContiguous = byBarOrder.every((anchor, index) => anchor.barNumber === index + 1);
+  const normalizedMatchesTotal = totalBars > 0 ? byBarOrder.length === totalBars : true;
   const rowMonotonic = byBarOrder.every((anchor, index) => {
     const next = byBarOrder[index + 1];
     return !next || next.rowIndex >= anchor.rowIndex;
@@ -1509,16 +1076,18 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
     return next.startX >= anchor.endX - 1;
   });
   const positiveWidths = byBarOrder.every((anchor) => anchor.endX > anchor.startX + 2);
-  const normalizedContiguous = byBarOrder.every((anchor, index) => anchor.barNumber === index + 1);
-  const normalizedMatchesTotal = totalBars > 0 ? byBarOrder.length === totalBars : true;
   const validationPass = normalizedContiguous && normalizedMatchesTotal && rowMonotonic && sameRowNonOverlap && positiveWidths;
-  state.playbackAnchorStrategyAttempts = `chosenSource=renderer+svg-separators,rawBoundsCount=${rawBounds.length},representativeBarsCount=${representativeBars.length},rowCount=${rowGroups.length},rawVerticalCount=${rawVerticalCount},spanningVerticalCount=${spanningVerticalCount},separatorCount=${usedSeparatorCount},usedFallbackMidpoints=${usedFallbackMidpoints ? "yes" : "no"},validation=${validationPass ? "pass" : "fail"},normalizedBy=separator-partition`;
+  const rowCount = new Set(byBarOrder.map((anchor) => anchor.rowIndex)).size;
+
+  state.playbackAnchorStrategyAttempts = `chosenSource=renderer:layout-rectangles,rawBoundsCount=${rawBounds.length},normalizedBars=${byBarOrder.length},rowCount=${rowCount},validation=${validationPass ? "pass" : "fail"}`;
+
   if (!validationPass) {
     return [];
   }
 
   return byBarOrder;
 }
+
 function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): void {
   if (!ENABLE_CUSTOM_PLAYHEAD) {
     state.latestAnchorStrategyDebug = [];
@@ -1555,7 +1124,6 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     return;
   }
 
-  const totalBars = state.totalBars ?? 0;
   const strategyAttempts: string[] = [];
   const strategyDebugResults: Record<string, unknown>[] = [];
   state.latestPercussionAnchorDebug = null;
@@ -1635,13 +1203,13 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     return errors;
   };
   updateRenderHostDomDiagnostics(state, rootElement, renderHost);
-  const rendererAnchors = resolveRendererPlaybackBarAnchors(state, renderHost);
+  const rendererAnchors = resolveRendererPlaybackBarAnchors(state);
   if (rendererAnchors.length > 0) {
     const strictErrors = validateFinalAnchorsStrict(rendererAnchors);
     if (strictErrors.length === 0) {
       state.latestAnchorStrategyDebug = [
         {
-          source: "renderer:boundsLookup",
+          source: "renderer:layout-rectangles",
           validation: "pass",
           rawElementCount: rendererAnchors.length,
           normalizedAnchors: rendererAnchors,
@@ -1649,40 +1217,21 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       ];
       state.playbackBarAnchors = rendererAnchors;
       state.playbackBarAnchorCount = rendererAnchors.length;
-      state.playbackBarAnchorSource = "renderer:boundsLookup";
+      state.playbackBarAnchorSource = "renderer:layout-rectangles";
       updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
       updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
       updateDebugField(
         rootElement,
         "playback-anchor-strategy-attempts",
-        state.playbackAnchorStrategyAttempts ?? `chosenSource=renderer-bounds,rawBoundsCount=${rendererAnchors.length}`,
+        state.playbackAnchorStrategyAttempts ??
+          `chosenSource=renderer:layout-rectangles,rawBoundsCount=${rendererAnchors.length}`,
       );
       logAnchorRebuildOutcome("renderer-bounds-success");
       return;
     }
-    strategyAttempts.push(`renderer:boundsLookup rejected,reason=${strictErrors.join("+")}`);
+    strategyAttempts.push(`renderer:layout-rectangles rejected,reason=${strictErrors.join("+")}`);
   } else {
-    strategyAttempts.push("renderer:boundsLookup empty");
-  }
-
-  const structuralResult = resolveSharedStructuralPlaybackBarAnchors(renderHost, totalBars);
-  state.latestPercussionAnchorDebug = structuralResult.details;
-  if (structuralResult.anchors !== null) {
-    const strictErrors = validateFinalAnchorsStrict(structuralResult.anchors);
-    if (strictErrors.length === 0) {
-      state.playbackBarAnchors = structuralResult.anchors;
-      state.playbackBarAnchorCount = structuralResult.anchors.length;
-      state.playbackBarAnchorSource = "shared-structural-separators";
-      state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | chosenSource=shared-structural-separators`;
-      updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
-      updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
-      updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
-      logAnchorRebuildOutcome("shared-structural-success");
-      return;
-    }
-    strategyAttempts.push(`shared-structural-separators rejected,reason=${strictErrors.join("+")}`);
-  } else {
-    strategyAttempts.push(`${structuralResult.diagnostics},chosenSource=shared-structural-separators,validation=fail`);
+    strategyAttempts.push("renderer:layout-rectangles empty");
   }
 
   state.latestAnchorStrategyDebug = strategyDebugResults;
@@ -1699,7 +1248,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       ? state.playbackAnchorStrategyAttempts
       : "-",
   );
-  logAnchorRebuildOutcome("shared-structural-fail");
+  logAnchorRebuildOutcome("renderer-bounds-fail");
   return;
 
 }

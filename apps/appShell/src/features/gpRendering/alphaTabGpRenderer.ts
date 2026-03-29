@@ -256,11 +256,11 @@ export interface GpRendererController {
   getBarTickRange: (barNumber: number) => { startTick: number; endTickExclusive: number | null } | null;
   getRenderedBarBounds: () => Array<{
     barNumber: number;
-    representativeX: number;
-    representativeY: number;
-    rawTop: number;
-    rawBottom: number;
-    rowHint: number;
+    startX: number;
+    endX: number;
+    y: number;
+    height: number;
+    rowIndex: number;
   }>;
   setPlaybackSpeedPercent: (speedPercent: number) => boolean;
   play: () => void;
@@ -271,11 +271,11 @@ export interface GpRendererController {
 
 type RenderedBarBound = {
   barNumber: number;
-  representativeX: number;
-  representativeY: number;
-  rawTop: number;
-  rawBottom: number;
-  rowHint: number;
+  startX: number;
+  endX: number;
+  y: number;
+  height: number;
+  rowIndex: number;
 };
 
 const BRAVURA_FONT_DIRECTORY = "/font/";
@@ -1257,130 +1257,72 @@ export async function createGpRenderer(
 
     rootCandidates.forEach((root) => visitNode(root, 0));
 
-    const renderSurfaceSvg = container.querySelector<SVGSVGElement>("svg");
-    const renderHostRect = container.getBoundingClientRect();
-    const svgRect = renderSurfaceSvg?.getBoundingClientRect() ?? null;
-    const svgOffsetX = svgRect ? svgRect.left - renderHostRect.left + container.scrollLeft : 0;
-    const svgOffsetY = svgRect ? svgRect.top - renderHostRect.top + container.scrollTop : 0;
-    const viewBox = renderSurfaceSvg?.viewBox?.baseVal ?? null;
-    const hasViewBox = !!viewBox && viewBox.width > 0 && viewBox.height > 0;
-    const scaleX = hasViewBox && svgRect ? svgRect.width / viewBox.width : 1;
-    const scaleY = hasViewBox && svgRect ? svgRect.height / viewBox.height : 1;
-
-    const maxRawEndX = candidates.reduce((maxValue, item) => Math.max(maxValue, item.endX), 0);
-    const maxRawEndY = candidates.reduce((maxValue, item) => Math.max(maxValue, item.y + item.height), 0);
-    const looksLikeViewBoxCoordinates =
-      !!svgRect &&
-      !!viewBox &&
-      maxRawEndX <= viewBox.width * 1.2 &&
-      maxRawEndY <= viewBox.height * 1.2 &&
-      (Math.abs(viewBox.width - svgRect.width) > 6 || Math.abs(viewBox.height - svgRect.height) > 6);
-    const looksLikeSvgPixelCoordinates =
-      !!svgRect &&
-      maxRawEndX <= svgRect.width * 1.2 &&
-      maxRawEndY <= svgRect.height * 1.2 &&
-      !looksLikeViewBoxCoordinates;
-
-    const calibratedCandidates = candidates.map((candidate) => {
-      if (!svgRect) {
-        return candidate;
-      }
-
-      if (looksLikeViewBoxCoordinates && viewBox) {
-        const calibratedStartX = svgOffsetX + (candidate.startX - viewBox.x) * scaleX;
-        const calibratedEndX = svgOffsetX + (candidate.endX - viewBox.x) * scaleX;
-        const calibratedY = svgOffsetY + (candidate.y - viewBox.y) * scaleY;
-        const calibratedHeight = candidate.height * scaleY;
-        return {
-          barNumber: candidate.barNumber,
-          startX: calibratedStartX,
-          endX: calibratedEndX,
-          y: calibratedY,
-          height: calibratedHeight,
-        };
-      }
-
-      if (looksLikeSvgPixelCoordinates) {
-        return {
-          barNumber: candidate.barNumber,
-          startX: svgOffsetX + candidate.startX,
-          endX: svgOffsetX + candidate.endX,
-          y: svgOffsetY + candidate.y,
-          height: candidate.height,
-        };
-      }
-
-      return candidate;
-    });
-
-    const toQuantile = (values: number[], quantile: number): number | null => {
-      if (values.length === 0) {
-        return null;
-      }
-      const sortedValues = [...values].sort((left, right) => left - right);
-      const index = Math.max(0, Math.min(sortedValues.length - 1, Math.floor((sortedValues.length - 1) * quantile)));
-      return sortedValues[index] ?? null;
-    };
-
     const byBar = new Map<number, Array<{ startX: number; endX: number; y: number; height: number }>>();
-    calibratedCandidates.forEach((candidate) => {
+    candidates.forEach((candidate) => {
       const items = byBar.get(candidate.barNumber) ?? [];
       items.push(candidate);
       byBar.set(candidate.barNumber, items);
     });
 
-    const descriptors = Array.from(byBar.entries())
+    const mergedBounds = Array.from(byBar.entries())
       .map(([barNumber, items]) => {
-        const starts = items.map((item) => item.startX);
-        const centers = items.map((item) => (item.startX + item.endX) / 2);
-        const ys = items.map((item) => item.y);
-        const bottoms = items.map((item) => item.y + item.height);
-        const representativeX = toQuantile(starts, 0.22) ?? toQuantile(centers, 0.25) ?? starts[0] ?? 0;
-        const representativeY = toQuantile(ys, 0.5) ?? 0;
-        const rawTop = toQuantile(ys, 0.35) ?? representativeY;
-        const rawBottom = toQuantile(bottoms, 0.7) ?? rawTop + 24;
+        const startX = Math.min(...items.map((item) => item.startX));
+        const endX = Math.max(...items.map((item) => item.endX));
+        const top = Math.min(...items.map((item) => item.y));
+        const bottom = Math.max(...items.map((item) => item.y + item.height));
         return {
           barNumber,
-          representativeX,
-          representativeY,
-          rawTop,
-          rawBottom,
+          startX,
+          endX,
+          y: top,
+          height: Math.max(bottom - top, 12),
         };
       })
+      .filter((item) => Number.isFinite(item.startX) && Number.isFinite(item.endX) && item.endX > item.startX + 1)
       .sort((left, right) => left.barNumber - right.barNumber);
 
-    const rows: Array<{ yCenter: number; yMin: number; yMax: number; bars: number[] }> = [];
-    descriptors.forEach((descriptor) => {
-      const rowIndex = rows.findIndex((row) => Math.abs(row.yCenter - descriptor.representativeY) <= 28);
-      if (rowIndex >= 0) {
-        const row = rows[rowIndex];
+    const rows: Array<{ index: number; yCenter: number; yMin: number; yMax: number }> = [];
+    const rowIndexByBar = new Map<number, number>();
+    mergedBounds.forEach((bound) => {
+      const centerY = bound.y + bound.height / 2;
+      const existingRowIndex = rows.findIndex((row) => Math.abs(row.yCenter - centerY) <= 28);
+      if (existingRowIndex >= 0) {
+        const row = rows[existingRowIndex];
         if (!row) {
           return;
         }
-        row.yMin = Math.min(row.yMin, descriptor.rawTop);
-        row.yMax = Math.max(row.yMax, descriptor.rawBottom);
+        row.yMin = Math.min(row.yMin, bound.y);
+        row.yMax = Math.max(row.yMax, bound.y + bound.height);
         row.yCenter = (row.yMin + row.yMax) / 2;
-        row.bars.push(descriptor.barNumber);
+        rowIndexByBar.set(bound.barNumber, existingRowIndex);
         return;
       }
       rows.push({
-        yCenter: descriptor.representativeY,
-        yMin: descriptor.rawTop,
-        yMax: descriptor.rawBottom,
-        bars: [descriptor.barNumber],
+        index: rows.length,
+        yCenter: centerY,
+        yMin: bound.y,
+        yMax: bound.y + bound.height,
       });
+      rowIndexByBar.set(bound.barNumber, rows.length - 1);
     });
-    const rowHintByBar = new Map<number, number>();
-    rows.forEach((row, rowIndex) => row.bars.forEach((barNumber) => rowHintByBar.set(barNumber, rowIndex)));
 
-    return descriptors.map((descriptor) => ({
-      barNumber: descriptor.barNumber,
-      representativeX: descriptor.representativeX,
-      representativeY: descriptor.representativeY,
-      rawTop: descriptor.rawTop,
-      rawBottom: Math.max(descriptor.rawBottom, descriptor.rawTop + 16),
-      rowHint: rowHintByBar.get(descriptor.barNumber) ?? 0,
-    }));
+    const sortedRows = [...rows]
+      .map((row) => ({ ...row, yCenter: (row.yMin + row.yMax) / 2 }))
+      .sort((left, right) => left.yCenter - right.yCenter);
+    const normalizedRowIndexByOriginal = new Map<number, number>();
+    sortedRows.forEach((row, normalizedIndex) => normalizedRowIndexByOriginal.set(row.index, normalizedIndex));
+
+    return mergedBounds.map((bound) => {
+      const rawRowIndex = rowIndexByBar.get(bound.barNumber) ?? 0;
+      return {
+        barNumber: bound.barNumber,
+        startX: bound.startX,
+        endX: bound.endX,
+        y: bound.y,
+        height: bound.height,
+        rowIndex: normalizedRowIndexByOriginal.get(rawRowIndex) ?? 0,
+      };
+    });
   };
 
   const getBarTickRange = (barNumber: number): { startTick: number; endTickExclusive: number | null } | null => {
