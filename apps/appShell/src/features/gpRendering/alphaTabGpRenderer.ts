@@ -195,6 +195,13 @@ export interface GpRenderDebugInfo {
   scoreTrackCount: number;
   scoreTracks: GpTrackRuntimeInfo[];
   renderedTracks: GpTrackRuntimeInfo[];
+  barBoundsExtraction: {
+    discoveredSystemCount: number;
+    discoveredBarCollectionCount: number;
+    discoveredBarRectCount: number;
+    usedLayoutPaths: string[];
+    usedBarCollectionPaths: string[];
+  } | null;
 }
 
 export interface GpScoreRuntimeInfo {
@@ -324,6 +331,14 @@ interface PendingProgrammaticSeek {
   trackIndex: number;
   sessionToken: number;
   retryCount: number;
+}
+
+interface BarBoundsExtractionDiagnostics {
+  discoveredSystemCount: number;
+  discoveredBarCollectionCount: number;
+  discoveredBarRectCount: number;
+  usedLayoutPaths: string[];
+  usedBarCollectionPaths: string[];
 }
 
 interface ReloadOptions {
@@ -694,6 +709,7 @@ export async function createGpRenderer(
   let pendingPlayAfterProgrammaticSeek = false;
   let renderAttemptCounter = 0;
   let activeRenderAttemptId: string | null = null;
+  let lastBarBoundsExtractionDiagnostics: BarBoundsExtractionDiagnostics | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -738,6 +754,7 @@ export async function createGpRenderer(
       scoreTrackCount: scoreTracks.length,
       scoreTracks: toTrackRuntimeInfoList(scoreTracks, activeApi?.score),
       renderedTracks: toTrackRuntimeInfoList(renderedTracks, activeApi?.score),
+      barBoundsExtraction: lastBarBoundsExtractionDiagnostics,
     });
   };
 
@@ -1256,22 +1273,15 @@ export async function createGpRenderer(
       readPath(unsafeApi.renderer, "renderEngine.scoreRenderer"),
     ];
 
-    const systemPathCandidates = [
-      "systems",
-      "layout.systems",
-      "staffSystems",
-      "staffSystemLayouts",
-      "renderSystems",
-      "scoreLayout.systems",
-    ];
+    const systemPathCandidates = ["layout.systems", "systems", "staffSystems", "staveGroups", "renderedSystems", "renderSystems"];
 
     const barCollectionPathCandidates = [
       "masterBarRenderers",
       "barRenderers",
+      "barLayouts",
       "bars",
       "masterBars",
-      "staveGroups",
-      "staffGroups",
+      "barBounds",
     ];
 
     const barRectPathCandidates = [
@@ -1279,6 +1289,8 @@ export async function createGpRenderer(
       "visualBounds",
       "actualBounds",
       "barBounds",
+      "layout.bounds",
+      "barLayout.bounds",
       "rect",
     ];
 
@@ -1288,10 +1300,10 @@ export async function createGpRenderer(
       "bar.index",
       "masterBarIndex",
       "barIndex",
-      "index",
     ];
 
     const systemEntries: Array<{ system: Record<string, unknown>; systemOrder: number }> = [];
+    const usedLayoutPaths = new Set<string>();
     const pushSystemEntry = (system: unknown): void => {
       if (!system || typeof system !== "object") {
         return;
@@ -1311,6 +1323,7 @@ export async function createGpRenderer(
       systemPathCandidates.forEach((path) => {
         const candidateSystems = readPath(root, path);
         if (Array.isArray(candidateSystems)) {
+          usedLayoutPaths.add(path);
           candidateSystems.forEach((system) => pushSystemEntry(system));
         }
       });
@@ -1324,6 +1337,8 @@ export async function createGpRenderer(
     });
 
     const candidateRects: RenderedBarBound[] = [];
+    let discoveredBarCollectionCount = 0;
+    const usedBarCollectionPaths = new Set<string>();
     dedupedSystems.forEach((systemEntry) => {
       const { system, systemOrder } = systemEntry;
       const barItems: unknown[] = [];
@@ -1331,6 +1346,8 @@ export async function createGpRenderer(
       barCollectionPathCandidates.forEach((collectionPath) => {
         const maybeCollection = readPath(system, collectionPath);
         if (Array.isArray(maybeCollection)) {
+          discoveredBarCollectionCount += 1;
+          usedBarCollectionPaths.add(collectionPath);
           maybeCollection.forEach((item) => barItems.push(item));
         }
       });
@@ -1351,6 +1368,8 @@ export async function createGpRenderer(
             barCollectionPathCandidates.forEach((collectionPath) => {
               const maybeCollection = readPath(entry, collectionPath);
               if (Array.isArray(maybeCollection)) {
+                discoveredBarCollectionCount += 1;
+                usedBarCollectionPaths.add(`nested:${collectionPath}`);
                 maybeCollection.forEach((item) => barItems.push(item));
               }
             });
@@ -1421,12 +1440,22 @@ export async function createGpRenderer(
     const normalizedRowMap = new Map<number, number>();
     orderedRowIndices.forEach((rowIndex, normalizedIndex) => normalizedRowMap.set(rowIndex, normalizedIndex));
 
-    return orderedBars
+    const normalizedBars = orderedBars
       .map((bar) => ({
         ...bar,
         rowIndex: normalizedRowMap.get(bar.rowIndex) ?? 0,
       }))
       .filter((bar) => bar.endX > bar.startX + 1 && bar.height > 0);
+
+    lastBarBoundsExtractionDiagnostics = {
+      discoveredSystemCount: dedupedSystems.size,
+      discoveredBarCollectionCount,
+      discoveredBarRectCount: candidateRects.length,
+      usedLayoutPaths: Array.from(usedLayoutPaths),
+      usedBarCollectionPaths: Array.from(usedBarCollectionPaths),
+    };
+
+    return normalizedBars;
   };
 
   const getBarTickRange = (barNumber: number): { startTick: number; endTickExclusive: number | null } | null => {
@@ -1972,6 +2001,7 @@ export async function createGpRenderer(
         lastRendererErrorStage,
         lastRenderStartedAtIso,
         lastRenderFinishedAtIso,
+        barBoundsExtraction: lastBarBoundsExtractionDiagnostics,
       });
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
