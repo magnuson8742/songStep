@@ -1974,13 +1974,8 @@ export async function createGpRenderer(
               : barBounds.x;
           const matchedClusterIndex = rowClusterBands.findIndex((cluster) => cluster.barIndexSet.has(barIndexInSystem));
           const matchedCluster = matchedClusterIndex >= 0 ? rowClusterBands[matchedClusterIndex] : null;
-          let systemVerticalBounds =
-            chosenParentVerticalCandidate?.rect ?? (matchedCluster ? { x: 0, y: matchedCluster.y, w: 0, h: matchedCluster.h } : null);
-          let chosenVerticalSource: string = chosenParentVerticalCandidate
-            ? chosenParentVerticalCandidate.source
-            : systemVerticalBounds
-              ? "staffSystem.rowClusterBand"
-              : "bar-local-fallback";
+          let systemVerticalBounds = matchedCluster ? { x: 0, y: matchedCluster.y, w: 0, h: matchedCluster.h } : null;
+          let chosenVerticalSource: string = systemVerticalBounds ? "staffSystem.rowClusterBand" : "bar-local-fallback";
           if (systemVerticalBounds && parentSystemOuterBounds) {
             const clampedTop = Math.max(systemVerticalBounds.y, parentSystemOuterBounds.y);
             const clampedBottom = Math.min(
@@ -1989,9 +1984,7 @@ export async function createGpRenderer(
             );
             if (clampedBottom > clampedTop + 1) {
               systemVerticalBounds = { ...systemVerticalBounds, y: clampedTop, h: clampedBottom - clampedTop };
-              chosenVerticalSource = chosenParentVerticalCandidate
-                ? `${chosenParentVerticalCandidate.source}-clamped`
-                : "staffSystem.rowClusterBand-clamped";
+              chosenVerticalSource = "staffSystem.rowClusterBand-clamped";
             }
           } else if (!systemVerticalBounds && parentSystemOuterBounds) {
             systemVerticalBounds = parentSystemOuterBounds;
@@ -2026,6 +2019,27 @@ export async function createGpRenderer(
                   })
                   .sort((left, right) => left.centerDistance - right.centerDistance)[0]?.clusterIndex ?? -1
               : -1;
+          const nearestCenterCluster =
+            nearestCenterClusterIndex >= 0 ? horizontalLineClusters[nearestCenterClusterIndex] ?? null : null;
+          const nearestCenterTopLineY = nearestCenterCluster ? Math.min(...nearestCenterCluster) : null;
+          const nearestCenterBottomLineY = nearestCenterCluster ? Math.max(...nearestCenterCluster) : null;
+          const nearestCenterRowBottom = nearestCenterBottomLineY ?? currentRowBottomHint;
+          let chosenVerticalAnchorMode: "top" | "bottom" = "bottom";
+          let restoredY = nearestCenterRowBottom - calibratedH;
+          if (nearestCenterTopLineY !== null && nearestCenterBottomLineY !== null) {
+            const rowLineSpan = Math.max(nearestCenterBottomLineY - nearestCenterTopLineY, 0);
+            const topAnchoredY = nearestCenterTopLineY;
+            const bottomAnchoredY = nearestCenterBottomLineY - calibratedH;
+            chosenVerticalAnchorMode =
+              calibratedH > rowLineSpan + yClusterTolerance || bottomAnchoredY > topAnchoredY + rowLineSpan * 0.25
+                ? "top"
+                : "bottom";
+            restoredY = chosenVerticalAnchorMode === "top" ? topAnchoredY : bottomAnchoredY;
+          }
+          if (nearestCenterBottomLineY !== null) {
+            chosenVerticalSource =
+              chosenVerticalAnchorMode === "top" ? "svg.horizontalRowTopLine" : "svg.horizontalRowBottomLine";
+          }
           const chosenTabClusterIndex =
             horizontalLineClusters.length > 0
               ? horizontalLineClusters
@@ -2041,23 +2055,18 @@ export async function createGpRenderer(
               : -1;
           const chosenLineCluster =
             chosenTabClusterIndex >= 0 ? horizontalLineClusters[chosenTabClusterIndex] ?? null : null;
-          const chosenRowTopLineY = chosenLineCluster ? Math.min(...chosenLineCluster) : null;
-          const chosenRowBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
-          const clusterRowBottom = chosenRowBottomLineY ?? currentRowBottomHint;
+          const targetTabBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
+          const restoredBottomY = restoredY + calibratedH;
+          const appliedYOffsetCorrection = targetTabBottomLineY !== null ? targetTabBottomLineY - restoredBottomY : 0;
+          const correctedY = restoredY + appliedYOffsetCorrection;
+          const correctedRect = {
+            x: calibratedX,
+            y: correctedY,
+            w: barBounds.w,
+            h: calibratedH,
+          };
           const chosenRowClusterIndex = chosenTabClusterIndex;
-          let chosenVerticalAnchorMode: "parent-primary" | "line-refine" | "cluster-fallback" =
-            chosenParentVerticalCandidate ? "parent-primary" : "cluster-fallback";
-          const calibratedYBeforeTabAnchor = calibratedY;
-          let rowAnchoredY = calibratedYBeforeTabAnchor;
-          if (chosenRowBottomLineY !== null) {
-            const targetY = chosenRowBottomLineY - calibratedH;
-            rowAnchoredY = targetY;
-            chosenVerticalAnchorMode = "line-refine";
-            chosenVerticalSource = chosenParentVerticalCandidate
-              ? `${chosenParentVerticalCandidate.source}+svg.horizontalRowBottomLine`
-              : "svg.horizontalRowBottomLine";
-          }
-          const calibratedYAfterTabAnchor = rowAnchoredY;
+          let rowAnchoredY = correctedY;
           const structuralBottomBoundary =
             parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
               ? parentSystemOuterBounds.y + parentSystemOuterBounds.h
@@ -2086,8 +2095,16 @@ export async function createGpRenderer(
               totalBarsInSystem: bars.length,
               rowClusterCount: rowClusterBands.length,
               firstBarClusterIndex: chosenRowClusterIndex >= 0 ? chosenRowClusterIndex : matchedClusterIndex,
+              restoredVerticalSource: chosenVerticalSource,
+              restoredCalibratedRectBeforeYCorrection: {
+                x: calibratedX,
+                y: restoredY,
+                w: barBounds.w,
+                h: calibratedH,
+              },
               detectedHorizontalLineYs: detectedHorizontalLineYs.slice(0, 24),
-              horizontalLineClusters: horizontalLineClusters.map((cluster) => ({
+              horizontalLineClusters: horizontalLineClusters.map((cluster, clusterIndex) => ({
+                index: clusterIndex,
                 top: Math.min(...cluster),
                 bottom: Math.max(...cluster),
                 count: cluster.length,
@@ -2095,11 +2112,10 @@ export async function createGpRenderer(
               detectedHorizontalLineSources,
               nearestCenterClusterIndex,
               chosenTabClusterIndex,
-              chosenRowTopLineY,
-              firstBarRowBottom: clusterRowBottom,
-              chosenRowBottomLineY,
-              calibratedYBeforeTabAnchor,
-              calibratedYAfterTabAnchor,
+              targetTabBottomLineY,
+              restoredBottomY,
+              appliedYOffsetCorrection,
+              correctedRect,
               chosenVerticalAnchorMode,
               finalVerticalSourcePath: chosenParentVerticalCandidate ? "parent-system-primary" : "cluster-fallback",
               firstBarHeight: calibratedH,
