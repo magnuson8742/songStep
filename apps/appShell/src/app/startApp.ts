@@ -1002,43 +1002,13 @@ function buildAnchorDebugSnapshot(state: AppState, rootElement: HTMLElement): Re
   };
 }
 
-function rebuildPercussionPlaybackBarAnchors(
+function resolveSharedStructuralPlaybackBarAnchors(
   renderHost: HTMLElement,
   totalBars: number,
 ): { anchors: PlaybackBarAnchor[] | null; diagnostics: string; details: Record<string, unknown> } {
   const renderHostRect = renderHost.getBoundingClientRect();
-  const rawLabels = Array.from(renderHost.querySelectorAll<SVGTextElement>("svg text"))
-    .map((textNode) => {
-      const rawText = textNode.textContent?.trim() ?? "";
-      if (!/^\d+$/.test(rawText)) {
-        return null;
-      }
-      const barNumber = Number(rawText);
-      if (!Number.isFinite(barNumber) || barNumber <= 0 || (totalBars > 0 && barNumber > totalBars)) {
-        return null;
-      }
-      const rect = textNode.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) {
-        return null;
-      }
-      return {
-        barNumber,
-        x: rect.left - renderHostRect.left + renderHost.scrollLeft,
-        y: rect.top - renderHostRect.top + renderHost.scrollTop,
-      };
-    })
-    .filter((label): label is { barNumber: number; x: number; y: number } => label !== null);
-  const labelsByBar = new Map<number, { barNumber: number; x: number; y: number }>();
-  rawLabels.forEach((label) => {
-    const existing = labelsByBar.get(label.barNumber);
-    if (!existing || label.y < existing.y) {
-      labelsByBar.set(label.barNumber, label);
-    }
-  });
-  const labels = Array.from(labelsByBar.values()).sort((left, right) => left.barNumber - right.barNumber);
-
-  const horizontalBands = Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line"))
-    .map((line) => {
+  const rowBandCandidates = [
+    ...Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line")).map((line) => {
       const x1 = Number(line.getAttribute("x1"));
       const y1 = Number(line.getAttribute("y1"));
       const x2 = Number(line.getAttribute("x2"));
@@ -1048,7 +1018,7 @@ function rebuildPercussionPlaybackBarAnchors(
       }
       const horizontalSpan = Math.abs(x2 - x1);
       const verticalDelta = Math.abs(y2 - y1);
-      if (horizontalSpan < 48 || verticalDelta > 1.4) {
+      if (horizontalSpan < 48 || verticalDelta > 1.5) {
         return null;
       }
       const rect = line.getBoundingClientRect();
@@ -1056,10 +1026,33 @@ function rebuildPercussionPlaybackBarAnchors(
         top: rect.top - renderHostRect.top + renderHost.scrollTop,
         bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
       };
-    })
-    .filter((band): band is { top: number; bottom: number } => band !== null);
+    }),
+    ...Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect")).map((rect) => {
+      const width = Number(rect.getAttribute("width"));
+      const height = Number(rect.getAttribute("height"));
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width < 48 || height <= 0 || height > 5) {
+        return null;
+      }
+      const box = rect.getBoundingClientRect();
+      return {
+        top: box.top - renderHostRect.top + renderHost.scrollTop,
+        bottom: box.bottom - renderHostRect.top + renderHost.scrollTop,
+      };
+    }),
+    ...Array.from(renderHost.querySelectorAll<SVGPathElement>("svg path")).map((path) => {
+      const box = path.getBoundingClientRect();
+      if (box.width < 48 || box.height <= 0 || box.height > 5) {
+        return null;
+      }
+      return {
+        top: box.top - renderHostRect.top + renderHost.scrollTop,
+        bottom: box.bottom - renderHostRect.top + renderHost.scrollTop,
+      };
+    }),
+  ].filter((row): row is { top: number; bottom: number } => row !== null);
+
   const rowBands: Array<{ yMin: number; yMax: number; yCenter: number }> = [];
-  horizontalBands.forEach((band) => {
+  rowBandCandidates.forEach((band) => {
     const yCenter = (band.top + band.bottom) / 2;
     const existingIndex = rowBands.findIndex((row) => Math.abs(row.yCenter - yCenter) <= 10);
     if (existingIndex >= 0) {
@@ -1067,13 +1060,13 @@ function rebuildPercussionPlaybackBarAnchors(
       row.yMin = Math.min(row.yMin, band.top);
       row.yMax = Math.max(row.yMax, band.bottom);
       row.yCenter = (row.yMin + row.yMax) / 2;
-    } else {
-      rowBands.push({ yMin: band.top, yMax: band.bottom, yCenter });
+      return;
     }
+    rowBands.push({ yMin: band.top, yMax: band.bottom, yCenter });
   });
 
-  const verticalCandidates = Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line"))
-    .map((line) => {
+  const verticalCandidates = [
+    ...Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line")).map((line) => {
       const x1 = Number(line.getAttribute("x1"));
       const y1 = Number(line.getAttribute("y1"));
       const x2 = Number(line.getAttribute("x2"));
@@ -1083,7 +1076,7 @@ function rebuildPercussionPlaybackBarAnchors(
       }
       const verticalDelta = Math.abs(y2 - y1);
       const horizontalDelta = Math.abs(x2 - x1);
-      if (verticalDelta < 24 || horizontalDelta > 1.4) {
+      if (verticalDelta < 24 || horizontalDelta > 1.5) {
         return null;
       }
       const rect = line.getBoundingClientRect();
@@ -1091,225 +1084,84 @@ function rebuildPercussionPlaybackBarAnchors(
         x: rect.left - renderHostRect.left + renderHost.scrollLeft,
         top: rect.top - renderHostRect.top + renderHost.scrollTop,
         bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
-        height: rect.height,
       };
-    })
-    .filter((candidate): candidate is { x: number; top: number; bottom: number; height: number } => candidate !== null);
+    }),
+    ...Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect")).map((rect) => {
+      const width = Number(rect.getAttribute("width"));
+      const height = Number(rect.getAttribute("height"));
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0.6 || width > 6 || height < 24) {
+        return null;
+      }
+      const box = rect.getBoundingClientRect();
+      return {
+        x: box.left - renderHostRect.left + renderHost.scrollLeft,
+        top: box.top - renderHostRect.top + renderHost.scrollTop,
+        bottom: box.bottom - renderHostRect.top + renderHost.scrollTop,
+      };
+    }),
+    ...Array.from(renderHost.querySelectorAll<SVGPathElement>("svg path")).map((path) => {
+      const box = path.getBoundingClientRect();
+      if (box.width > 6 || box.height < 24) {
+        return null;
+      }
+      return {
+        x: box.left - renderHostRect.left + renderHost.scrollLeft,
+        top: box.top - renderHostRect.top + renderHost.scrollTop,
+        bottom: box.bottom - renderHostRect.top + renderHost.scrollTop,
+      };
+    }),
+  ].filter((candidate): candidate is { x: number; top: number; bottom: number } => candidate !== null);
 
-  const snappedAnchors: PlaybackBarAnchor[] = [];
   const sortedRows = [...rowBands].sort((left, right) => left.yCenter - right.yCenter);
+  const anchors: PlaybackBarAnchor[] = [];
+  let currentBar = 1;
   sortedRows.forEach((row, rowIndex) => {
-    const labelsOnRow = labels.filter((label) => Math.abs(label.y - row.yCenter) <= 30);
-    if (labelsOnRow.length === 0) {
-      return;
-    }
-    const rowHeight = Math.max(row.yMax - row.yMin, 18);
-    const boundaries = verticalCandidates
+    const rowHeight = Math.max(row.yMax - row.yMin, 16);
+    const separators = verticalCandidates
       .filter((candidate) => {
-        const overlapTop = Math.max(candidate.top, row.yMin - 6);
-        const overlapBottom = Math.min(candidate.bottom, row.yMax + 6);
-        return overlapBottom - overlapTop >= rowHeight * 0.6 || candidate.height >= rowHeight * 0.8;
+        const overlapTop = Math.max(candidate.top, row.yMin - 8);
+        const overlapBottom = Math.min(candidate.bottom, row.yMax + 8);
+        return overlapBottom - overlapTop >= rowHeight * 0.65;
       })
       .map((candidate) => candidate.x)
       .sort((left, right) => left - right);
-    if (boundaries.length < 2) {
-      return;
-    }
-    const collapsedBoundaries: number[] = [];
-    boundaries.forEach((x) => {
-      const previous = collapsedBoundaries[collapsedBoundaries.length - 1];
+
+    const collapsedSeparators: number[] = [];
+    separators.forEach((x) => {
+      const previous = collapsedSeparators[collapsedSeparators.length - 1];
       if (previous === undefined || Math.abs(previous - x) > 4) {
-        collapsedBoundaries.push(x);
+        collapsedSeparators.push(x);
       } else {
-        collapsedBoundaries[collapsedBoundaries.length - 1] = (previous + x) / 2;
+        collapsedSeparators[collapsedSeparators.length - 1] = (previous + x) / 2;
       }
     });
-    const labelsByX = [...labelsOnRow].sort((left, right) => left.x - right.x);
-    let minBoundaryIndex = 0;
-    labelsByX.forEach((label) => {
-      let bestBoundaryIndex = minBoundaryIndex;
-      let bestDistance = Number.POSITIVE_INFINITY;
-      for (let index = minBoundaryIndex; index < collapsedBoundaries.length; index += 1) {
-        const boundary = collapsedBoundaries[index] as number;
-        const distance = Math.abs(boundary - label.x);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestBoundaryIndex = index;
-        }
+
+    for (let index = 0; index < collapsedSeparators.length - 1; index += 1) {
+      const startX = collapsedSeparators[index] as number;
+      const endX = collapsedSeparators[index + 1] as number;
+      if (endX <= startX + 10) {
+        continue;
       }
-      const startBoundaryIndex = Math.max(bestBoundaryIndex, minBoundaryIndex);
-      const endBoundaryIndex = startBoundaryIndex + 1;
-      const startX = collapsedBoundaries[startBoundaryIndex];
-      const endX = collapsedBoundaries[endBoundaryIndex];
-      if (startX === undefined || endX === undefined || endX <= startX + 6) {
-        return;
-      }
-      snappedAnchors.push({
-        barNumber: label.barNumber,
+      anchors.push({
+        barNumber: currentBar,
         startX,
         endX,
         rowIndex,
         y: row.yMin,
         height: Math.max(row.yMax - row.yMin, 28),
       });
-      minBoundaryIndex = startBoundaryIndex + 1;
-    });
-  });
-
-  const sortedAnchors = snappedAnchors.sort((left, right) => left.barNumber - right.barNumber);
-  const validateAnchors = (anchors: PlaybackBarAnchor[]): boolean => {
-    const matchesTotal = totalBars > 0 ? anchors.length === totalBars : true;
-    const contiguous = anchors.every((anchor, index) => anchor.barNumber === index + 1);
-    const rowMonotonic = anchors.every((anchor, index) => {
-      const next = anchors[index + 1];
-      return !next || next.rowIndex >= anchor.rowIndex;
-    });
-    const validGeometry = anchors.every(
-      (anchor) =>
-        Number.isFinite(anchor.startX) &&
-        Number.isFinite(anchor.endX) &&
-        Number.isFinite(anchor.y) &&
-        Number.isFinite(anchor.height) &&
-        anchor.endX > anchor.startX,
-    );
-    return anchors.length > 0 && matchesTotal && contiguous && rowMonotonic && validGeometry;
-  };
-  const stageAValid = validateAnchors(sortedAnchors);
-  if (stageAValid) {
-    const diagnostics = `strategy=percussion-authoritative | levelA=pass,levelB=skipped,levelC=skipped,chosenLevel=A,labelsFound=${labels.length},rowCount=${sortedRows.length},normalizedBars=${sortedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${totalBars > 0 ? "yes" : "-"},validation=pass`;
-    return {
-      anchors: sortedAnchors,
-      diagnostics,
-      details: {
-        labelsFound: labels.length,
-        rowCount: sortedRows.length,
-        stageA: { validation: "pass", anchors: sortedAnchors },
-        stageB: { validation: "skipped", anchors: [] },
-        stageC: { validation: "skipped", anchors: [] },
-      },
-    };
-  }
-
-  const fallbackAnchors: PlaybackBarAnchor[] = [];
-  sortedRows.forEach((row, rowIndex) => {
-    const labelsOnRow = labels.filter((label) => Math.abs(label.y - row.yCenter) <= 30).sort((left, right) => left.x - right.x);
-    if (labelsOnRow.length === 0) {
-      return;
+      currentBar += 1;
     }
-    const rowBoundaries = verticalCandidates
-      .filter((candidate) => candidate.top <= row.yMax + 6 && candidate.bottom >= row.yMin - 6)
-      .map((candidate) => candidate.x)
-      .sort((left, right) => left - right);
-    const rowLeftBoundary = rowBoundaries[0] ?? labelsOnRow[0]!.x - 40;
-    const rowRightBoundary = rowBoundaries[rowBoundaries.length - 1] ?? labelsOnRow[labelsOnRow.length - 1]!.x + 40;
-    labelsOnRow.forEach((label, index) => {
-      const previous = labelsOnRow[index - 1];
-      const next = labelsOnRow[index + 1];
-      const startX = previous ? (previous.x + label.x) / 2 : rowLeftBoundary;
-      const endX = next ? (label.x + next.x) / 2 : rowRightBoundary;
-      if (endX <= startX + 6) {
-        return;
-      }
-      fallbackAnchors.push({
-        barNumber: label.barNumber,
-        startX,
-        endX,
-        rowIndex,
-        y: row.yMin,
-        height: Math.max(row.yMax - row.yMin, 28),
-      });
-    });
   });
-  const fallbackSorted = fallbackAnchors.sort((left, right) => left.barNumber - right.barNumber);
-  const stageBValid = validateAnchors(fallbackSorted);
-  if (stageBValid) {
-    const diagnostics = `strategy=percussion-authoritative | levelA=fail,levelB=pass,levelC=skipped,chosenLevel=B,labelsFound=${labels.length},rowCount=${sortedRows.length},normalizedBars=${fallbackSorted.length},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${totalBars > 0 ? (fallbackSorted.length === totalBars ? "yes" : "no") : "-"},validation=pass`;
-    return {
-      anchors: fallbackSorted,
-      diagnostics,
-      details: {
-        labelsFound: labels.length,
-        rowCount: sortedRows.length,
-        stageA: { validation: "fail", anchors: sortedAnchors },
-        stageB: { validation: "pass", anchors: fallbackSorted },
-        stageC: { validation: "skipped", anchors: [] },
-      },
-    };
-  }
 
-  const emergencyRows =
-    sortedRows.length > 0
-      ? sortedRows
-      : labels.length > 0
-        ? labels.reduce<Array<{ yMin: number; yMax: number; yCenter: number }>>((rows, label) => {
-            const index = rows.findIndex((row) => Math.abs(row.yCenter - label.y) <= 28);
-            if (index >= 0) {
-              const row = rows[index] as { yMin: number; yMax: number; yCenter: number };
-              row.yMin = Math.min(row.yMin, label.y - 10);
-              row.yMax = Math.max(row.yMax, label.y + 18);
-              row.yCenter = (row.yMin + row.yMax) / 2;
-            } else {
-              rows.push({ yMin: label.y - 10, yMax: label.y + 18, yCenter: label.y });
-            }
-            return rows;
-          }, [])
-        : [];
-  const stageCAnchors: PlaybackBarAnchor[] = [];
-  if (totalBars > 0 && emergencyRows.length > 0) {
-    const rowCount = emergencyRows.length;
-    let currentBar = 1;
-    emergencyRows
-      .sort((left, right) => left.yCenter - right.yCenter)
-      .forEach((row, rowIndex) => {
-        if (currentBar > totalBars) {
-          return;
-        }
-        const barsRemaining = totalBars - currentBar + 1;
-        const rowsRemaining = rowCount - rowIndex;
-        const barsInRow = Math.max(1, Math.ceil(barsRemaining / rowsRemaining));
-        const overlappingVerticals = verticalCandidates
-          .filter((candidate) => candidate.top <= row.yMax + 6 && candidate.bottom >= row.yMin - 6)
-          .map((candidate) => candidate.x)
-          .sort((left, right) => left - right);
-        const rowLeft = overlappingVerticals[0] ?? (labels.find((label) => Math.abs(label.y - row.yCenter) <= 30)?.x ?? 0) - 40;
-        let rowLabelRightX: number | null = null;
-        for (let index = labels.length - 1; index >= 0; index -= 1) {
-          const label = labels[index];
-          if (label && Math.abs(label.y - row.yCenter) <= 30) {
-            rowLabelRightX = label.x;
-            break;
-          }
-        }
-        const rowRight =
-          overlappingVerticals[overlappingVerticals.length - 1] ??
-          (rowLabelRightX ?? rowLeft + 320) + 40;
-        const rowWidth = Math.max(rowRight - rowLeft, 120);
-        const slotWidth = rowWidth / barsInRow;
-        for (let slot = 0; slot < barsInRow && currentBar <= totalBars; slot += 1) {
-          stageCAnchors.push({
-            barNumber: currentBar,
-            startX: rowLeft + slot * slotWidth,
-            endX: rowLeft + (slot + 1) * slotWidth,
-            rowIndex,
-            y: row.yMin,
-            height: Math.max(row.yMax - row.yMin, 28),
-          });
-          currentBar += 1;
-        }
-      });
-  }
-  const stageCSorted = stageCAnchors.sort((left, right) => left.barNumber - right.barNumber);
-  const stageCValid = validateAnchors(stageCSorted);
-  const diagnostics = `strategy=percussion-authoritative | levelA=fail,levelB=fail,levelC=${stageCValid ? "pass" : "fail"},chosenLevel=${stageCValid ? "C" : "none"},labelsFound=${labels.length},rowCount=${emergencyRows.length},normalizedBars=${stageCValid ? stageCSorted.length : 0},totalBars=${totalBars > 0 ? totalBars : "-"},matchesTotal=${totalBars > 0 ? (stageCSorted.length === totalBars ? "yes" : "no") : "-"},validation=${stageCValid ? "pass" : "fail"},rejectionReason=${stageCValid ? "-" : "allStagesFailed"}`;
+  const diagnostics = `strategy=shared-structural-separators,rowBands=${sortedRows.length},verticalCandidates=${verticalCandidates.length},normalizedBars=${anchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},validation=${anchors.length > 0 ? "pending" : "fail"},rejectionReason=${anchors.length > 0 ? "-" : "noStructuralSeparators"}`;
   return {
-    anchors: stageCValid ? stageCSorted : null,
+    anchors: anchors.length > 0 ? anchors : null,
     diagnostics,
     details: {
-      labelsFound: labels.length,
-      rowCount: emergencyRows.length,
-      stageA: { validation: "fail", anchors: sortedAnchors },
-      stageB: { validation: "fail", anchors: fallbackSorted },
-      stageC: { validation: stageCValid ? "pass" : "fail", anchors: stageCSorted },
+      rowBandCount: sortedRows.length,
+      verticalCandidateCount: verticalCandidates.length,
+      normalizedAnchors: anchors,
     },
   };
 }
@@ -1654,8 +1506,6 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     return;
   }
 
-  const isPercussionDefaultLayout =
-    state.gpRenderDebugInfo?.isPercussion === true || state.gpRenderDebugInfo?.effectiveStaveProfile === "Default";
   const totalBars = state.totalBars ?? 0;
   const strategyAttempts: string[] = [];
   const strategyDebugResults: Record<string, unknown>[] = [];
@@ -1769,670 +1619,27 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     strategyAttempts.push("renderer:boundsLookup empty");
   }
 
-  const selectorStrategies = [
-    {
-      source: "dom:[data-bar-index]",
-      resolveAnchors: () => Array.from(renderHost.querySelectorAll<HTMLElement>("svg [data-bar-index]")),
-    },
-    {
-      source: "geometry:svg-line-vertical",
-      resolveAnchors: () =>
-        Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line")).filter((line) => {
-          const x1 = Number(line.getAttribute("x1"));
-          const y1 = Number(line.getAttribute("y1"));
-          const x2 = Number(line.getAttribute("x2"));
-          const y2 = Number(line.getAttribute("y2"));
-          if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
-            return false;
-          }
-
-          const verticalDelta = Math.abs(y2 - y1);
-          const horizontalDelta = Math.abs(x2 - x1);
-          return verticalDelta >= 18 && horizontalDelta <= 1.2;
-        }),
-    },
-    {
-      source: "geometry:svg-rect-vertical",
-      resolveAnchors: () =>
-        Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect")).filter((rect) => {
-          const width = Number(rect.getAttribute("width"));
-          const height = Number(rect.getAttribute("height"));
-          if (!Number.isFinite(width) || !Number.isFinite(height)) {
-            return false;
-          }
-
-          return width >= 0.6 && width <= 6 && height >= 18;
-        }),
-    },
-  ] as const;
-  const renderHostRect = renderHost.getBoundingClientRect();
-
-  for (const strategy of selectorStrategies) {
-    if (isPercussionDefaultLayout && strategy.source === "geometry:svg-rect-vertical") {
-      strategyAttempts.push(`${strategy.source}:validation=fail,reason=percussionSourceBlocked`);
-      strategyDebugResults.push({
-        source: strategy.source,
-        rawElementCount: 0,
-        validation: "blockedForPercussionDefault",
-      });
-      continue;
-    }
-    const elements = strategy.resolveAnchors();
-    const strategyDebug: Record<string, unknown> = {
-      source: strategy.source,
-      rawElementCount: elements.length,
-      validation: "pending",
-      normalizedAnchors: [],
-    };
-    strategyDebugResults.push(strategyDebug);
-    if (strategy.source === "dom:[data-bar-index]" && totalBars > 0) {
-      const noisyThreshold = Math.max(totalBars * 120, 4000);
-      if (elements.length > noisyThreshold) {
-        strategyAttempts.push(`${strategy.source}:noisySkip=yes,elements=${elements.length},threshold=${noisyThreshold}`);
-        strategyDebug.validation = "noisySkip";
-        continue;
-      }
-    }
-    strategyAttempts.push(`${strategy.source} => ${elements.length}`);
-    if (elements.length === 0) {
-      strategyDebug.validation = "empty";
-      continue;
-    }
-
-    const rawAnchors = elements
-      .map((element) => {
-        const rect = element.getBoundingClientRect();
-        if (rect.width < 2 && rect.height < 6) {
-          return null;
-        }
-
-        const unsafeElement = element as HTMLElement;
-        const rawBarIndex =
-          unsafeElement instanceof HTMLElement && unsafeElement.dataset
-            ? Number(unsafeElement.dataset.barIndex)
-            : Number.NaN;
-        const barNumber = Number.isFinite(rawBarIndex) ? rawBarIndex + 1 : null;
-
-        return {
-          x: rect.left - renderHostRect.left + renderHost.scrollLeft,
-          y: rect.top - renderHostRect.top + renderHost.scrollTop,
-          height: Math.max(rect.height, 28),
-          right: rect.right - renderHostRect.left + renderHost.scrollLeft,
-          barNumber,
-        };
-      })
-      .filter((anchor): anchor is { x: number; y: number; height: number; right: number; barNumber: number | null } => anchor !== null)
-      .sort((left, right) => (left.y === right.y ? left.x - right.x : left.y - right.y));
-
-    if (rawAnchors.length === 0) {
-      strategyDebug.validation = "rawEmpty";
-      continue;
-    }
-    strategyDebug.rawAnchorCount = rawAnchors.length;
-
-    if (strategy.source === "dom:[data-bar-index]") {
-      const glyphsByBarNumber = new Map<number, Array<{ left: number; right: number; top: number; bottom: number }>>();
-      rawAnchors.forEach((anchor) => {
-        if (!anchor.barNumber || anchor.barNumber <= 0) {
-          return;
-        }
-        const glyphs = glyphsByBarNumber.get(anchor.barNumber) ?? [];
-        glyphs.push({
-          left: anchor.x,
-          right: anchor.right,
-          top: anchor.y,
-          bottom: anchor.y + anchor.height,
-        });
-        glyphsByBarNumber.set(anchor.barNumber, glyphs);
-      });
-
-      const barRepresentatives = Array.from(glyphsByBarNumber.entries())
-        .map(([barNumber, glyphs]) => {
-          const sortedTops = glyphs.map((glyph) => glyph.top).sort((left, right) => left - right);
-          const medianTop =
-            sortedTops.length > 0 ? sortedTops[Math.floor(sortedTops.length / 2)] : glyphs[0]?.top ?? 0;
-          const left = glyphs.reduce((value, glyph) => Math.min(value, glyph.left), Number.POSITIVE_INFINITY);
-          const right = glyphs.reduce((value, glyph) => Math.max(value, glyph.right), Number.NEGATIVE_INFINITY);
-          const top = glyphs.reduce((value, glyph) => Math.min(value, glyph.top), Number.POSITIVE_INFINITY);
-          const bottom = glyphs.reduce((value, glyph) => Math.max(value, glyph.bottom), Number.NEGATIVE_INFINITY);
-          const width = Math.max(right - left, 12);
-          return {
-            barNumber,
-            left,
-            right,
-            centerX: left + width / 2,
-            representativeY: medianTop,
-            top,
-            bottom,
-          };
-        })
-        .sort((left, right) => left.barNumber - right.barNumber);
-      const limitedBars =
-        totalBars > 0 ? barRepresentatives.filter((bar) => bar.barNumber <= totalBars) : barRepresentatives;
-      if (limitedBars.length > 0) {
-        const rowTolerance = 22;
-        const rowSummaries: Array<{
-          yCenter: number;
-          yMin: number;
-          yMax: number;
-          rowStartX: number;
-          rowEndX: number;
-          bars: Array<{
-            barNumber: number;
-            left: number;
-            right: number;
-            centerX: number;
-            top: number;
-            bottom: number;
-          }>;
-        }> = [];
-        const rowIndexByBarNumber = new Map<number, number>();
-        limitedBars.forEach((bar) => {
-          const rowIndex = rowSummaries.findIndex((row) => Math.abs(row.yCenter - bar.representativeY) <= rowTolerance);
-          if (rowIndex >= 0) {
-            const row = rowSummaries[rowIndex] as {
-              yCenter: number;
-              yMin: number;
-              yMax: number;
-              rowStartX: number;
-              rowEndX: number;
-              bars: Array<{
-                barNumber: number;
-                left: number;
-                right: number;
-                centerX: number;
-                top: number;
-                bottom: number;
-              }>;
-            };
-            row.yMin = Math.min(row.yMin, bar.top);
-            row.yMax = Math.max(row.yMax, bar.bottom);
-            row.yCenter = (row.yMin + row.yMax) / 2;
-            row.rowStartX = Math.min(row.rowStartX, bar.left);
-            row.rowEndX = Math.max(row.rowEndX, bar.right);
-            row.bars.push({
-              barNumber: bar.barNumber,
-              left: bar.left,
-              right: bar.right,
-              centerX: bar.centerX,
-              top: bar.top,
-              bottom: bar.bottom,
-            });
-            rowIndexByBarNumber.set(bar.barNumber, rowIndex);
-            return;
-          }
-
-          rowSummaries.push({
-            yCenter: bar.representativeY,
-            yMin: bar.top,
-            yMax: bar.bottom,
-            rowStartX: bar.left,
-            rowEndX: bar.right,
-            bars: [
-              {
-                barNumber: bar.barNumber,
-                left: bar.left,
-                right: bar.right,
-                centerX: bar.centerX,
-                top: bar.top,
-                bottom: bar.bottom,
-              },
-            ],
-          });
-          rowIndexByBarNumber.set(bar.barNumber, rowSummaries.length - 1);
-        });
-
-        const normalizedAnchors: PlaybackBarAnchor[] = [];
-        rowSummaries.forEach((row, rowIndex) => {
-          const sortedRowBars = [...row.bars].sort((left, right) => left.left - right.left);
-          if (sortedRowBars.length === 0) {
-            return;
-          }
-          const rowStart = Math.min(row.rowStartX - 6, sortedRowBars[0]?.left ?? row.rowStartX);
-          const rowEnd = Math.max(row.rowEndX + 6, sortedRowBars[sortedRowBars.length - 1]?.right ?? row.rowEndX);
-
-          sortedRowBars.forEach((bar, position) => {
-            const previousBar = sortedRowBars[position - 1];
-            const nextBar = sortedRowBars[position + 1];
-            const startBoundary =
-              previousBar === undefined ? rowStart : (previousBar.centerX + bar.centerX) / 2;
-            const endBoundary =
-              nextBar === undefined ? rowEnd : (bar.centerX + nextBar.centerX) / 2;
-            const startX = Math.min(startBoundary, endBoundary - 12);
-            const endX = Math.max(endBoundary, startBoundary + 12);
-            normalizedAnchors.push({
-              barNumber: bar.barNumber,
-              startX,
-              endX,
-              rowIndex,
-              y: row.yMin,
-              height: Math.max(row.yMax - row.yMin, 28),
-            });
-          });
-        });
-        const validatedAnchors = normalizedAnchors.sort((left, right) => left.barNumber - right.barNumber);
-        const validationErrors: string[] = [];
-        if (totalBars > 0 && validatedAnchors.length !== totalBars) {
-          validationErrors.push("countMismatch");
-        }
-        for (let index = 0; index < validatedAnchors.length; index += 1) {
-          const anchor = validatedAnchors[index];
-          if (!anchor) {
-            continue;
-          }
-          const expectedBar = index + 1;
-          if (totalBars > 0 && anchor.barNumber !== expectedBar) {
-            validationErrors.push("barSequence");
-            break;
-          }
-          const validGeometry =
-            Number.isFinite(anchor.startX) &&
-            Number.isFinite(anchor.endX) &&
-            Number.isFinite(anchor.y) &&
-            Number.isFinite(anchor.height) &&
-            anchor.endX > anchor.startX + 2 &&
-            anchor.height > 0;
-          if (!validGeometry || anchor.rowIndex < 0) {
-            validationErrors.push("invalidGeometry");
-            break;
-          }
-
-          const nextAnchor = validatedAnchors[index + 1];
-          if (!nextAnchor) {
-            continue;
-          }
-          if (nextAnchor.barNumber <= anchor.barNumber) {
-            validationErrors.push("barOrder");
-            break;
-          }
-          if (nextAnchor.rowIndex < anchor.rowIndex) {
-            validationErrors.push("rowOrder");
-            break;
-          }
-          if (nextAnchor.rowIndex === anchor.rowIndex && anchor.endX > nextAnchor.startX + 4) {
-            validationErrors.push("rowOverlap");
-            break;
-          }
-        }
-
-        if (validationErrors.length > 0) {
-          strategyDebug.validation = "fail";
-          strategyDebug.normalizedAnchors = validatedAnchors;
-          strategyDebug.validationErrors = validationErrors;
-          strategyAttempts.push(
-            `${strategy.source}:validation=fail,normalizedBars=${validatedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},reason=${validationErrors.join("+")},fallbackUsed=yes`,
-          );
-          continue;
-        }
-
-        const strictErrors = validateFinalAnchorsStrict(validatedAnchors);
-        if (strictErrors.length > 0) {
-          strategyDebug.validation = "fail";
-          strategyDebug.normalizedAnchors = validatedAnchors;
-          strategyDebug.validationErrors = [...validationErrors, ...strictErrors];
-          strategyAttempts.push(
-            `${strategy.source}:validation=fail,normalizedBars=${validatedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},reason=${[...validationErrors, ...strictErrors].join("+")},fallbackUsed=yes`,
-          );
-          continue;
-        }
-
-        const chosenGenericSource = strategy.source;
-        state.playbackBarAnchors = validatedAnchors;
-        state.playbackBarAnchorCount = state.playbackBarAnchors.length;
-        state.playbackBarAnchorSource = chosenGenericSource;
-        const firstBar = state.playbackBarAnchors[0]?.barNumber ?? null;
-        const lastBar = state.playbackBarAnchors[state.playbackBarAnchors.length - 1]?.barNumber ?? null;
-        const barsMatchTotal = totalBars > 0 ? state.playbackBarAnchors.length === totalBars : null;
-        state.playbackAnchorStrategyAttempts = `chosenSource=${chosenGenericSource} | ${strategyAttempts.join(" | ")} | diag:noisySkip=no,normalizedBars=${state.playbackBarAnchors.length},firstBar=${firstBar ?? "-"},lastBar=${lastBar ?? "-"},rows=${rowSummaries.length},matchesTotal=${barsMatchTotal === null ? "-" : barsMatchTotal ? "yes" : "no"},validation=pass,fallbackUsed=no,totalBars=${totalBars > 0 ? totalBars : "-"}`;
-        strategyDebug.validation = "pass";
-        strategyDebug.normalizedAnchors = validatedAnchors;
-        strategyDebug.rowCount = rowSummaries.length;
-        state.latestAnchorStrategyDebug = strategyDebugResults;
-        updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
-        updateDebugField(rootElement, "playback-bar-anchor-source", chosenGenericSource);
-        updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
-        logAnchorRebuildOutcome("generic-success");
-        return;
-      }
-    }
-
-    const dedupedAnchors = rawAnchors.filter((anchor, index) => {
-      if (index === 0) {
-        return true;
-      }
-
-      const previous = rawAnchors[index - 1];
-      if (!previous) {
-        return true;
-      }
-
-      return Math.abs(anchor.x - previous.x) > 8 || Math.abs(anchor.y - previous.y) > 8;
-    });
-    const rowTolerance = 10;
-    const rawRowGroups: Array<{ yCenter: number; yMin: number; yMax: number; anchorIndexes: number[] }> = [];
-    for (let index = 0; index < dedupedAnchors.length; index += 1) {
-      const anchor = dedupedAnchors[index];
-      if (!anchor) {
-        continue;
-      }
-
-      const existingRowIndex = rawRowGroups.findIndex((row) => Math.abs(row.yCenter - anchor.y) <= rowTolerance);
-      if (existingRowIndex >= 0) {
-        const existingRow = rawRowGroups[existingRowIndex];
-        if (existingRow) {
-          existingRow.yMin = Math.min(existingRow.yMin, anchor.y);
-          existingRow.yMax = Math.max(existingRow.yMax, anchor.y);
-          existingRow.yCenter = (existingRow.yMin + existingRow.yMax) / 2;
-          existingRow.anchorIndexes.push(index);
-        }
-      } else {
-        rawRowGroups.push({
-          yCenter: anchor.y,
-          yMin: anchor.y,
-          yMax: anchor.y,
-          anchorIndexes: [index],
-        });
-      }
-    }
-
-    const filteredAnchorsWithRow: Array<{ x: number; y: number; height: number; rawRowIndex: number }> = [];
-    const rawRowTerminalBoundaryByIndex: Array<number | null> = new Array(rawRowGroups.length).fill(null);
-    let droppedTerminalCount = 0;
-    rawRowGroups.forEach((row, rawRowIndex) => {
-      const rowIndexesSortedByX = [...row.anchorIndexes].sort((left, right) => {
-        const leftAnchor = dedupedAnchors[left];
-        const rightAnchor = dedupedAnchors[right];
-        if (!leftAnchor || !rightAnchor) {
-          return left - right;
-        }
-
-        return leftAnchor.x - rightAnchor.x;
-      });
-
-      if (rowIndexesSortedByX.length <= 1) {
-        rowIndexesSortedByX.forEach((anchorIndex) => {
-          const anchor = dedupedAnchors[anchorIndex];
-          if (!anchor) {
-            return;
-          }
-
-          filteredAnchorsWithRow.push({
-            x: anchor.x,
-            y: anchor.y,
-            height: anchor.height,
-            rawRowIndex,
-          });
-        });
-        return;
-      }
-
-      const keptIndexes = rowIndexesSortedByX.slice(0, -1);
-      const droppedTerminalIndex = rowIndexesSortedByX[rowIndexesSortedByX.length - 1];
-      const droppedTerminalAnchor = droppedTerminalIndex === undefined ? null : dedupedAnchors[droppedTerminalIndex] ?? null;
-      rawRowTerminalBoundaryByIndex[rawRowIndex] = droppedTerminalAnchor ? droppedTerminalAnchor.x : null;
-      keptIndexes.forEach((anchorIndex) => {
-        const anchor = dedupedAnchors[anchorIndex];
-        if (!anchor) {
-          return;
-        }
-
-        filteredAnchorsWithRow.push({
-          x: anchor.x,
-          y: anchor.y,
-          height: anchor.height,
-          rawRowIndex,
-        });
-      });
-      droppedTerminalCount += 1;
-    });
-
-    const filteredAnchors = [...filteredAnchorsWithRow].sort((left, right) =>
-      left.y === right.y ? left.x - right.x : left.y - right.y,
-    );
-    const limitedAnchors = totalBars > 0 ? filteredAnchors.slice(0, totalBars) : filteredAnchors;
-    if (limitedAnchors.length === 0) {
-      strategyDebug.validation = "limitedEmpty";
-      continue;
-    }
-
-    const rowSummaries: Array<{
-      yCenter: number;
-      yMin: number;
-      yMax: number;
-      maxHeight: number;
-      rowRightX: number | null;
-      rowTerminalBoundaryX: number | null;
-      anchorIndexes: number[];
-    }> = [];
-    const anchorRowIndexes = new Array<number>(limitedAnchors.length).fill(-1);
-    for (let index = 0; index < limitedAnchors.length; index += 1) {
-      const anchor = limitedAnchors[index];
-      if (!anchor) {
-        continue;
-      }
-
-      const existingRowIndex = rowSummaries.findIndex((row) => Math.abs(row.yCenter - anchor.y) <= rowTolerance);
-      if (existingRowIndex >= 0) {
-        const existingRow = rowSummaries[existingRowIndex];
-        if (existingRow) {
-          existingRow.yMin = Math.min(existingRow.yMin, anchor.y);
-          existingRow.yMax = Math.max(existingRow.yMax, anchor.y);
-          existingRow.maxHeight = Math.max(existingRow.maxHeight, anchor.height);
-          existingRow.yCenter = (existingRow.yMin + existingRow.yMax) / 2;
-          existingRow.rowTerminalBoundaryX =
-            existingRow.rowTerminalBoundaryX ?? rawRowTerminalBoundaryByIndex[anchor.rawRowIndex] ?? null;
-          existingRow.anchorIndexes.push(index);
-          anchorRowIndexes[index] = existingRowIndex;
-        }
-      } else {
-        rowSummaries.push({
-          yCenter: anchor.y,
-          yMin: anchor.y,
-          yMax: anchor.y,
-          maxHeight: anchor.height,
-          rowRightX: null,
-          rowTerminalBoundaryX: rawRowTerminalBoundaryByIndex[anchor.rawRowIndex] ?? null,
-          anchorIndexes: [index],
-        });
-        anchorRowIndexes[index] = rowSummaries.length - 1;
-      }
-    }
-
-    const horizontalLineCandidates = Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line"))
-      .filter((line) => {
-        const x1 = Number(line.getAttribute("x1"));
-        const y1 = Number(line.getAttribute("y1"));
-        const x2 = Number(line.getAttribute("x2"));
-        const y2 = Number(line.getAttribute("y2"));
-        if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
-          return false;
-        }
-
-        const horizontalSpan = Math.abs(x2 - x1);
-        const verticalDelta = Math.abs(y2 - y1);
-        return horizontalSpan >= 36 && verticalDelta <= 1.2;
-      })
-      .map((line) => line.getBoundingClientRect())
-      .filter((rect) => rect.width >= 24);
-
-    const horizontalRectCandidates = Array.from(renderHost.querySelectorAll<SVGRectElement>("svg rect"))
-      .filter((rect) => {
-        const width = Number(rect.getAttribute("width"));
-        const height = Number(rect.getAttribute("height"));
-        if (!Number.isFinite(width) || !Number.isFinite(height)) {
-          return false;
-        }
-
-        return width >= 24 && height > 0 && height <= 4;
-      })
-      .map((rect) => rect.getBoundingClientRect());
-
-    const rowBoundCandidates = [...horizontalLineCandidates, ...horizontalRectCandidates].map((rect) => ({
-      top: rect.top - renderHostRect.top + renderHost.scrollTop,
-      bottom: rect.bottom - renderHostRect.top + renderHost.scrollTop,
-      right: rect.right - renderHostRect.left + renderHost.scrollLeft,
-    }));
-
-    rowSummaries.forEach((row) => {
-      const rowTop = row.yMin - 8;
-      const rowBottom = row.yMax + row.maxHeight + 8;
-      let rowRightX = Number.NEGATIVE_INFINITY;
-
-      rowBoundCandidates.forEach((candidate) => {
-        const overlapsRow = candidate.bottom >= rowTop && candidate.top <= rowBottom;
-        if (!overlapsRow) {
-          return;
-        }
-
-        rowRightX = Math.max(rowRightX, candidate.right);
-      });
-
-      const structuralRightX = Number.isFinite(rowRightX) ? rowRightX : null;
-      const sortedAnchorIndexes = [...row.anchorIndexes].sort((left, right) => left - right);
-      const rowGaps: number[] = [];
-      sortedAnchorIndexes.forEach((anchorIndex, position) => {
-        const nextAnchorIndex = sortedAnchorIndexes[position + 1];
-        if (nextAnchorIndex === undefined) {
-          return;
-        }
-
-        const leftAnchor = limitedAnchors[anchorIndex];
-        const rightAnchor = limitedAnchors[nextAnchorIndex];
-        if (!leftAnchor || !rightAnchor) {
-          return;
-        }
-
-        const gap = rightAnchor.x - leftAnchor.x;
-        if (gap > 12) {
-          rowGaps.push(gap);
-        }
-      });
-
-      const sortedRowGaps = [...rowGaps].sort((left, right) => left - right);
-      const rowMedianGap = sortedRowGaps.length > 0 ? sortedRowGaps[Math.floor(sortedRowGaps.length / 2)] : null;
-      const lastAnchorIndex = sortedAnchorIndexes[sortedAnchorIndexes.length - 1];
-      const lastAnchor = lastAnchorIndex === undefined ? null : limitedAnchors[lastAnchorIndex] ?? null;
-      const conservativeGap = Math.min(Math.max((rowMedianGap ?? 72) * 0.9, 24), 160);
-      const conservativeRightX = lastAnchor ? lastAnchor.x + conservativeGap : null;
-
-      if (structuralRightX === null) {
-        row.rowRightX = conservativeRightX;
-        return;
-      }
-      if (conservativeRightX === null) {
-        row.rowRightX = structuralRightX;
-        return;
-      }
-
-      row.rowRightX = Math.min(structuralRightX, conservativeRightX);
-    });
-
-    const sameSystemGaps: number[] = [];
-    for (let index = 0; index < limitedAnchors.length - 1; index += 1) {
-      const currentAnchor = limitedAnchors[index];
-      const nextAnchor = limitedAnchors[index + 1];
-      if (!currentAnchor || !nextAnchor) {
-        continue;
-      }
-
-      const currentRow = anchorRowIndexes[index];
-      const nextRow = anchorRowIndexes[index + 1];
-      if (currentRow < 0 || nextRow < 0 || currentRow !== nextRow) {
-        continue;
-      }
-
-      const gap = nextAnchor.x - currentAnchor.x;
-      if (gap > 12) {
-        sameSystemGaps.push(gap);
-      }
-    }
-
-    const sortedGaps = [...sameSystemGaps].sort((left, right) => left - right);
-    const medianGap = sortedGaps.length > 0 ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 72;
-    const fallbackGap = Math.min(Math.max(medianGap, 32), 220);
-
-    const candidateAnchors = limitedAnchors.map((anchor, index) => {
-      const nextAnchor = limitedAnchors[index + 1];
-      const currentRowIndex = anchorRowIndexes[index];
-      const nextRowIndex = anchorRowIndexes[index + 1] ?? -1;
-      const sameSystemNext =
-        nextAnchor && currentRowIndex >= 0 && currentRowIndex === nextRowIndex && nextAnchor.x > anchor.x + 8
-          ? nextAnchor
-          : null;
-      const rowRightX = currentRowIndex >= 0 ? rowSummaries[currentRowIndex]?.rowRightX ?? null : null;
-      const rowTerminalBoundaryX = currentRowIndex >= 0 ? rowSummaries[currentRowIndex]?.rowTerminalBoundaryX ?? null : null;
-      const fallbackEndX = anchor.x + fallbackGap;
-      const rowBoundaryEndX =
-        rowTerminalBoundaryX !== null
-          ? Math.max(anchor.x + 12, rowTerminalBoundaryX - 2)
-          : rowRightX !== null
-            ? Math.max(anchor.x + 12, rowRightX - 2)
-            : fallbackEndX;
-      const endX = sameSystemNext
-        ? Math.max(anchor.x + 12, sameSystemNext.x - 2)
-        : rowBoundaryEndX;
-      return {
-        barNumber: index + 1,
-        startX: anchor.x,
-        endX,
-        rowIndex: currentRowIndex,
-        y: anchor.y,
-        height: anchor.height,
-      };
-    });
-    const strictErrors = validateFinalAnchorsStrict(candidateAnchors);
-    if (strictErrors.length > 0) {
-      strategyDebug.validation = "fail";
-      strategyDebug.dedupCount = dedupedAnchors.length;
-      strategyDebug.filteredCount = filteredAnchors.length;
-      strategyDebug.rowCount = rowSummaries.length;
-      strategyDebug.normalizedAnchors = candidateAnchors;
-      strategyDebug.rowSummaries = rowSummaries;
-      strategyDebug.validationErrors = strictErrors;
-      strategyAttempts.push(
-        `${strategy.source}:validation=fail,reason=${strictErrors.join("+")},raw=${rawAnchors.length},dedup=${dedupedAnchors.length},filtered=${filteredAnchors.length},used=${limitedAnchors.length},rows=${rowSummaries.length},fallbackUsed=yes`,
-      );
-      continue;
-    }
-    const chosenGenericSource = strategy.source;
-    state.playbackBarAnchors = candidateAnchors;
-    state.playbackBarAnchorCount = state.playbackBarAnchors.length;
-    state.playbackBarAnchorSource = chosenGenericSource;
-    const rowsWithTerminalBoundary = rowSummaries.filter((row) => row.rowTerminalBoundaryX !== null).length;
-    state.playbackAnchorStrategyAttempts = `chosenSource=${chosenGenericSource} | ${strategyAttempts.join(" | ")} | diag:raw=${rawAnchors.length},dedup=${dedupedAnchors.length},filtered=${filteredAnchors.length},used=${limitedAnchors.length},rows=${rowSummaries.length},dropped=${droppedTerminalCount},rowTerminal=${rowsWithTerminalBoundary},totalBars=${totalBars > 0 ? totalBars : "-"}`;
-    strategyDebug.validation = "pass";
-    strategyDebug.dedupCount = dedupedAnchors.length;
-    strategyDebug.filteredCount = filteredAnchors.length;
-    strategyDebug.rowCount = rowSummaries.length;
-    strategyDebug.normalizedAnchors = state.playbackBarAnchors;
-    strategyDebug.rowSummaries = rowSummaries;
-    state.latestAnchorStrategyDebug = strategyDebugResults;
-    updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
-    updateDebugField(rootElement, "playback-bar-anchor-source", chosenGenericSource);
-    updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
-    logAnchorRebuildOutcome("generic-success");
-    return;
-  }
-
-  if (isPercussionDefaultLayout) {
-    const percussionResult = rebuildPercussionPlaybackBarAnchors(renderHost, totalBars);
-    state.latestPercussionAnchorDebug = percussionResult.details;
-    if (percussionResult.anchors !== null) {
-      state.playbackBarAnchors = percussionResult.anchors;
-      state.playbackBarAnchorCount = percussionResult.anchors.length;
-      state.playbackBarAnchorSource = "percussion-fallback";
-      state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | chosenSource=percussion-fallback`;
+  const structuralResult = resolveSharedStructuralPlaybackBarAnchors(renderHost, totalBars);
+  state.latestPercussionAnchorDebug = structuralResult.details;
+  if (structuralResult.anchors !== null) {
+    const strictErrors = validateFinalAnchorsStrict(structuralResult.anchors);
+    if (strictErrors.length === 0) {
+      state.playbackBarAnchors = structuralResult.anchors;
+      state.playbackBarAnchorCount = structuralResult.anchors.length;
+      state.playbackBarAnchorSource = "shared-structural-separators";
+      state.playbackAnchorStrategyAttempts = `${strategyAttempts.join(" | ")} | chosenSource=shared-structural-separators`;
       updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
       updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
       updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
-      logAnchorRebuildOutcome("percussion-fallback-success");
+      logAnchorRebuildOutcome("shared-structural-success");
       return;
     }
-    strategyAttempts.push(`${percussionResult.diagnostics},chosenSource=percussion-fallback,validation=fail`);
+    strategyAttempts.push(`shared-structural-separators rejected,reason=${strictErrors.join("+")}`);
+  } else {
+    strategyAttempts.push(`${structuralResult.diagnostics},chosenSource=shared-structural-separators,validation=fail`);
   }
 
   state.latestAnchorStrategyDebug = strategyDebugResults;
-
   state.playbackBarAnchors = [];
   state.playbackBarAnchorCount = 0;
   state.playbackBarAnchorSource = null;
@@ -2446,7 +1653,9 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       ? state.playbackAnchorStrategyAttempts
       : "-",
   );
-  logAnchorRebuildOutcome("anchor-empty");
+  logAnchorRebuildOutcome("shared-structural-fail");
+  return;
+
 }
 
 function schedulePlaybackBarAnchorRebuild(state: AppState, rootElement: HTMLElement): void {
