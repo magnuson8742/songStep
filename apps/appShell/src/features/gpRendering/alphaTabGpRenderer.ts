@@ -231,6 +231,17 @@ export interface GpRenderDebugInfo {
       firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
       firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
     } | null;
+    transformSummary?: {
+      coordinateSpaceMode: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
+      svgViewBox: { x: number; y: number; width: number; height: number } | null;
+      svgClientRect: { width: number; height: number } | null;
+      transformScaleX: number;
+      transformScaleY: number;
+      transformOffsetX: number;
+      transformOffsetY: number;
+      firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
+      firstBarFinalRect: { x: number; y: number; w: number; h: number } | null;
+    } | null;
   } | null;
 }
 
@@ -398,6 +409,17 @@ interface BarBoundsExtractionDiagnostics {
     systemOriginY: number | null;
     firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
     firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
+  } | null;
+  transformSummary?: {
+    coordinateSpaceMode: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
+    svgViewBox: { x: number; y: number; width: number; height: number } | null;
+    svgClientRect: { width: number; height: number } | null;
+    transformScaleX: number;
+    transformScaleY: number;
+    transformOffsetX: number;
+    transformOffsetY: number;
+    firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
+    firstBarFinalRect: { x: number; y: number; w: number; h: number } | null;
   } | null;
 }
 
@@ -1838,6 +1860,74 @@ export async function createGpRenderer(
       });
     }
 
+    const firstRawRectForTransform =
+      candidateRects.length > 0
+        ? {
+            x: candidateRects[0].startX,
+            y: candidateRects[0].y,
+            w: candidateRects[0].endX - candidateRects[0].startX,
+            h: candidateRects[0].height,
+          }
+        : null;
+    const renderSurfaceSvg = container.querySelector<SVGSVGElement>("svg");
+    const hostRect = container.getBoundingClientRect();
+    const svgRect = renderSurfaceSvg?.getBoundingClientRect() ?? null;
+    const svgViewBox = renderSurfaceSvg?.viewBox?.baseVal ?? null;
+    const hasValidViewBox = !!svgViewBox && svgViewBox.width > 0 && svgViewBox.height > 0;
+    const offsetX = svgRect ? svgRect.left - hostRect.left + container.scrollLeft : 0;
+    const offsetY = svgRect ? svgRect.top - hostRect.top + container.scrollTop : 0;
+    const scaleX = hasValidViewBox && svgRect ? svgRect.width / svgViewBox.width : 1;
+    const scaleY = hasValidViewBox && svgRect ? svgRect.height / svgViewBox.height : 1;
+    const maxRawX = candidateRects.reduce((maxValue, rect) => Math.max(maxValue, rect.endX), 0);
+    const maxRawY = candidateRects.reduce((maxValue, rect) => Math.max(maxValue, rect.y + rect.height), 0);
+    const looksLikeViewBoxUnits =
+      !!svgRect &&
+      !!svgViewBox &&
+      maxRawX <= svgViewBox.width * 1.2 &&
+      maxRawY <= svgViewBox.height * 1.2 &&
+      (Math.abs(svgViewBox.width - svgRect.width) > 4 || Math.abs(svgViewBox.height - svgRect.height) > 4);
+    const looksLikeSvgPixelUnits =
+      !!svgRect && maxRawX <= svgRect.width * 1.2 && maxRawY <= svgRect.height * 1.2 && !looksLikeViewBoxUnits;
+    const coordinateSpaceMode: "host-local" | "svg-pixel-to-host" | "viewbox-to-host" = looksLikeViewBoxUnits
+      ? "viewbox-to-host"
+      : looksLikeSvgPixelUnits
+        ? "svg-pixel-to-host"
+        : "host-local";
+    const transformedCandidateRects = candidateRects.map((rect) => {
+      const width = Math.max(rect.endX - rect.startX, 1);
+      if (coordinateSpaceMode === "viewbox-to-host" && svgViewBox) {
+        const mappedX = offsetX + (rect.startX - svgViewBox.x) * scaleX;
+        const mappedY = offsetY + (rect.y - svgViewBox.y) * scaleY;
+        return {
+          ...rect,
+          startX: mappedX,
+          endX: mappedX + width * scaleX,
+          y: mappedY,
+          height: rect.height * scaleY,
+        };
+      }
+      if (coordinateSpaceMode === "svg-pixel-to-host") {
+        return {
+          ...rect,
+          startX: offsetX + rect.startX,
+          endX: offsetX + rect.endX,
+          y: offsetY + rect.y,
+          height: rect.height,
+        };
+      }
+      return rect;
+    });
+    const firstFinalRectForTransform =
+      transformedCandidateRects.length > 0
+        ? {
+            x: transformedCandidateRects[0].startX,
+            y: transformedCandidateRects[0].y,
+            w: transformedCandidateRects[0].endX - transformedCandidateRects[0].startX,
+            h: transformedCandidateRects[0].height,
+          }
+        : null;
+    candidateRects = transformedCandidateRects;
+
     const byBarNumber = new Map<number, RenderedBarBound>();
     candidateRects.forEach((candidate) => {
       const existing = byBarNumber.get(candidate.barNumber);
@@ -1902,6 +1992,29 @@ export async function createGpRenderer(
       chosenLayoutFamily: authoritativeFamily?.sourcePath,
       familyRectCounts,
       calibrationSummary: authoritativeFamily?.calibrationSummary ?? null,
+      transformSummary: {
+        coordinateSpaceMode,
+        svgViewBox: svgViewBox
+          ? {
+              x: svgViewBox.x,
+              y: svgViewBox.y,
+              width: svgViewBox.width,
+              height: svgViewBox.height,
+            }
+          : null,
+        svgClientRect: svgRect
+          ? {
+              width: svgRect.width,
+              height: svgRect.height,
+            }
+          : null,
+        transformScaleX: scaleX,
+        transformScaleY: scaleY,
+        transformOffsetX: offsetX,
+        transformOffsetY: offsetY,
+        firstBarRawRect: firstRawRectForTransform,
+        firstBarFinalRect: firstFinalRectForTransform,
+      },
     };
 
     return normalizedBars;
