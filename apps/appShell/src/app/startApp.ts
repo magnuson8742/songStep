@@ -3391,9 +3391,15 @@ export function startApp(rootElement: HTMLElement): void {
         type: "app-start",
         timestamp: new Date().toISOString(),
       });
+      appendSessionDebugEvent(logger, {
+        type: "logger-smoke-test",
+        timestamp: new Date().toISOString(),
+      });
     })
     .catch((error) => {
-      state.projectStatusMessage = `Debug logger init failed: ${error instanceof Error ? error.message : String(error)}`;
+      const message = error instanceof Error ? error.message : String(error);
+      state.projectStatusMessage = `Debug logger init failed: ${message}`;
+      console.error("Debug logger init failed", error);
     });
 
   window.addEventListener("error", (event) => {
