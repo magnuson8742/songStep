@@ -123,6 +123,21 @@ interface AppState {
   soloTrackIndexes: number[];
   bottomDockHeightPx: number;
   tabZoomPercent: number;
+  latestAnchorStrategyDebug: Record<string, unknown>[];
+  latestPercussionAnchorDebug: Record<string, unknown> | null;
+  latestAnchorDebugSnapshot: Record<string, unknown> | null;
+}
+
+function triggerJsonDownload(fileName: string, payload: unknown): void {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function updateDebugField(rootElement: HTMLElement, fieldName: string, value: string): void {
@@ -828,10 +843,103 @@ function updateRenderHostDomDiagnostics(state: AppState, rootElement: HTMLElemen
   updateDebugField(rootElement, "render-host-element-counts", "minimal");
 }
 
+function buildAnchorDebugSnapshot(state: AppState, rootElement: HTMLElement): Record<string, unknown> {
+  const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
+  const renderHostRect = renderHost?.getBoundingClientRect() ?? null;
+  const svgRoot = renderHost?.querySelector<SVGSVGElement>("svg") ?? null;
+  const svgViewBox = svgRoot?.getAttribute("viewBox") ?? null;
+  const renderedBounds = state.gpRenderer?.getRenderedBarBounds() ?? [];
+  const rowCounts = state.playbackBarAnchors.reduce<Record<string, number>>((acc, anchor) => {
+    const key = String(anchor.rowIndex);
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+  const currentTrackOverview =
+    state.scoreOverview?.trackRows.find((row) => row.trackIndex === state.selectedTrackIndex) ??
+    state.scoreOverview?.trackRows[state.gpRenderDebugInfo?.confirmedActiveTrackPosition ?? -1] ??
+    null;
+
+  return {
+    exportedAtIso: new Date().toISOString(),
+    highLevel: {
+      scoreTitle: state.scoreTitle,
+      selectedTrackIndex: state.selectedTrackIndex,
+      confirmedActiveTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+      confirmedActiveTrackName: state.gpRenderDebugInfo?.confirmedActiveTrackName ?? null,
+      renderMode: state.gpRenderDebugInfo?.renderMode ?? null,
+      isPercussion: state.gpRenderDebugInfo?.isPercussion ?? null,
+      effectiveStaveProfile: state.gpRenderDebugInfo?.effectiveStaveProfile ?? null,
+      totalBars: state.totalBars,
+      tempoBpm: state.tempoBpm,
+      playbackBarAnchorSource: state.playbackBarAnchorSource,
+      playbackAnchorStrategyAttempts: state.playbackAnchorStrategyAttempts,
+    },
+    rendererBounds: {
+      rawCount: renderedBounds.length,
+      sampleFirst200: renderedBounds.slice(0, 200),
+      fullDescriptors: renderedBounds,
+    },
+    finalAnchors: {
+      count: state.playbackBarAnchors.length,
+      minBarNumber: state.playbackBarAnchors[0]?.barNumber ?? null,
+      maxBarNumber: state.playbackBarAnchors[state.playbackBarAnchors.length - 1]?.barNumber ?? null,
+      rowCounts,
+      anchors: state.playbackBarAnchors,
+    },
+    strategyDiagnostics: state.latestAnchorStrategyDebug,
+    percussionFallbackDiagnostics: state.latestPercussionAnchorDebug,
+    renderHostDiagnostics: {
+      rect: renderHostRect
+        ? {
+            left: renderHostRect.left,
+            top: renderHostRect.top,
+            width: renderHostRect.width,
+            height: renderHostRect.height,
+          }
+        : null,
+      scrollLeft: renderHost?.scrollLeft ?? null,
+      scrollTop: renderHost?.scrollTop ?? null,
+      hasSvg: svgRoot !== null,
+      svgViewBox,
+      childTagCounts:
+        renderHost === null
+          ? {}
+          : Array.from(renderHost.children).reduce<Record<string, number>>((acc, child) => {
+              const key = child.tagName.toLowerCase();
+              acc[key] = (acc[key] ?? 0) + 1;
+              return acc;
+            }, {}),
+      svgCounts: {
+        lines: renderHost?.querySelectorAll("svg line").length ?? 0,
+        rects: renderHost?.querySelectorAll("svg rect").length ?? 0,
+        texts: renderHost?.querySelectorAll("svg text").length ?? 0,
+        dataBarIndex: renderHost?.querySelectorAll("svg [data-bar-index]").length ?? 0,
+      },
+      renderHostHasSvg: state.renderHostHasSvg,
+      renderHostChildTags: state.renderHostChildTags,
+      renderHostTopTagClassCombos: state.renderHostTopTagClassCombos,
+      renderHostElementCounts: state.renderHostElementCounts,
+    },
+    overviewSync: {
+      totalBars: state.scoreOverview?.totalBars ?? null,
+      currentTrackOverview:
+        currentTrackOverview === null
+          ? null
+          : {
+              trackIndex: currentTrackOverview.trackIndex,
+              trackName: currentTrackOverview.trackName,
+              totalBarSlots: currentTrackOverview.barActivity.length,
+              activeBarCount: currentTrackOverview.barActivity.filter(Boolean).length,
+            },
+      sectionMarkers: state.scoreOverview?.sectionMarkers ?? [],
+    },
+  };
+}
+
 function rebuildPercussionPlaybackBarAnchors(
   renderHost: HTMLElement,
   totalBars: number,
-): { anchors: PlaybackBarAnchor[] | null; diagnostics: string } {
+): { anchors: PlaybackBarAnchor[] | null; diagnostics: string; details: Record<string, unknown> } {
   const renderHostRect = renderHost.getBoundingClientRect();
   const rawLabels = Array.from(renderHost.querySelectorAll<SVGTextElement>("svg text"))
     .map((textNode) => {
@@ -1006,6 +1114,13 @@ function rebuildPercussionPlaybackBarAnchors(
     return {
       anchors: sortedAnchors,
       diagnostics,
+      details: {
+        labelsFound: labels.length,
+        rowCount: sortedRows.length,
+        stageA: { validation: "pass", anchors: sortedAnchors },
+        stageB: { validation: "skipped", anchors: [] },
+        stageC: { validation: "skipped", anchors: [] },
+      },
     };
   }
 
@@ -1046,6 +1161,13 @@ function rebuildPercussionPlaybackBarAnchors(
     return {
       anchors: fallbackSorted,
       diagnostics,
+      details: {
+        labelsFound: labels.length,
+        rowCount: sortedRows.length,
+        stageA: { validation: "fail", anchors: sortedAnchors },
+        stageB: { validation: "pass", anchors: fallbackSorted },
+        stageC: { validation: "skipped", anchors: [] },
+      },
     };
   }
 
@@ -1116,6 +1238,13 @@ function rebuildPercussionPlaybackBarAnchors(
   return {
     anchors: stageCValid ? stageCSorted : null,
     diagnostics,
+    details: {
+      labelsFound: labels.length,
+      rowCount: emergencyRows.length,
+      stageA: { validation: "fail", anchors: sortedAnchors },
+      stageB: { validation: "fail", anchors: fallbackSorted },
+      stageC: { validation: stageCValid ? "pass" : "fail", anchors: stageCSorted },
+    },
   };
 }
 
@@ -1425,6 +1554,8 @@ function resolveRendererPlaybackBarAnchors(state: AppState, renderHost: HTMLElem
 }
 function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): void {
   if (!ENABLE_CUSTOM_PLAYHEAD) {
+    state.latestAnchorStrategyDebug = [];
+    state.latestPercussionAnchorDebug = null;
     state.playbackBarAnchors = [];
     state.playbackBarAnchorCount = 0;
     state.playbackBarAnchorSource = "disabled";
@@ -1445,6 +1576,8 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
 
   const renderHost = rootElement.querySelector<HTMLElement>("#gpRenderHost");
   if (!renderHost) {
+    state.latestAnchorStrategyDebug = [];
+    state.latestPercussionAnchorDebug = null;
     state.playbackBarAnchors = [];
     state.playbackBarAnchorCount = 0;
     state.playbackBarAnchorSource = null;
@@ -1459,10 +1592,20 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     state.gpRenderDebugInfo?.isPercussion === true || state.gpRenderDebugInfo?.effectiveStaveProfile === "Default";
   const totalBars = state.totalBars ?? 0;
   const strategyAttempts: string[] = [];
+  const strategyDebugResults: Record<string, unknown>[] = [];
+  state.latestPercussionAnchorDebug = null;
   updateRenderHostDomDiagnostics(state, rootElement, renderHost);
   if (!isPercussionDefaultLayout) {
     const rendererAnchors = resolveRendererPlaybackBarAnchors(state, renderHost);
     if (rendererAnchors.length > 0) {
+      state.latestAnchorStrategyDebug = [
+        {
+          source: "renderer:boundsLookup",
+          validation: "pass",
+          rawElementCount: rendererAnchors.length,
+          normalizedAnchors: rendererAnchors,
+        },
+      ];
       state.playbackBarAnchors = rendererAnchors;
       state.playbackBarAnchorCount = rendererAnchors.length;
       state.playbackBarAnchorSource = "renderer:boundsLookup";
@@ -1519,15 +1662,24 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
 
   for (const strategy of selectorStrategies) {
     const elements = strategy.resolveAnchors();
+    const strategyDebug: Record<string, unknown> = {
+      source: strategy.source,
+      rawElementCount: elements.length,
+      validation: "pending",
+      normalizedAnchors: [],
+    };
+    strategyDebugResults.push(strategyDebug);
     if (strategy.source === "dom:[data-bar-index]" && totalBars > 0) {
       const noisyThreshold = Math.max(totalBars * 120, 4000);
       if (elements.length > noisyThreshold) {
         strategyAttempts.push(`${strategy.source}:noisySkip=yes,elements=${elements.length},threshold=${noisyThreshold}`);
+        strategyDebug.validation = "noisySkip";
         continue;
       }
     }
     strategyAttempts.push(`${strategy.source} => ${elements.length}`);
     if (elements.length === 0) {
+      strategyDebug.validation = "empty";
       continue;
     }
 
@@ -1557,8 +1709,10 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       .sort((left, right) => (left.y === right.y ? left.x - right.x : left.y - right.y));
 
     if (rawAnchors.length === 0) {
+      strategyDebug.validation = "rawEmpty";
       continue;
     }
+    strategyDebug.rawAnchorCount = rawAnchors.length;
 
     if (strategy.source === "dom:[data-bar-index]") {
       const glyphsByBarNumber = new Map<number, Array<{ left: number; right: number; top: number; bottom: number }>>();
@@ -1746,6 +1900,9 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
         }
 
         if (validationErrors.length > 0) {
+          strategyDebug.validation = "fail";
+          strategyDebug.normalizedAnchors = validatedAnchors;
+          strategyDebug.validationErrors = validationErrors;
           strategyAttempts.push(
             `${strategy.source}:validation=fail,normalizedBars=${validatedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},reason=${validationErrors.join("+")},fallbackUsed=yes`,
           );
@@ -1760,6 +1917,10 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
         const lastBar = state.playbackBarAnchors[state.playbackBarAnchors.length - 1]?.barNumber ?? null;
         const barsMatchTotal = totalBars > 0 ? state.playbackBarAnchors.length === totalBars : null;
         state.playbackAnchorStrategyAttempts = `chosenSource=${chosenGenericSource} | ${strategyAttempts.join(" | ")} | diag:noisySkip=no,normalizedBars=${state.playbackBarAnchors.length},firstBar=${firstBar ?? "-"},lastBar=${lastBar ?? "-"},rows=${rowSummaries.length},matchesTotal=${barsMatchTotal === null ? "-" : barsMatchTotal ? "yes" : "no"},validation=pass,fallbackUsed=no,totalBars=${totalBars > 0 ? totalBars : "-"}`;
+        strategyDebug.validation = "pass";
+        strategyDebug.normalizedAnchors = validatedAnchors;
+        strategyDebug.rowCount = rowSummaries.length;
+        state.latestAnchorStrategyDebug = strategyDebugResults;
         updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
         updateDebugField(rootElement, "playback-bar-anchor-source", chosenGenericSource);
         updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
@@ -1862,6 +2023,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     );
     const limitedAnchors = totalBars > 0 ? filteredAnchors.slice(0, totalBars) : filteredAnchors;
     if (limitedAnchors.length === 0) {
+      strategyDebug.validation = "limitedEmpty";
       continue;
     }
 
@@ -2055,6 +2217,13 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     state.playbackBarAnchorSource = chosenGenericSource;
     const rowsWithTerminalBoundary = rowSummaries.filter((row) => row.rowTerminalBoundaryX !== null).length;
     state.playbackAnchorStrategyAttempts = `chosenSource=${chosenGenericSource} | ${strategyAttempts.join(" | ")} | diag:raw=${rawAnchors.length},dedup=${dedupedAnchors.length},filtered=${filteredAnchors.length},used=${limitedAnchors.length},rows=${rowSummaries.length},dropped=${droppedTerminalCount},rowTerminal=${rowsWithTerminalBoundary},totalBars=${totalBars > 0 ? totalBars : "-"}`;
+    strategyDebug.validation = "pass";
+    strategyDebug.dedupCount = dedupedAnchors.length;
+    strategyDebug.filteredCount = filteredAnchors.length;
+    strategyDebug.rowCount = rowSummaries.length;
+    strategyDebug.normalizedAnchors = state.playbackBarAnchors;
+    strategyDebug.rowSummaries = rowSummaries;
+    state.latestAnchorStrategyDebug = strategyDebugResults;
     updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
     updateDebugField(rootElement, "playback-bar-anchor-source", chosenGenericSource);
     updateDebugField(rootElement, "playback-anchor-strategy-attempts", state.playbackAnchorStrategyAttempts);
@@ -2063,6 +2232,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
 
   if (isPercussionDefaultLayout) {
     const percussionResult = rebuildPercussionPlaybackBarAnchors(renderHost, totalBars);
+    state.latestPercussionAnchorDebug = percussionResult.details;
     if (percussionResult.anchors !== null) {
       state.playbackBarAnchors = percussionResult.anchors;
       state.playbackBarAnchorCount = percussionResult.anchors.length;
@@ -2075,6 +2245,8 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     }
     strategyAttempts.push(`${percussionResult.diagnostics},chosenSource=percussion-fallback,validation=fail`);
   }
+
+  state.latestAnchorStrategyDebug = strategyDebugResults;
 
   state.playbackBarAnchors = [];
   state.playbackBarAnchorCount = 0;
@@ -3058,6 +3230,9 @@ export function startApp(rootElement: HTMLElement): void {
     soloTrackIndexes: [],
     bottomDockHeightPx: DEFAULT_BOTTOM_DOCK_HEIGHT_PX,
     tabZoomPercent: DEFAULT_TAB_ZOOM_PERCENT,
+    latestAnchorStrategyDebug: [],
+    latestPercussionAnchorDebug: null,
+    latestAnchorDebugSnapshot: null,
   };
 
   const cleanupRenderer = (): void => {
@@ -3078,6 +3253,17 @@ export function startApp(rootElement: HTMLElement): void {
 
     state.gpRenderer.destroy();
     state.gpRenderer = null;
+  };
+
+  const exportAnchorDebugSnapshot = (): void => {
+    const snapshot = buildAnchorDebugSnapshot(state, rootElement);
+    state.latestAnchorDebugSnapshot = snapshot;
+    const trackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const fileName = `songstep-anchor-debug-track-${trackIndex}-${timestamp}.json`;
+    triggerJsonDownload(fileName, snapshot);
+    state.projectStatusMessage = `Anchor debug exported: ${fileName}`;
+    render();
   };
 
   const render = (): void => {
@@ -3374,6 +3560,9 @@ export function startApp(rootElement: HTMLElement): void {
 
           state.projectStatusMessage = `Project saved as ${result.fileName}.`;
           render();
+        },
+        onExportAnchorDebug: () => {
+          exportAnchorDebugSnapshot();
         },
         onToggleTrackMute: (trackIndex) => {
           const isMuted = state.mutedTrackIndexes.includes(trackIndex);
