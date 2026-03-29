@@ -223,6 +223,14 @@ export interface GpRenderDebugInfo {
     }>;
     chosenLayoutFamily?: string;
     familyRectCounts?: Array<{ sourcePath: string; rectCount: number; barCount: number }>;
+    calibrationSummary?: {
+      calibrationModeX: "local-to-system" | "absolute";
+      calibrationModeY: "local-to-system" | "absolute";
+      systemOriginX: number | null;
+      systemOriginY: number | null;
+      firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
+      firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
+    } | null;
   } | null;
 }
 
@@ -383,6 +391,14 @@ interface BarBoundsExtractionDiagnostics {
   }>;
   chosenLayoutFamily?: string;
   familyRectCounts?: Array<{ sourcePath: string; rectCount: number; barCount: number }>;
+  calibrationSummary?: {
+    calibrationModeX: "local-to-system" | "absolute";
+    calibrationModeY: "local-to-system" | "absolute";
+    systemOriginX: number | null;
+    systemOriginY: number | null;
+    firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
+    firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
+  } | null;
 }
 
 interface BarBoundsRootCandidateSummary {
@@ -1559,10 +1575,15 @@ export async function createGpRenderer(
         directStaffSystemEntries.push({ sourcePath: `api.${path}`, systems });
       }
     });
-    const familyResults: Array<{ sourcePath: string; rects: RenderedBarBound[] }> = [];
+    const familyResults: Array<{
+      sourcePath: string;
+      rects: RenderedBarBound[];
+      calibrationSummary: BarBoundsExtractionDiagnostics["calibrationSummary"];
+    }> = [];
     directStaffSystemEntries.forEach(({ sourcePath, systems }) => {
       usedLayoutPaths.add(sourcePath);
       const familyRects: RenderedBarBound[] = [];
+      let familyCalibrationSummary: BarBoundsExtractionDiagnostics["calibrationSummary"] = null;
       systems.forEach((systemItem, systemIndex) => {
         if (!systemItem || typeof systemItem !== "object") {
           return;
@@ -1582,6 +1603,41 @@ export async function createGpRenderer(
           toXywhRect(systemBoundsContainer?.visualBounds) ??
           toXywhRect(systemBoundsContainer?.realBounds) ??
           toXywhRect(systemBoundsContainer);
+
+        const rawBarBounds = bars
+          .map((barItem) => (barItem && typeof barItem === "object" ? (barItem as Record<string, unknown>) : null))
+          .map((barRecord) =>
+            barRecord
+              ? toXywhRect(barRecord.lineAlignedBounds) ?? toXywhRect(barRecord.visualBounds) ?? toXywhRect(barRecord.realBounds)
+              : null,
+          )
+          .filter((rect): rect is { x: number; y: number; w: number; h: number } => rect !== null);
+        const absXInsideCount =
+          systemVerticalBounds === null
+            ? 0
+            : rawBarBounds.filter(
+                (bar) =>
+                  bar.x >= systemVerticalBounds.x - 2 && bar.x + bar.w <= systemVerticalBounds.x + systemVerticalBounds.w + 2,
+              ).length;
+        const localXInsideCount =
+          systemVerticalBounds === null
+            ? 0
+            : rawBarBounds.filter((bar) => bar.x >= -2 && bar.x + bar.w <= systemVerticalBounds.w + 2).length;
+        const absYInsideCount =
+          systemVerticalBounds === null
+            ? 0
+            : rawBarBounds.filter(
+                (bar) =>
+                  bar.y >= systemVerticalBounds.y - 2 && bar.y + bar.h <= systemVerticalBounds.y + systemVerticalBounds.h + 2,
+              ).length;
+        const localYInsideCount =
+          systemVerticalBounds === null
+            ? 0
+            : rawBarBounds.filter((bar) => bar.y >= -2 && bar.y + bar.h <= systemVerticalBounds.h + 2).length;
+        const calibrationModeX: "local-to-system" | "absolute" =
+          systemVerticalBounds && localXInsideCount > absXInsideCount ? "local-to-system" : "absolute";
+        const calibrationModeY: "local-to-system" | "absolute" =
+          systemVerticalBounds && localYInsideCount > absYInsideCount ? "local-to-system" : "absolute";
 
         bars.forEach((barItem, barIndexInSystem) => {
           if (!barItem || typeof barItem !== "object") {
@@ -1606,27 +1662,45 @@ export async function createGpRenderer(
             summarizeBarItem(systemIndex, barIndexInSystem, barRecord);
             return;
           }
-          let finalY = barBounds.y;
-          let finalH = barBounds.h;
+          const calibratedX =
+            systemVerticalBounds && calibrationModeX === "local-to-system" ? systemVerticalBounds.x + barBounds.x : barBounds.x;
+          let calibratedY =
+            systemVerticalBounds && calibrationModeY === "local-to-system" ? systemVerticalBounds.y + barBounds.y : barBounds.y;
+          let calibratedH = barBounds.h;
           if (systemVerticalBounds) {
-            const clippedTop = Math.max(barBounds.y, systemVerticalBounds.y);
-            const clippedBottom = Math.min(barBounds.y + barBounds.h, systemVerticalBounds.y + systemVerticalBounds.h);
+            const clippedTop = Math.max(calibratedY, systemVerticalBounds.y);
+            const clippedBottom = Math.min(calibratedY + calibratedH, systemVerticalBounds.y + systemVerticalBounds.h);
             if (clippedBottom > clippedTop + 1) {
-              finalY = clippedTop;
-              finalH = clippedBottom - clippedTop;
+              calibratedY = clippedTop;
+              calibratedH = clippedBottom - clippedTop;
             }
+          }
+          if (!familyCalibrationSummary) {
+            familyCalibrationSummary = {
+              calibrationModeX,
+              calibrationModeY,
+              systemOriginX: systemVerticalBounds?.x ?? null,
+              systemOriginY: systemVerticalBounds?.y ?? null,
+              firstBarRawRect: barBounds,
+              firstBarCalibratedRect: {
+                x: calibratedX,
+                y: calibratedY,
+                w: barBounds.w,
+                h: calibratedH,
+              },
+            };
           }
           familyRects.push({
             barNumber,
-            startX: barBounds.x,
-            endX: barBounds.x + barBounds.w,
-            y: finalY,
-            height: finalH,
+            startX: calibratedX,
+            endX: calibratedX + barBounds.w,
+            y: calibratedY,
+            height: calibratedH,
             rowIndex: systemIndex,
           });
         });
       });
-      familyResults.push({ sourcePath, rects: familyRects });
+      familyResults.push({ sourcePath, rects: familyRects, calibrationSummary: familyCalibrationSummary });
     });
 
     const familyRectCounts = familyResults.map((family) => ({
@@ -1634,7 +1708,9 @@ export async function createGpRenderer(
       rectCount: family.rects.length,
       barCount: new Set(family.rects.map((item) => item.barNumber)).size,
     }));
-    const pickAuthoritativeFamily = (): { sourcePath: string; rects: RenderedBarBound[] } | null => {
+    const pickAuthoritativeFamily = ():
+      | { sourcePath: string; rects: RenderedBarBound[]; calibrationSummary: BarBoundsExtractionDiagnostics["calibrationSummary"] }
+      | null => {
       const prioritized = [...familyResults].sort((left, right) => {
         if (left.sourcePath === "api.renderer.boundsLookup.staffSystems") {
           return -1;
@@ -1825,6 +1901,7 @@ export async function createGpRenderer(
         dedupedSystems.size > 0 && discoveredBarCollectionCount > 0 && candidateRects.length === 0 ? barItemSummaries : undefined,
       chosenLayoutFamily: authoritativeFamily?.sourcePath,
       familyRectCounts,
+      calibrationSummary: authoritativeFamily?.calibrationSummary ?? null,
     };
 
     return normalizedBars;
