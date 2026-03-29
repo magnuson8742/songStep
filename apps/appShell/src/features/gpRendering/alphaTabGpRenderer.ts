@@ -2008,16 +2008,27 @@ export async function createGpRenderer(
           const chosenRowBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
           const clusterRowBottom = chosenRowBottomLineY ?? currentRowBottomHint;
           const chosenRowClusterIndex = chosenLineCluster ? horizontalLineClusters.indexOf(chosenLineCluster) : -1;
-          const chosenVerticalAnchorMode: "bottom" = "bottom";
+          let chosenVerticalAnchorMode: "top" | "bottom" = "bottom";
+          let rowAnchoredY = clusterRowBottom - calibratedH;
+          if (chosenRowTopLineY !== null && chosenRowBottomLineY !== null) {
+            const rowLineSpan = Math.max(chosenRowBottomLineY - chosenRowTopLineY, 0);
+            const topAnchoredY = chosenRowTopLineY;
+            const bottomAnchoredY = chosenRowBottomLineY - calibratedH;
+            chosenVerticalAnchorMode =
+              calibratedH > rowLineSpan + yClusterTolerance || bottomAnchoredY > topAnchoredY + rowLineSpan * 0.25
+                ? "top"
+                : "bottom";
+            rowAnchoredY = chosenVerticalAnchorMode === "top" ? topAnchoredY : bottomAnchoredY;
+          }
           if (chosenRowBottomLineY !== null) {
-            chosenVerticalSource = "svg.horizontalRowBottomLine";
+            chosenVerticalSource =
+              chosenVerticalAnchorMode === "top" ? "svg.horizontalRowTopLine" : "svg.horizontalRowBottomLine";
           }
           const structuralBottomBoundary =
             parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
               ? parentSystemOuterBounds.y + parentSystemOuterBounds.h
               : Number.POSITIVE_INFINITY;
           const maxTopFromBottomBoundary = structuralBottomBoundary - calibratedH;
-          const rowAnchoredY = clusterRowBottom - calibratedH;
           calibratedY = Math.min(rowAnchoredY, maxTopFromBottomBoundary);
           const structuralTopBoundary = parentSystemOuterBounds?.y ?? systemVerticalBounds?.y ?? calibratedY;
           calibratedY = Math.max(calibratedY, structuralTopBoundary);
