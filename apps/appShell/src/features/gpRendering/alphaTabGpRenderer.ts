@@ -1624,13 +1624,18 @@ export async function createGpRenderer(
       const right = Math.max(segStart, segEnd);
       return right >= rangeStart && left <= rangeEnd;
     };
-    const collectHorizontalLineYs = (svgRoot: SVGSVGElement | null, rangeStartX: number, rangeEndX: number): number[] => {
+    const collectHorizontalLineYs = (
+      svgRoot: SVGSVGElement | null,
+      rangeStartX: number,
+      rangeEndX: number,
+    ): Array<{ y: number; source: "line" | "rect" | "path" }> => {
       if (!svgRoot || !Number.isFinite(rangeStartX) || !Number.isFinite(rangeEndX)) {
         return [];
       }
       const xMin = Math.min(rangeStartX, rangeEndX);
       const xMax = Math.max(rangeStartX, rangeEndX);
-      const yValues: number[] = [];
+      const minHorizontalSegmentLength = Math.max(12, (xMax - xMin) * 0.35);
+      const yValues: Array<{ y: number; source: "line" | "rect" | "path" }> = [];
       const lineNodes = Array.from(svgRoot.querySelectorAll("line"));
       lineNodes.forEach((lineNode) => {
         const x1 = toFiniteNumber(lineNode.getAttribute("x1"));
@@ -1643,7 +1648,10 @@ export async function createGpRenderer(
         if (!segmentOverlapsRange(x1, x2, xMin, xMax)) {
           return;
         }
-        yValues.push((y1 + y2) / 2);
+        if (Math.abs(x2 - x1) < minHorizontalSegmentLength) {
+          return;
+        }
+        yValues.push({ y: (y1 + y2) / 2, source: "line" });
       });
       const rectNodes = Array.from(svgRoot.querySelectorAll("rect"));
       rectNodes.forEach((rectNode) => {
@@ -1657,7 +1665,121 @@ export async function createGpRenderer(
         if (!segmentOverlapsRange(x, x + w, xMin, xMax)) {
           return;
         }
-        yValues.push(y + h * 0.5);
+        if (w < minHorizontalSegmentLength) {
+          return;
+        }
+        yValues.push({ y: y + h * 0.5, source: "rect" });
+      });
+      const pathNodes = Array.from(svgRoot.querySelectorAll("path"));
+      pathNodes.forEach((pathNode) => {
+        const d = pathNode.getAttribute("d");
+        if (!d) {
+          return;
+        }
+        const tokens = d.match(/[a-zA-Z]|-?\d*\.?\d+(?:e[-+]?\d+)?/g);
+        if (!tokens || tokens.length === 0) {
+          return;
+        }
+        let index = 0;
+        let command = "";
+        let currentX = 0;
+        let currentY = 0;
+        const readNumber = (): number | null => {
+          if (index >= tokens.length) {
+            return null;
+          }
+          const token = tokens[index] ?? "";
+          const parsed = Number(token);
+          if (!Number.isFinite(parsed)) {
+            return null;
+          }
+          index += 1;
+          return parsed;
+        };
+        while (index < tokens.length) {
+          const token = tokens[index] ?? "";
+          if (/^[a-zA-Z]$/.test(token)) {
+            command = token;
+            index += 1;
+            continue;
+          }
+          if (command === "M" || command === "L") {
+            const nextX = readNumber();
+            const nextY = readNumber();
+            if (nextX === null || nextY === null) {
+              break;
+            }
+            if (
+              Math.abs(nextY - currentY) <= 0.8 &&
+              Math.abs(nextX - currentX) >= minHorizontalSegmentLength &&
+              segmentOverlapsRange(currentX, nextX, xMin, xMax)
+            ) {
+              yValues.push({ y: (currentY + nextY) * 0.5, source: "path" });
+            }
+            currentX = nextX;
+            currentY = nextY;
+            continue;
+          }
+          if (command === "m" || command === "l") {
+            const dx = readNumber();
+            const dy = readNumber();
+            if (dx === null || dy === null) {
+              break;
+            }
+            const nextX = currentX + dx;
+            const nextY = currentY + dy;
+            if (
+              Math.abs(nextY - currentY) <= 0.8 &&
+              Math.abs(nextX - currentX) >= minHorizontalSegmentLength &&
+              segmentOverlapsRange(currentX, nextX, xMin, xMax)
+            ) {
+              yValues.push({ y: (currentY + nextY) * 0.5, source: "path" });
+            }
+            currentX = nextX;
+            currentY = nextY;
+            continue;
+          }
+          if (command === "H") {
+            const nextX = readNumber();
+            if (nextX === null) {
+              break;
+            }
+            if (Math.abs(nextX - currentX) >= minHorizontalSegmentLength && segmentOverlapsRange(currentX, nextX, xMin, xMax)) {
+              yValues.push({ y: currentY, source: "path" });
+            }
+            currentX = nextX;
+            continue;
+          }
+          if (command === "h") {
+            const dx = readNumber();
+            if (dx === null) {
+              break;
+            }
+            const nextX = currentX + dx;
+            if (Math.abs(nextX - currentX) >= minHorizontalSegmentLength && segmentOverlapsRange(currentX, nextX, xMin, xMax)) {
+              yValues.push({ y: currentY, source: "path" });
+            }
+            currentX = nextX;
+            continue;
+          }
+          if (command === "V") {
+            const nextY = readNumber();
+            if (nextY === null) {
+              break;
+            }
+            currentY = nextY;
+            continue;
+          }
+          if (command === "v") {
+            const dy = readNumber();
+            if (dy === null) {
+              break;
+            }
+            currentY += dy;
+            continue;
+          }
+          index += 1;
+        }
       });
       return yValues;
     };
@@ -1863,7 +1985,9 @@ export async function createGpRenderer(
           }
           const barRangeStartX = calibratedX;
           const barRangeEndX = calibratedX + barBounds.w;
-          const detectedHorizontalLineYs = collectHorizontalLineYs(horizontalAnchorSvg, barRangeStartX, barRangeEndX);
+          const detectedHorizontalLineEntries = collectHorizontalLineYs(horizontalAnchorSvg, barRangeStartX, barRangeEndX);
+          const detectedHorizontalLineYs = detectedHorizontalLineEntries.map((entry) => entry.y);
+          const detectedHorizontalLineSources = Array.from(new Set(detectedHorizontalLineEntries.map((entry) => entry.source)));
           const yClusterTolerance = Math.max(0.5, Math.min(3, calibratedH * 0.04));
           const horizontalLineClusters = clusterYValues(detectedHorizontalLineYs, yClusterTolerance);
           const currentBarCenterY = barBounds.y + barBounds.h * 0.5;
@@ -1914,6 +2038,7 @@ export async function createGpRenderer(
               rowClusterCount: rowClusterBands.length,
               firstBarClusterIndex: chosenRowClusterIndex >= 0 ? chosenRowClusterIndex : matchedClusterIndex,
               detectedHorizontalLineYs: detectedHorizontalLineYs.slice(0, 24),
+              detectedHorizontalLineSources,
               chosenRowTopLineY,
               firstBarRowBottom: clusterRowBottom,
               chosenRowBottomLineY,
