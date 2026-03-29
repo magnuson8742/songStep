@@ -346,7 +346,7 @@ const USE_WORKERS = false;
 const RENDER_TIMEOUT_MS = 5000;
 const HEAVY_TRACK_NOTE_THRESHOLD = 5000;
 const HEAVY_TRACK_BAR_THRESHOLD = 400;
-const GLOBAL_HIGHLIGHT_Y_OFFSET_PX = 5;
+const GLOBAL_HIGHLIGHT_Y_OFFSET_PX = 6;
 
 type RenderMode =
   | "string-tab"
