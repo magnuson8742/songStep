@@ -20,6 +20,7 @@ import {
   saveProjectToDisk,
 } from "../features/projectPersistence/projectPersistence";
 import { renderProjectScreen } from "../features/projectScreen/renderProjectScreen";
+import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
 
 type AppView = "home" | "newProject" | "openProject" | "project";
 
@@ -138,6 +139,20 @@ function triggerJsonDownload(fileName: string, payload: unknown): void {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function summarizeCollection<T>(items: T[], headLimit: number, tailLimit: number): {
+  totalCount: number;
+  head: T[];
+  tail: T[];
+  sampled: T[];
+} {
+  const totalCount = items.length;
+  const head = items.slice(0, headLimit);
+  const tail = totalCount > headLimit ? items.slice(Math.max(totalCount - tailLimit, 0)) : [];
+  const sampleStep = Math.max(Math.floor(totalCount / 20), 1);
+  const sampled = items.filter((_, index) => index % sampleStep === 0).slice(0, 120);
+  return { totalCount, head, tail, sampled };
 }
 
 function updateDebugField(rootElement: HTMLElement, fieldName: string, value: string): void {
@@ -849,6 +864,20 @@ function buildAnchorDebugSnapshot(state: AppState, rootElement: HTMLElement): Re
   const svgRoot = renderHost?.querySelector<SVGSVGElement>("svg") ?? null;
   const svgViewBox = svgRoot?.getAttribute("viewBox") ?? null;
   const renderedBounds = state.gpRenderer?.getRenderedBarBounds() ?? [];
+  const summarizedRendererBounds = summarizeCollection(renderedBounds, 200, 100);
+  const summarizeStrategyResult = (strategyResult: Record<string, unknown>): Record<string, unknown> => {
+    const normalizedAnchors = Array.isArray(strategyResult.normalizedAnchors)
+      ? summarizeCollection(strategyResult.normalizedAnchors as Record<string, unknown>[], 200, 80)
+      : strategyResult.normalizedAnchors;
+    const rowSummaries = Array.isArray(strategyResult.rowSummaries)
+      ? summarizeCollection(strategyResult.rowSummaries as Record<string, unknown>[], 80, 40)
+      : strategyResult.rowSummaries;
+    return {
+      ...strategyResult,
+      normalizedAnchors,
+      rowSummaries,
+    };
+  };
   const rowCounts = state.playbackBarAnchors.reduce<Record<string, number>>((acc, anchor) => {
     const key = String(anchor.rowIndex);
     acc[key] = (acc[key] ?? 0) + 1;
@@ -861,6 +890,13 @@ function buildAnchorDebugSnapshot(state: AppState, rootElement: HTMLElement): Re
 
   return {
     exportedAtIso: new Date().toISOString(),
+    debugVersion: "anchor-debug-v2",
+    sourceFileName: state.currentProject?.sourceFile.fileName ?? null,
+    selectedTrackIndex: state.selectedTrackIndex,
+    confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+    renderMode: state.gpRenderDebugInfo?.renderMode ?? null,
+    isPercussion: state.gpRenderDebugInfo?.isPercussion ?? null,
+    effectiveStaveProfile: state.gpRenderDebugInfo?.effectiveStaveProfile ?? null,
     highLevel: {
       scoreTitle: state.scoreTitle,
       selectedTrackIndex: state.selectedTrackIndex,
@@ -877,7 +913,8 @@ function buildAnchorDebugSnapshot(state: AppState, rootElement: HTMLElement): Re
     rendererBounds: {
       rawCount: renderedBounds.length,
       sampleFirst200: renderedBounds.slice(0, 200),
-      fullDescriptors: renderedBounds,
+      sampleLast100: renderedBounds.slice(Math.max(renderedBounds.length - 100, 0)),
+      sampled: summarizedRendererBounds.sampled,
     },
     finalAnchors: {
       count: state.playbackBarAnchors.length,
@@ -886,7 +923,7 @@ function buildAnchorDebugSnapshot(state: AppState, rootElement: HTMLElement): Re
       rowCounts,
       anchors: state.playbackBarAnchors,
     },
-    strategyDiagnostics: state.latestAnchorStrategyDebug,
+    strategyDiagnostics: state.latestAnchorStrategyDebug.map((strategyResult) => summarizeStrategyResult(strategyResult)),
     percussionFallbackDiagnostics: state.latestPercussionAnchorDebug,
     renderHostDiagnostics: {
       rect: renderHostRect
@@ -3255,14 +3292,32 @@ export function startApp(rootElement: HTMLElement): void {
     state.gpRenderer = null;
   };
 
-  const exportAnchorDebugSnapshot = (): void => {
-    const snapshot = buildAnchorDebugSnapshot(state, rootElement);
-    state.latestAnchorDebugSnapshot = snapshot;
+  const exportAnchorDebugSnapshot = async (): Promise<void> => {
     const trackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const fileName = `songstep-anchor-debug-track-${trackIndex}-${timestamp}.json`;
-    triggerJsonDownload(fileName, snapshot);
-    state.projectStatusMessage = `Anchor debug exported: ${fileName}`;
+    try {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+      const snapshot = buildAnchorDebugSnapshot(state, rootElement);
+      state.latestAnchorDebugSnapshot = snapshot;
+      const debugDirectory = "C:\\Programs\\songStep\\debug";
+      const fullPath = `${debugDirectory}\\${fileName}`;
+      await mkdir(debugDirectory, { recursive: true });
+      await writeTextFile(fullPath, JSON.stringify(snapshot, null, 2));
+      state.projectStatusMessage = `Anchor debug exported to ${fullPath}`;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        const snapshot = state.latestAnchorDebugSnapshot ?? buildAnchorDebugSnapshot(state, rootElement);
+        triggerJsonDownload(fileName, snapshot);
+        state.projectStatusMessage = `Anchor debug file-write failed (${message}). Browser fallback download started for ${fileName}.`;
+      } catch (fallbackError) {
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        state.projectStatusMessage = `Anchor debug export failed: ${message}. Fallback failed: ${fallbackMessage}`;
+      }
+    }
     render();
   };
 
@@ -3562,7 +3617,7 @@ export function startApp(rootElement: HTMLElement): void {
           render();
         },
         onExportAnchorDebug: () => {
-          exportAnchorDebugSnapshot();
+          void exportAnchorDebugSnapshot();
         },
         onToggleTrackMute: (trackIndex) => {
           const isMuted = state.mutedTrackIndexes.includes(trackIndex);
