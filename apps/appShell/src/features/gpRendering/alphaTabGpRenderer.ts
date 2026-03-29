@@ -147,6 +147,11 @@ interface TrackContentSignature {
 export interface GpTrackInfo {
   index: number;
   name: string;
+  runtimeTrackPosition: number;
+  isPercussion: boolean;
+  totalBars: number;
+  totalNotes: number;
+  firstNonEmptyBarIndex: number | null;
 }
 
 export interface GpTrackRuntimeInfo {
@@ -231,6 +236,7 @@ export interface GpScoreOverviewRuntimeInfo {
 export interface GpRendererHooks {
   onTracksLoaded: (tracks: GpTrackInfo[]) => void;
   onDebugInfo: (debugInfo: GpRenderDebugInfo) => void;
+  onRenderLifecycle: (event: Record<string, unknown>) => void;
   onActiveTrackConfirmed: (trackIndex: number) => void;
   onTrackRenderCommitted: (trackIndex: number) => void;
   onProgrammaticSeekConfirmed: (trackIndex: number, tick: number) => void;
@@ -238,7 +244,7 @@ export interface GpRendererHooks {
   onScoreOverviewRuntimeInfo: (info: GpScoreOverviewRuntimeInfo) => void;
   onPlaybackRuntimeInfo: (info: GpPlaybackRuntimeInfo) => void;
   onRuntimeNotice: (message: string) => void;
-  onRenderError: (message: string) => void;
+  onRenderError: (payload: { message: string; details: Record<string, unknown> }) => void;
 }
 
 export interface GpRendererController {
@@ -336,10 +342,18 @@ function base64ToBytes(base64: string): Uint8Array {
 }
 
 function toTrackInfoList(tracks: AlphaTabTrack[]): GpTrackInfo[] {
-  return tracks.map((track) => ({
-    index: track.index,
-    name: track.name || `Track ${track.index + 1}`,
-  }));
+  return tracks.map((track, runtimeTrackPosition) => {
+    const signature = computeTrackContentSignature(track, 0);
+    return {
+      index: track.index,
+      name: track.name || `Track ${track.index + 1}`,
+      runtimeTrackPosition,
+      isPercussion: track.isPercussion === true || track.staves?.some((staff) => staff.isPercussion === true) === true,
+      totalBars: signature.totalBars,
+      totalNotes: signature.totalNotes,
+      firstNonEmptyBarIndex: signature.firstNonEmptyBarIndex,
+    };
+  });
 }
 
 function countNotesInBar(bar: AlphaTabBar | undefined): number {
@@ -678,6 +692,8 @@ export async function createGpRenderer(
   let inPlaceZoomTokenCounter = 0;
   let pendingProgrammaticSeek: PendingProgrammaticSeek | null = null;
   let pendingPlayAfterProgrammaticSeek = false;
+  let renderAttemptCounter = 0;
+  let activeRenderAttemptId: string | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -740,6 +756,41 @@ export async function createGpRenderer(
 
   const setPlaybackCapabilityMessage = (message: string | null): void => {
     playbackCapabilityMessage = message;
+  };
+
+  const summarizeError = (error: unknown): Record<string, unknown> => {
+    if (error instanceof Error) {
+      return {
+        name: error.name,
+        message: error.message,
+        stack: error.stack ?? null,
+      };
+    }
+    if (typeof error === "object" && error !== null) {
+      const objectValue = error as Record<string, unknown>;
+      return {
+        shape: describePayloadShape(objectValue),
+        keys: Object.keys(objectValue).slice(0, 20),
+      };
+    }
+    return {
+      shape: describePayloadShape(error),
+      value: String(error),
+    };
+  };
+
+  const emitRenderLifecycle = (type: string, extra: Record<string, unknown> = {}): void => {
+    hooks.onRenderLifecycle({
+      type,
+      timestamp: new Date().toISOString(),
+      attemptId: activeRenderAttemptId,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+      renderMode: currentRenderMode,
+      isPercussion: isPercussionTrack,
+      effectiveStaveProfile,
+      ...extra,
+    });
   };
 
   const resetPlaybackRuntimeInfo = (): void => {
@@ -1048,7 +1099,15 @@ export async function createGpRenderer(
       pendingScrollSnapshot = null;
       inPlaceZoomPlaybackContext = null;
       emitDebugInfo();
-      hooks.onRenderError(error instanceof Error ? error.message : "Could not apply GP zoom.");
+      hooks.onRenderError({
+        message: error instanceof Error ? error.message : "Could not apply GP zoom.",
+        details: {
+          stage: "zoom-rerender-error",
+          error: summarizeError(error),
+          renderCycleCounter,
+          lastRendererErrorStage,
+        },
+      });
     }
 
     return true;
@@ -1567,7 +1626,26 @@ export async function createGpRenderer(
         clearRenderHost(container);
       }
       emitDebugInfo();
-      hooks.onRenderError(`Track ${timedOutTrackIndex + 1} timed out while rendering.`);
+      emitRenderLifecycle("render-error", {
+        stage: "renderFinished-timeout",
+        renderCycleCounter,
+        lastRendererErrorStage,
+        lastRenderStartedAtIso,
+        lastRenderFinishedAtIso,
+        renderTimeoutHit,
+      });
+      hooks.onRenderError({
+        message: `Track ${timedOutTrackIndex + 1} timed out while rendering.`,
+        details: {
+          attemptId: activeRenderAttemptId,
+          stage: "renderFinished-timeout",
+          renderCycleCounter,
+          lastRendererErrorStage,
+          lastRenderStartedAtIso,
+          lastRenderFinishedAtIso,
+          renderTimeoutHit,
+        },
+      });
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
       pendingRequestedTrackIndex = null;
@@ -1589,6 +1667,33 @@ export async function createGpRenderer(
     heavyTrackReason = renderPlan.heavyTrackReason;
     isPercussionTrack = renderPlan.isPercussion;
     effectiveStaveProfile = renderPlan.effectiveStaveProfile;
+    renderAttemptCounter += 1;
+    activeRenderAttemptId = `attempt-${renderAttemptCounter}-${Date.now()}`;
+    const scoreTrack = lastLoadedScoreTracks.find((item) => item.index === nextTrackIndex);
+    const scoreTrackSignature = scoreTrack
+      ? computeTrackContentSignature(scoreTrack, lastKnownMasterBarCount)
+      : { totalBars: 0, totalNotes: 0, firstNonEmptyBarIndex: null };
+    emitRenderLifecycle("render-classification", {
+      requestedTrackIndex: nextTrackIndex,
+      resolvedTrackIndex: scoreTrack?.index ?? nextTrackIndex,
+      resolvedTrackPosition: scoreTrack ? lastLoadedScoreTracks.findIndex((item) => item.index === scoreTrack.index) : null,
+      confirmedActiveTrackIndex,
+      trackName: scoreTrack?.name ?? null,
+      renderMode: renderPlan.mode,
+      isPercussion: renderPlan.isPercussion,
+      effectiveStaveProfile: renderPlan.effectiveStaveProfile,
+      heavyTrackDetected: renderPlan.heavyTrackDetected,
+      heavyTrackReason: renderPlan.heavyTrackReason,
+      classificationSource: scoreTrack
+        ? {
+            trackIsPercussionFlag: scoreTrack.isPercussion === true,
+            staffPercussionFlags: (scoreTrack.staves ?? []).map((staff) => staff.isPercussion === true),
+            totalBars: scoreTrackSignature.totalBars,
+            totalNotes: scoreTrackSignature.totalNotes,
+            firstNonEmptyBarIndex: scoreTrackSignature.firstNonEmptyBarIndex,
+          }
+        : { reason: "track-not-found-in-lastLoadedScoreTracks" },
+    });
 
     if (rendererBusy) {
       pendingRequestedTrackIndex = nextTrackIndex;
@@ -1607,6 +1712,10 @@ export async function createGpRenderer(
     setPlaybackCapabilityMessage(null);
     resetPlaybackRuntimeInfo();
     emitDebugInfo();
+    emitRenderLifecycle("render-start", {
+      renderCycleCounter,
+      lastRendererErrorStage,
+    });
 
     const sessionToken = activeSessionToken + 1;
     activeSessionToken = sessionToken;
@@ -1805,6 +1914,12 @@ export async function createGpRenderer(
       }
       renderedBarBounds = extractRenderedBarBoundsFromApi(api, scoreRuntimeInfo.totalBars);
       emitDebugInfo();
+      emitRenderLifecycle("render-finish", {
+        renderCycleCounter,
+        lastRendererErrorStage,
+        lastRenderStartedAtIso,
+        lastRenderFinishedAtIso,
+      });
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
       pendingRequestedTrackIndex = null;
@@ -1861,7 +1976,7 @@ export async function createGpRenderer(
       }
     });
 
-    api.error?.on(() => {
+    api.error?.on((error) => {
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -1879,7 +1994,21 @@ export async function createGpRenderer(
       } else {
         clearRenderHost(container);
       }
-      hooks.onRenderError("alphaTab failed to render this GP file.");
+      const errorDetails = {
+        attemptId: activeRenderAttemptId,
+        stage: "error-event",
+        lastRendererErrorStage,
+        renderCycleCounter,
+        lastRenderStartedAtIso,
+        lastRenderFinishedAtIso,
+        renderTimeoutHit,
+        rawError: summarizeError(error),
+      };
+      emitRenderLifecycle("render-error", errorDetails);
+      hooks.onRenderError({
+        message: "alphaTab failed to render this GP file.",
+        details: errorDetails,
+      });
       emitDebugInfo();
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
@@ -1908,6 +2037,15 @@ export async function createGpRenderer(
         clearRenderHost(container);
       }
       emitDebugInfo();
+      emitRenderLifecycle("render-error", {
+        stage: "load",
+        reason: "api.load returned false",
+        renderCycleCounter,
+        lastRendererErrorStage,
+        lastRenderStartedAtIso,
+        lastRenderFinishedAtIso,
+        renderTimeoutHit,
+      });
       const queuedTrackIndex = pendingRequestedTrackIndex;
       pendingRequestedTrackIndex = null;
       if (queuedTrackIndex !== null) {
@@ -1928,7 +2066,16 @@ export async function createGpRenderer(
     selectTrack: (trackIndex: number, targetTick?: number | null) => {
       void switchTrackByReload(trackIndex, { targetTick: targetTick ?? null }).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : "Could not switch GP track.";
-        hooks.onRenderError(message);
+        hooks.onRenderError({
+          message,
+          details: {
+            attemptId: activeRenderAttemptId,
+            stage: "selectTrack",
+            error: summarizeError(error),
+            renderCycleCounter,
+            lastRendererErrorStage,
+          },
+        });
       });
     },
     setZoom: (nextZoomPercent: number) => {
@@ -1943,7 +2090,16 @@ export async function createGpRenderer(
       inPlaceZoomPlaybackContext = null;
       void switchTrackByReload(confirmedActiveTrackIndex).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : "Could not apply GP zoom.";
-        hooks.onRenderError(message);
+        hooks.onRenderError({
+          message,
+          details: {
+            attemptId: activeRenderAttemptId,
+            stage: "setZoom",
+            error: summarizeError(error),
+            renderCycleCounter,
+            lastRendererErrorStage,
+          },
+        });
       });
     },
     seekToTick: (tick: number) => seekToTick(tick),

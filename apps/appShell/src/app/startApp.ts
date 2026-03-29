@@ -3982,6 +3982,12 @@ export function startApp(rootElement: HTMLElement): void {
         sourceFileName: project.sourceFile.fileName,
         selectedTrackIndex: state.selectedTrackIndex,
       });
+      appendSessionDebugEvent(state.sessionDebugLogger, {
+        type: "render-retry-scheduled",
+        timestamp: new Date().toISOString(),
+        reason: "project-screen-init",
+        selectedTrackIndex: state.selectedTrackIndex,
+      });
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
         onTracksLoaded: (tracks) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
@@ -3989,6 +3995,15 @@ export function startApp(rootElement: HTMLElement): void {
             timestamp: new Date().toISOString(),
             trackCount: tracks.length,
             trackIndexes: tracks.map((track) => track.index),
+            tracks: tracks.map((track) => ({
+              trackIndex: track.index,
+              trackName: track.name,
+              runtimeTrackPosition: track.runtimeTrackPosition,
+              isPercussion: track.isPercussion,
+              totalBars: track.totalBars,
+              totalNotes: track.totalNotes,
+              firstNonEmptyBarIndex: track.firstNonEmptyBarIndex,
+            })),
           });
           const trackListChanged = !isSameTrackList(state.gpTracks, tracks);
           if (!trackListChanged) {
@@ -4031,6 +4046,11 @@ export function startApp(rootElement: HTMLElement): void {
           if (debugInfo.lastRendererErrorStage === "renderFinished") {
             schedulePlaybackBarAnchorRebuild(state, rootElement);
           }
+        },
+        onRenderLifecycle: (event) => {
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            ...event,
+          });
         },
         onTrackRenderCommitted: (trackIndex) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
@@ -4295,11 +4315,34 @@ export function startApp(rootElement: HTMLElement): void {
           updateArrangementPlaybackHighlight(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
         },
-        onRenderError: (message) => {
+        onRenderError: (payload) => {
+          const message = payload.message;
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "render-error",
             timestamp: new Date().toISOString(),
             message,
+            details: payload.details,
+          });
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            type: "render-error-context",
+            timestamp: new Date().toISOString(),
+            selectedTrackIndex: state.selectedTrackIndex,
+            requestedTrackIndex: state.requestedTrackIndex,
+            confirmedActiveTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+            activeTrackName: state.activeTrackName,
+            sourceFileName: state.currentProject?.sourceFile.fileName ?? null,
+            projectTitle: state.currentProject?.title ?? null,
+            scoreTitle: state.scoreTitle,
+            totalBars: state.totalBars,
+            gpRenderDebugInfo: state.gpRenderDebugInfo,
+            scoreTracksSummary: summarizeCollection(state.gpRenderDebugInfo?.scoreTracks ?? [], 8, 5),
+            renderedTracksSummary: summarizeCollection(state.gpRenderDebugInfo?.renderedTracks ?? [], 8, 5),
+          });
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            type: "anchor-pipeline-skipped",
+            timestamp: new Date().toISOString(),
+            reason: "render-not-committed",
+            selectedTrackIndex: state.selectedTrackIndex,
           });
           state.projectStatusMessage = message;
           cancelCountIn(state, rootElement);
@@ -4315,6 +4358,12 @@ export function startApp(rootElement: HTMLElement): void {
           state.desiredTrackSwitchSourceTrackIndex = null;
           invalidatePlaybackBarAnchorRebuild(state);
           hidePlaybackPlayhead(rootElement, state);
+          appendSessionDebugEvent(state.sessionDebugLogger, {
+            type: "render-recreated-after-error",
+            timestamp: new Date().toISOString(),
+            reason: "render-error",
+            selectedTrackIndex: state.selectedTrackIndex,
+          });
           render();
         },
       }, state.tabZoomPercent)
