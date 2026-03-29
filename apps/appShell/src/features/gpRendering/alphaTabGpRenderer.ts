@@ -1866,23 +1866,34 @@ export async function createGpRenderer(
           const detectedHorizontalLineYs = collectHorizontalLineYs(horizontalAnchorSvg, barRangeStartX, barRangeEndX);
           const yClusterTolerance = Math.max(0.5, Math.min(3, calibratedH * 0.04));
           const horizontalLineClusters = clusterYValues(detectedHorizontalLineYs, yClusterTolerance);
+          const currentBarCenterY = barBounds.y + barBounds.h * 0.5;
           const currentRowBottomHint = matchedCluster?.rowBottom ?? calibratedY + calibratedH;
           const chosenLineCluster =
             horizontalLineClusters.length > 0
               ? [...horizontalLineClusters].sort((left, right) => {
+                  const leftTop = Math.min(...left);
                   const leftBottom = Math.max(...left);
+                  const rightTop = Math.min(...right);
                   const rightBottom = Math.max(...right);
-                  return Math.abs(leftBottom - currentRowBottomHint) - Math.abs(rightBottom - currentRowBottomHint);
+                  const leftCenter = (leftTop + leftBottom) * 0.5;
+                  const rightCenter = (rightTop + rightBottom) * 0.5;
+                  return Math.abs(leftCenter - currentBarCenterY) - Math.abs(rightCenter - currentBarCenterY);
                 })[0]
               : null;
+          const chosenRowTopLineY = chosenLineCluster ? Math.min(...chosenLineCluster) : null;
           const chosenRowBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
           const clusterRowBottom = chosenRowBottomLineY ?? currentRowBottomHint;
+          const topAnchoredY = chosenRowTopLineY ?? calibratedY;
+          const bottomAnchoredY = clusterRowBottom - calibratedH;
+          const chosenVerticalAnchorMode: "top" | "bottom" =
+            Math.abs(topAnchoredY - calibratedY) <= Math.abs(bottomAnchoredY - calibratedY) ? "top" : "bottom";
+          const rowAnchoredY = chosenVerticalAnchorMode === "top" ? topAnchoredY : bottomAnchoredY;
           const structuralBottomBoundary =
             parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
               ? parentSystemOuterBounds.y + parentSystemOuterBounds.h
               : Number.POSITIVE_INFINITY;
-          const boundedRowBottom = Math.min(clusterRowBottom, structuralBottomBoundary);
-          calibratedY = boundedRowBottom - calibratedH;
+          const maxTopFromBottomBoundary = structuralBottomBoundary - calibratedH;
+          calibratedY = Math.min(rowAnchoredY, maxTopFromBottomBoundary);
           const structuralTopBoundary = parentSystemOuterBounds?.y ?? systemVerticalBounds?.y ?? calibratedY;
           calibratedY = Math.max(calibratedY, structuralTopBoundary);
           const finalRect = {
@@ -1902,8 +1913,10 @@ export async function createGpRenderer(
               rowClusterCount: rowClusterBands.length,
               firstBarClusterIndex: matchedClusterIndex,
               detectedHorizontalLineYs: detectedHorizontalLineYs.slice(0, 24),
+              chosenRowTopLineY,
               firstBarRowBottom: clusterRowBottom,
               chosenRowBottomLineY,
+              chosenVerticalAnchorMode,
               firstBarHeight: calibratedH,
               chosenVerticalSource,
               systemVisualBounds,
