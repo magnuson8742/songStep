@@ -1755,6 +1755,29 @@ export async function createGpRenderer(
             calibratedY = systemVerticalBounds.y;
             calibratedH = systemVerticalBounds.h;
           }
+          const currentFinalRect = {
+            x: calibratedX,
+            y: calibratedY,
+            w: barBounds.w,
+            h: calibratedH,
+          };
+          const localTopInsetToBar = Math.max(0, barBounds.y - calibratedY);
+          const localTopInsetToParent =
+            parentSystemOuterBounds && systemVerticalBounds
+              ? Math.max(0, systemVerticalBounds.y - parentSystemOuterBounds.y)
+              : 0;
+          const localInsetBasis = localTopInsetToBar > 0 ? localTopInsetToBar : localTopInsetToParent;
+          const localLineGapEstimate = localInsetBasis > 0 ? localInsetBasis / 3 : 0;
+          const appliedVerticalOffset = localLineGapEstimate * 3;
+          const shiftedYBeforeClamp = calibratedY - appliedVerticalOffset;
+          const structuralTopBoundary = parentSystemOuterBounds?.y ?? systemVerticalBounds?.y ?? calibratedY;
+          calibratedY = Math.max(shiftedYBeforeClamp, structuralTopBoundary);
+          const shiftedFinalRect = {
+            x: calibratedX,
+            y: calibratedY,
+            w: barBounds.w,
+            h: calibratedH,
+          };
           if (!didLogVerticalSelection) {
             didLogVerticalSelection = true;
             console.debug("[alphaTabGpRenderer] bar bounds vertical source", {
@@ -1768,12 +1791,10 @@ export async function createGpRenderer(
               systemRealBounds,
               chosenVerticalSourceHeight: systemVerticalBounds?.h ?? null,
               barLocalRect: barBounds,
-              finalRect: {
-                x: calibratedX,
-                y: calibratedY,
-                w: barBounds.w,
-                h: calibratedH,
-              },
+              currentFinalRect,
+              localLineGapEstimate,
+              appliedVerticalOffset,
+              shiftedFinalRect,
             });
           }
           if (!familyCalibrationSummary) {
