@@ -1685,10 +1685,64 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       strategyDebug: strategyDebugResults,
     });
   };
+  const validateFinalAnchorsStrict = (anchors: PlaybackBarAnchor[]): string[] => {
+    const errors: string[] = [];
+    if (anchors.length === 0) {
+      return ["empty"];
+    }
+    if (totalBars > 0 && anchors.length !== totalBars) {
+      errors.push("countMismatch");
+    }
+    for (let index = 0; index < anchors.length; index += 1) {
+      const anchor = anchors[index];
+      if (!anchor) {
+        continue;
+      }
+      const expectedBar = index + 1;
+      if (anchor.barNumber !== expectedBar) {
+        errors.push("barSequence");
+        break;
+      }
+      const width = anchor.endX - anchor.startX;
+      const validGeometry =
+        Number.isFinite(anchor.startX) &&
+        Number.isFinite(anchor.endX) &&
+        Number.isFinite(anchor.y) &&
+        Number.isFinite(anchor.height) &&
+        anchor.rowIndex >= 0 &&
+        width > 8 &&
+        width <= 2400 &&
+        anchor.height > 0;
+      if (!validGeometry) {
+        errors.push("invalidFinalGeometry");
+        break;
+      }
+      const nextAnchor = anchors[index + 1];
+      if (!nextAnchor) {
+        continue;
+      }
+      if (nextAnchor.rowIndex < anchor.rowIndex) {
+        errors.push("rowStartXBacktrack");
+        break;
+      }
+      if (nextAnchor.rowIndex === anchor.rowIndex) {
+        if (nextAnchor.startX <= anchor.startX + 1) {
+          errors.push("sameRowOrderViolation");
+          break;
+        }
+        if (anchor.endX > nextAnchor.startX + 2) {
+          errors.push("rowOverlap");
+          break;
+        }
+      }
+    }
+    return errors;
+  };
   updateRenderHostDomDiagnostics(state, rootElement, renderHost);
-  if (!isPercussionDefaultLayout) {
-    const rendererAnchors = resolveRendererPlaybackBarAnchors(state, renderHost);
-    if (rendererAnchors.length > 0) {
+  const rendererAnchors = resolveRendererPlaybackBarAnchors(state, renderHost);
+  if (rendererAnchors.length > 0) {
+    const strictErrors = validateFinalAnchorsStrict(rendererAnchors);
+    if (strictErrors.length === 0) {
       state.latestAnchorStrategyDebug = [
         {
           source: "renderer:boundsLookup",
@@ -1710,8 +1764,9 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       logAnchorRebuildOutcome("renderer-bounds-success");
       return;
     }
+    strategyAttempts.push(`renderer:boundsLookup rejected,reason=${strictErrors.join("+")}`);
   } else {
-    strategyAttempts.push("renderer:boundsLookup skipped for percussion/default");
+    strategyAttempts.push("renderer:boundsLookup empty");
   }
 
   const selectorStrategies = [
@@ -1753,6 +1808,15 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
   const renderHostRect = renderHost.getBoundingClientRect();
 
   for (const strategy of selectorStrategies) {
+    if (isPercussionDefaultLayout && strategy.source === "geometry:svg-rect-vertical") {
+      strategyAttempts.push(`${strategy.source}:validation=fail,reason=percussionSourceBlocked`);
+      strategyDebugResults.push({
+        source: strategy.source,
+        rawElementCount: 0,
+        validation: "blockedForPercussionDefault",
+      });
+      continue;
+    }
     const elements = strategy.resolveAnchors();
     const strategyDebug: Record<string, unknown> = {
       source: strategy.source,
@@ -2001,7 +2065,18 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
           continue;
         }
 
-        const chosenGenericSource = isPercussionDefaultLayout ? "generic-shared" : strategy.source;
+        const strictErrors = validateFinalAnchorsStrict(validatedAnchors);
+        if (strictErrors.length > 0) {
+          strategyDebug.validation = "fail";
+          strategyDebug.normalizedAnchors = validatedAnchors;
+          strategyDebug.validationErrors = [...validationErrors, ...strictErrors];
+          strategyAttempts.push(
+            `${strategy.source}:validation=fail,normalizedBars=${validatedAnchors.length},totalBars=${totalBars > 0 ? totalBars : "-"},reason=${[...validationErrors, ...strictErrors].join("+")},fallbackUsed=yes`,
+          );
+          continue;
+        }
+
+        const chosenGenericSource = strategy.source;
         state.playbackBarAnchors = validatedAnchors;
         state.playbackBarAnchorCount = state.playbackBarAnchors.length;
         state.playbackBarAnchorSource = chosenGenericSource;
@@ -2276,8 +2351,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     const medianGap = sortedGaps.length > 0 ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 72;
     const fallbackGap = Math.min(Math.max(medianGap, 32), 220);
 
-    const chosenGenericSource = isPercussionDefaultLayout ? "generic-shared" : strategy.source;
-    state.playbackBarAnchors = limitedAnchors.map((anchor, index) => {
+    const candidateAnchors = limitedAnchors.map((anchor, index) => {
       const nextAnchor = limitedAnchors[index + 1];
       const currentRowIndex = anchorRowIndexes[index];
       const nextRowIndex = anchorRowIndexes[index + 1] ?? -1;
@@ -2306,6 +2380,22 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
         height: anchor.height,
       };
     });
+    const strictErrors = validateFinalAnchorsStrict(candidateAnchors);
+    if (strictErrors.length > 0) {
+      strategyDebug.validation = "fail";
+      strategyDebug.dedupCount = dedupedAnchors.length;
+      strategyDebug.filteredCount = filteredAnchors.length;
+      strategyDebug.rowCount = rowSummaries.length;
+      strategyDebug.normalizedAnchors = candidateAnchors;
+      strategyDebug.rowSummaries = rowSummaries;
+      strategyDebug.validationErrors = strictErrors;
+      strategyAttempts.push(
+        `${strategy.source}:validation=fail,reason=${strictErrors.join("+")},raw=${rawAnchors.length},dedup=${dedupedAnchors.length},filtered=${filteredAnchors.length},used=${limitedAnchors.length},rows=${rowSummaries.length},fallbackUsed=yes`,
+      );
+      continue;
+    }
+    const chosenGenericSource = strategy.source;
+    state.playbackBarAnchors = candidateAnchors;
     state.playbackBarAnchorCount = state.playbackBarAnchors.length;
     state.playbackBarAnchorSource = chosenGenericSource;
     const rowsWithTerminalBoundary = rowSummaries.filter((row) => row.rowTerminalBoundaryX !== null).length;
