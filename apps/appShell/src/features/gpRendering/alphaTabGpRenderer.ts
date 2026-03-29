@@ -2059,6 +2059,9 @@ export async function createGpRenderer(
           const restoredBottomY = restoredY + calibratedH;
           const appliedYOffsetCorrection = targetTabBottomLineY !== null ? targetTabBottomLineY - restoredBottomY : 0;
           const correctedY = restoredY + appliedYOffsetCorrection;
+          const correctedBottomY = correctedY + calibratedH;
+          const bottomDeltaBeforeClamp =
+            targetTabBottomLineY !== null ? correctedBottomY - targetTabBottomLineY : null;
           const correctedRect = {
             x: calibratedX,
             y: correctedY,
@@ -2071,10 +2074,15 @@ export async function createGpRenderer(
             parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
               ? parentSystemOuterBounds.y + parentSystemOuterBounds.h
               : Number.POSITIVE_INFINITY;
-          const maxTopFromBottomBoundary = structuralBottomBoundary - calibratedH;
+          const effectiveBottomBoundary =
+            targetTabBottomLineY !== null ? Math.max(structuralBottomBoundary, targetTabBottomLineY) : structuralBottomBoundary;
+          const maxTopFromBottomBoundary = effectiveBottomBoundary - calibratedH;
+          const bottomClampChangedY = rowAnchoredY > maxTopFromBottomBoundary;
           calibratedY = Math.min(rowAnchoredY, maxTopFromBottomBoundary);
           const structuralTopBoundary = parentSystemOuterBounds?.y ?? systemVerticalBounds?.y ?? calibratedY;
           calibratedY = Math.max(calibratedY, structuralTopBoundary);
+          const finalBottomY = calibratedY + calibratedH;
+          const bottomDeltaAfterClamp = targetTabBottomLineY !== null ? finalBottomY - targetTabBottomLineY : null;
           const finalRect = {
             x: calibratedX,
             y: calibratedY,
@@ -2115,6 +2123,15 @@ export async function createGpRenderer(
               targetTabBottomLineY,
               restoredBottomY,
               appliedYOffsetCorrection,
+              correctedY,
+              correctedBottomY,
+              structuralBottomBoundary,
+              maxTopFromBottomBoundary,
+              finalCalibratedY: calibratedY,
+              finalBottomY,
+              bottomDeltaBeforeClamp,
+              bottomDeltaAfterClamp,
+              bottomClampChangedY,
               correctedRect,
               chosenVerticalAnchorMode,
               finalVerticalSourcePath: chosenParentVerticalCandidate ? "parent-system-primary" : "cluster-fallback",
