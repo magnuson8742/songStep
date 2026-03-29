@@ -1306,19 +1306,19 @@ export async function createGpRenderer(
     };
 
     const rendererRootEntries: Array<{ rootPath: string; value: unknown }> = [
-      { rootPath: "api.renderer", value: unsafeApi.renderer },
+      { rootPath: "api.renderer._instance", value: readPath(unsafeApi.renderer, "_instance") },
+      { rootPath: "api.renderer._currentRenderEngine", value: readPath(unsafeApi.renderer, "_currentRenderEngine") },
       { rootPath: "api.renderer.layout", value: readPath(unsafeApi.renderer, "layout") },
-      { rootPath: "api.renderer.scoreRenderer", value: readPath(unsafeApi.renderer, "scoreRenderer") },
-      { rootPath: "api.renderer.renderEngine", value: readPath(unsafeApi.renderer, "renderEngine") },
-      { rootPath: "api.renderer.renderer", value: readPath(unsafeApi.renderer, "renderer") },
-      { rootPath: "api.renderer._renderer", value: readPath(unsafeApi.renderer, "_renderer") },
-      { rootPath: "api.renderer._renderEngine", value: readPath(unsafeApi.renderer, "_renderEngine") },
-      { rootPath: "api.renderer._layout", value: readPath(unsafeApi.renderer, "_layout") },
-      { rootPath: "api._renderer", value: apiUnsafeRecord._renderer },
-      { rootPath: "api._renderEngine", value: apiUnsafeRecord._renderEngine },
-      { rootPath: "api._layout", value: apiUnsafeRecord._layout },
-      { rootPath: "api.scoreRenderer", value: apiUnsafeRecord.scoreRenderer },
+      { rootPath: "api.renderer.boundsLookup", value: readPath(unsafeApi.renderer, "boundsLookup") },
+      { rootPath: "api.renderer._instance._currentRenderEngine", value: readPath(unsafeApi.renderer, "_instance._currentRenderEngine") },
+      { rootPath: "api.renderer._instance.layout", value: readPath(unsafeApi.renderer, "_instance.layout") },
+      { rootPath: "api.renderer._instance.boundsLookup", value: readPath(unsafeApi.renderer, "_instance.boundsLookup") },
+      { rootPath: "api.renderer._currentRenderEngine.layout", value: readPath(unsafeApi.renderer, "_currentRenderEngine.layout") },
+      { rootPath: "api.renderer", value: unsafeApi.renderer },
+      { rootPath: "api._instance", value: apiUnsafeRecord._instance },
+      { rootPath: "api._currentRenderEngine", value: apiUnsafeRecord._currentRenderEngine },
       { rootPath: "api.renderEngine", value: apiUnsafeRecord.renderEngine },
+      { rootPath: "api.scoreRenderer", value: apiUnsafeRecord.scoreRenderer },
     ];
 
     const systemPathCandidates = [
@@ -1558,11 +1558,23 @@ export async function createGpRenderer(
       .filter((bar) => bar.endX > bar.startX + 1 && bar.height > 0);
 
     const rootCandidateSummaries =
-      dedupedSystems.size === 0
+      dedupedSystems.size === 0 || candidateRects.length === 0
         ? rendererRootEntries
             .map(({ rootPath, value }) => summarizeRoot(rootPath, value))
             .filter((summary): summary is NonNullable<typeof summary> => summary !== null)
             .slice(0, 16)
+        : undefined;
+
+    const targetedBranchSummaries =
+      candidateRects.length === 0
+        ? [
+            { rootPath: "api.renderer._instance", value: readPath(unsafeApi.renderer, "_instance") },
+            { rootPath: "api.renderer._currentRenderEngine", value: readPath(unsafeApi.renderer, "_currentRenderEngine") },
+            { rootPath: "api.renderer.layout", value: readPath(unsafeApi.renderer, "layout") },
+          ]
+            .map(({ rootPath, value }) => summarizeRoot(rootPath, value))
+            .filter((summary): summary is NonNullable<typeof summary> => summary !== null)
+            .slice(0, 3)
         : undefined;
 
     lastBarBoundsExtractionDiagnostics = {
@@ -1571,7 +1583,7 @@ export async function createGpRenderer(
       discoveredBarRectCount: candidateRects.length,
       usedLayoutPaths: Array.from(usedLayoutPaths),
       usedBarCollectionPaths: Array.from(usedBarCollectionPaths),
-      rootCandidateSummaries,
+      rootCandidateSummaries: targetedBranchSummaries ?? rootCandidateSummaries,
       systemSummaries: dedupedSystems.size > 0 && discoveredBarCollectionCount === 0 ? systemSummaries : undefined,
     };
 
