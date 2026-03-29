@@ -1051,34 +1051,6 @@ function resolveSharedStructuralPlaybackBarAnchors(
     }),
   ].filter((row): row is { top: number; bottom: number } => row !== null);
 
-  const sortedRowBandCandidates = [...rowBandCandidates].sort((left, right) => left.top - right.top);
-  const rowBands: Array<{ yMin: number; yMax: number; yCenter: number }> = [];
-  const SYSTEM_ROW_MERGE_GAP_PX = 28;
-  const SYSTEM_ROW_PADDING_PX = 6;
-  sortedRowBandCandidates.forEach((band) => {
-    const currentRow = rowBands[rowBands.length - 1];
-    if (!currentRow) {
-      rowBands.push({
-        yMin: band.top,
-        yMax: band.bottom,
-        yCenter: (band.top + band.bottom) / 2,
-      });
-      return;
-    }
-    const gapFromCurrent = band.top - currentRow.yMax;
-    if (gapFromCurrent <= SYSTEM_ROW_MERGE_GAP_PX) {
-      currentRow.yMin = Math.min(currentRow.yMin, band.top);
-      currentRow.yMax = Math.max(currentRow.yMax, band.bottom);
-      currentRow.yCenter = (currentRow.yMin + currentRow.yMax) / 2;
-      return;
-    }
-    rowBands.push({
-      yMin: band.top,
-      yMax: band.bottom,
-      yCenter: (band.top + band.bottom) / 2,
-    });
-  });
-
   const verticalCandidates = [
     ...Array.from(renderHost.querySelectorAll<SVGLineElement>("svg line")).map((line) => {
       const x1 = Number(line.getAttribute("x1"));
@@ -1126,12 +1098,68 @@ function resolveSharedStructuralPlaybackBarAnchors(
     }),
   ].filter((candidate): candidate is { x: number; top: number; bottom: number } => candidate !== null);
 
-  const sortedRows = [...rowBands]
-    .sort((left, right) => left.yCenter - right.yCenter)
+  const sortedRowBandCandidates = [...rowBandCandidates].sort((left, right) => left.top - right.top);
+  const SYSTEM_ROW_PADDING_PX = 6;
+  const SIGNATURE_SCAN_PADDING_PX = 18;
+  const signatureTolerancePx = 6;
+  const toSignature = (band: { top: number; bottom: number }): number[] => {
+    const yTop = band.top - SIGNATURE_SCAN_PADDING_PX;
+    const yBottom = band.bottom + SIGNATURE_SCAN_PADDING_PX;
+    const xValues = verticalCandidates
+      .filter((candidate) => candidate.bottom >= yTop && candidate.top <= yBottom)
+      .map((candidate) => candidate.x)
+      .sort((left, right) => left - right);
+    const collapsed: number[] = [];
+    xValues.forEach((x) => {
+      const previous = collapsed[collapsed.length - 1];
+      if (previous === undefined || Math.abs(previous - x) > signatureTolerancePx) {
+        collapsed.push(x);
+      } else {
+        collapsed[collapsed.length - 1] = (previous + x) / 2;
+      }
+    });
+    return collapsed;
+  };
+  const signatureOverlap = (left: number[], right: number[]): number => {
+    if (left.length === 0 || right.length === 0) {
+      return 0;
+    }
+    let matches = 0;
+    left.forEach((value) => {
+      const found = right.some((candidate) => Math.abs(candidate - value) <= signatureTolerancePx);
+      if (found) {
+        matches += 1;
+      }
+    });
+    return matches / Math.max(left.length, right.length);
+  };
+
+  const rowSystems: Array<{ yMin: number; yMax: number; signature: number[] }> = [];
+  sortedRowBandCandidates.forEach((band) => {
+    const signature = toSignature(band);
+    const bestMatchIndex = rowSystems.findIndex((system) => signatureOverlap(system.signature, signature) >= 0.6);
+    if (bestMatchIndex >= 0) {
+      const system = rowSystems[bestMatchIndex] as { yMin: number; yMax: number; signature: number[] };
+      system.yMin = Math.min(system.yMin, band.top);
+      system.yMax = Math.max(system.yMax, band.bottom);
+      if (signature.length > system.signature.length) {
+        system.signature = signature;
+      }
+      return;
+    }
+    rowSystems.push({
+      yMin: band.top,
+      yMax: band.bottom,
+      signature,
+    });
+  });
+
+  const sortedRows = [...rowSystems]
+    .sort((left, right) => (left.yMin + left.yMax) / 2 - (right.yMin + right.yMax) / 2)
     .map((row) => ({
       yMin: row.yMin - SYSTEM_ROW_PADDING_PX,
       yMax: row.yMax + SYSTEM_ROW_PADDING_PX,
-      yCenter: row.yCenter,
+      yCenter: (row.yMin + row.yMax) / 2,
     }));
   const anchors: PlaybackBarAnchor[] = [];
   let currentBar = 1;
