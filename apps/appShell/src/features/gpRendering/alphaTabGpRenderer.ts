@@ -228,11 +228,17 @@ export interface GpRenderDebugInfo {
       calibrationModeY: "local-to-system" | "absolute";
       systemOriginX: number | null;
       systemOriginY: number | null;
+      chosenVerticalSource?: string | null;
+      chosenVerticalSourceHeight?: number | null;
+      availableVerticalSources?: Array<{ source: string; height: number }>;
+      parentSystemRect?: { x: number; y: number; w: number; h: number } | null;
       firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
       firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
     } | null;
     transformSummary?: {
       coordinateSpaceMode: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
+      coordinateSpaceModeX?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
+      coordinateSpaceModeY?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
       modeReason: string;
       hostLocalScore: number;
       svgPixelScore: number;
@@ -243,7 +249,10 @@ export interface GpRenderDebugInfo {
       transformScaleY: number;
       transformOffsetX: number;
       transformOffsetY: number;
+      transformAppliedX?: boolean;
+      transformAppliedY?: boolean;
       firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
+      firstBarCalibratedRect?: { x: number; y: number; w: number; h: number } | null;
       firstBarFinalRect: { x: number; y: number; w: number; h: number } | null;
     } | null;
   } | null;
@@ -411,11 +420,17 @@ interface BarBoundsExtractionDiagnostics {
     calibrationModeY: "local-to-system" | "absolute";
     systemOriginX: number | null;
     systemOriginY: number | null;
+    chosenVerticalSource?: string | null;
+    chosenVerticalSourceHeight?: number | null;
+    availableVerticalSources?: Array<{ source: string; height: number }>;
+    parentSystemRect?: { x: number; y: number; w: number; h: number } | null;
     firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
     firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
   } | null;
   transformSummary?: {
     coordinateSpaceMode: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
+    coordinateSpaceModeX?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
+    coordinateSpaceModeY?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
     modeReason: string;
     hostLocalScore: number;
     svgPixelScore: number;
@@ -426,7 +441,10 @@ interface BarBoundsExtractionDiagnostics {
     transformScaleY: number;
     transformOffsetX: number;
     transformOffsetY: number;
+    transformAppliedX?: boolean;
+    transformAppliedY?: boolean;
     firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
+    firstBarCalibratedRect?: { x: number; y: number; w: number; h: number } | null;
     firstBarFinalRect: { x: number; y: number; w: number; h: number } | null;
   } | null;
 }
@@ -1594,6 +1612,195 @@ export async function createGpRenderer(
       }
       return { x, y, w, h };
     };
+    const toFiniteNumber = (value: string | null): number | null => {
+      if (value === null) {
+        return null;
+      }
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const segmentOverlapsRange = (segStart: number, segEnd: number, rangeStart: number, rangeEnd: number): boolean => {
+      const left = Math.min(segStart, segEnd);
+      const right = Math.max(segStart, segEnd);
+      return right >= rangeStart && left <= rangeEnd;
+    };
+    const collectHorizontalLineYs = (
+      svgRoot: SVGSVGElement | null,
+      rangeStartX: number,
+      rangeEndX: number,
+    ): Array<{ y: number; source: "line" | "rect" | "path" }> => {
+      if (!svgRoot || !Number.isFinite(rangeStartX) || !Number.isFinite(rangeEndX)) {
+        return [];
+      }
+      const xMin = Math.min(rangeStartX, rangeEndX);
+      const xMax = Math.max(rangeStartX, rangeEndX);
+      const minHorizontalSegmentLength = Math.max(12, (xMax - xMin) * 0.35);
+      const yValues: Array<{ y: number; source: "line" | "rect" | "path" }> = [];
+      const lineNodes = Array.from(svgRoot.querySelectorAll("line"));
+      lineNodes.forEach((lineNode) => {
+        const x1 = toFiniteNumber(lineNode.getAttribute("x1"));
+        const x2 = toFiniteNumber(lineNode.getAttribute("x2"));
+        const y1 = toFiniteNumber(lineNode.getAttribute("y1"));
+        const y2 = toFiniteNumber(lineNode.getAttribute("y2"));
+        if (x1 === null || x2 === null || y1 === null || y2 === null || Math.abs(y1 - y2) > 0.8) {
+          return;
+        }
+        if (!segmentOverlapsRange(x1, x2, xMin, xMax)) {
+          return;
+        }
+        if (Math.abs(x2 - x1) < minHorizontalSegmentLength) {
+          return;
+        }
+        yValues.push({ y: (y1 + y2) / 2, source: "line" });
+      });
+      const rectNodes = Array.from(svgRoot.querySelectorAll("rect"));
+      rectNodes.forEach((rectNode) => {
+        const x = toFiniteNumber(rectNode.getAttribute("x"));
+        const y = toFiniteNumber(rectNode.getAttribute("y"));
+        const w = toFiniteNumber(rectNode.getAttribute("width"));
+        const h = toFiniteNumber(rectNode.getAttribute("height"));
+        if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0 || h > 2.5) {
+          return;
+        }
+        if (!segmentOverlapsRange(x, x + w, xMin, xMax)) {
+          return;
+        }
+        if (w < minHorizontalSegmentLength) {
+          return;
+        }
+        yValues.push({ y: y + h * 0.5, source: "rect" });
+      });
+      const pathNodes = Array.from(svgRoot.querySelectorAll("path"));
+      pathNodes.forEach((pathNode) => {
+        const d = pathNode.getAttribute("d");
+        if (!d) {
+          return;
+        }
+        const tokens = d.match(/[a-zA-Z]|-?\d*\.?\d+(?:e[-+]?\d+)?/g);
+        if (!tokens || tokens.length === 0) {
+          return;
+        }
+        let index = 0;
+        let command = "";
+        let currentX = 0;
+        let currentY = 0;
+        const readNumber = (): number | null => {
+          if (index >= tokens.length) {
+            return null;
+          }
+          const token = tokens[index] ?? "";
+          const parsed = Number(token);
+          if (!Number.isFinite(parsed)) {
+            return null;
+          }
+          index += 1;
+          return parsed;
+        };
+        while (index < tokens.length) {
+          const token = tokens[index] ?? "";
+          if (/^[a-zA-Z]$/.test(token)) {
+            command = token;
+            index += 1;
+            continue;
+          }
+          if (command === "M" || command === "L") {
+            const nextX = readNumber();
+            const nextY = readNumber();
+            if (nextX === null || nextY === null) {
+              break;
+            }
+            if (
+              Math.abs(nextY - currentY) <= 0.8 &&
+              Math.abs(nextX - currentX) >= minHorizontalSegmentLength &&
+              segmentOverlapsRange(currentX, nextX, xMin, xMax)
+            ) {
+              yValues.push({ y: (currentY + nextY) * 0.5, source: "path" });
+            }
+            currentX = nextX;
+            currentY = nextY;
+            continue;
+          }
+          if (command === "m" || command === "l") {
+            const dx = readNumber();
+            const dy = readNumber();
+            if (dx === null || dy === null) {
+              break;
+            }
+            const nextX = currentX + dx;
+            const nextY = currentY + dy;
+            if (
+              Math.abs(nextY - currentY) <= 0.8 &&
+              Math.abs(nextX - currentX) >= minHorizontalSegmentLength &&
+              segmentOverlapsRange(currentX, nextX, xMin, xMax)
+            ) {
+              yValues.push({ y: (currentY + nextY) * 0.5, source: "path" });
+            }
+            currentX = nextX;
+            currentY = nextY;
+            continue;
+          }
+          if (command === "H") {
+            const nextX = readNumber();
+            if (nextX === null) {
+              break;
+            }
+            if (Math.abs(nextX - currentX) >= minHorizontalSegmentLength && segmentOverlapsRange(currentX, nextX, xMin, xMax)) {
+              yValues.push({ y: currentY, source: "path" });
+            }
+            currentX = nextX;
+            continue;
+          }
+          if (command === "h") {
+            const dx = readNumber();
+            if (dx === null) {
+              break;
+            }
+            const nextX = currentX + dx;
+            if (Math.abs(nextX - currentX) >= minHorizontalSegmentLength && segmentOverlapsRange(currentX, nextX, xMin, xMax)) {
+              yValues.push({ y: currentY, source: "path" });
+            }
+            currentX = nextX;
+            continue;
+          }
+          if (command === "V") {
+            const nextY = readNumber();
+            if (nextY === null) {
+              break;
+            }
+            currentY = nextY;
+            continue;
+          }
+          if (command === "v") {
+            const dy = readNumber();
+            if (dy === null) {
+              break;
+            }
+            currentY += dy;
+            continue;
+          }
+          index += 1;
+        }
+      });
+      return yValues;
+    };
+    const clusterYValues = (values: number[], tolerance: number): number[][] => {
+      if (values.length === 0) {
+        return [];
+      }
+      const sorted = [...values].sort((left, right) => left - right);
+      const clusters: number[][] = [[sorted[0] ?? 0]];
+      for (let index = 1; index < sorted.length; index += 1) {
+        const current = sorted[index] ?? 0;
+        const activeCluster = clusters[clusters.length - 1];
+        const activeLast = activeCluster[activeCluster.length - 1] ?? current;
+        if (Math.abs(current - activeLast) <= tolerance) {
+          activeCluster.push(current);
+        } else {
+          clusters.push([current]);
+        }
+      }
+      return clusters;
+    };
     const directStaffSystemEntries: Array<{ sourcePath: string; systems: unknown[] }> = [];
     const directStaffSystemPaths = [
       "renderer.boundsLookup.staffSystems",
@@ -1605,6 +1812,7 @@ export async function createGpRenderer(
         directStaffSystemEntries.push({ sourcePath: `api.${path}`, systems });
       }
     });
+    const horizontalAnchorSvg = container.querySelector<SVGSVGElement>("svg");
     const familyResults: Array<{
       sourcePath: string;
       rects: RenderedBarBound[];
@@ -1614,6 +1822,7 @@ export async function createGpRenderer(
       usedLayoutPaths.add(sourcePath);
       const familyRects: RenderedBarBound[] = [];
       let familyCalibrationSummary: BarBoundsExtractionDiagnostics["calibrationSummary"] = null;
+      let didLogVerticalSelection = false;
       systems.forEach((systemItem, systemIndex) => {
         if (!systemItem || typeof systemItem !== "object") {
           return;
@@ -1629,45 +1838,112 @@ export async function createGpRenderer(
           (systemRecord.staffSystemBounds as Record<string, unknown> | undefined) ??
           (systemRecord.bounds as Record<string, unknown> | undefined) ??
           null;
-        const systemVerticalBounds =
+        const systemVisualBounds =
+          toXywhRect(systemBoundsContainer?.visualBounds) ?? toXywhRect(systemRecord.visualBounds);
+        const systemRealBounds = toXywhRect(systemBoundsContainer?.realBounds) ?? toXywhRect(systemRecord.realBounds);
+        const parentSystemOuterBounds =
+          systemVisualBounds ??
+          systemRealBounds ??
+          toXywhRect(systemBoundsContainer) ??
+          toXywhRect(systemRecord);
+        const resolvedVerticalCandidates: Array<{ source: string; rect: { x: number; y: number; w: number; h: number } }> = [
+          ...(toXywhRect(systemBoundsContainer?.lineAlignedBounds)
+            ? [{ source: "staffSystemBounds.lineAlignedBounds", rect: toXywhRect(systemBoundsContainer?.lineAlignedBounds)! }]
+            : []),
+          ...(toXywhRect(systemRecord.lineAlignedBounds)
+            ? [{ source: "system.lineAlignedBounds", rect: toXywhRect(systemRecord.lineAlignedBounds)! }]
+            : []),
+          ...(toXywhRect(systemBoundsContainer?.systemAlignedBounds)
+            ? [{ source: "staffSystemBounds.systemAlignedBounds", rect: toXywhRect(systemBoundsContainer?.systemAlignedBounds)! }]
+            : []),
+          ...(toXywhRect(systemRecord.systemAlignedBounds)
+            ? [{ source: "system.systemAlignedBounds", rect: toXywhRect(systemRecord.systemAlignedBounds)! }]
+            : []),
+          ...(systemVisualBounds ? [{ source: "system.visualBounds", rect: systemVisualBounds }] : []),
+          ...(systemRealBounds ? [{ source: "system.realBounds", rect: systemRealBounds }] : []),
+          ...(parentSystemOuterBounds ? [{ source: "system.outerBounds", rect: parentSystemOuterBounds }] : []),
+        ];
+        const chosenParentVerticalCandidate = resolvedVerticalCandidates[0] ?? null;
+        const systemCalibrationBounds =
           toXywhRect(systemBoundsContainer?.visualBounds) ??
           toXywhRect(systemBoundsContainer?.realBounds) ??
           toXywhRect(systemBoundsContainer);
 
-        const rawBarBounds = bars
-          .map((barItem) => (barItem && typeof barItem === "object" ? (barItem as Record<string, unknown>) : null))
-          .map((barRecord) =>
-            barRecord
-              ? toXywhRect(barRecord.lineAlignedBounds) ?? toXywhRect(barRecord.visualBounds) ?? toXywhRect(barRecord.realBounds)
-              : null,
-          )
-          .filter((rect): rect is { x: number; y: number; w: number; h: number } => rect !== null);
+        const barBoundsByIndex = bars.map((barItem) => {
+          if (!barItem || typeof barItem !== "object") {
+            return null;
+          }
+          const barRecord = barItem as Record<string, unknown>;
+          return toXywhRect(barRecord.lineAlignedBounds) ?? toXywhRect(barRecord.visualBounds) ?? toXywhRect(barRecord.realBounds);
+        });
+        const indexedBarBounds = barBoundsByIndex
+          .map((rect, barIndexInSystem) => (rect ? { barIndexInSystem, rect } : null))
+          .filter((entry): entry is { barIndexInSystem: number; rect: { x: number; y: number; w: number; h: number } } => entry !== null);
+        const rawBarBounds = indexedBarBounds.map((entry) => entry.rect);
         const absXInsideCount =
-          systemVerticalBounds === null
+          systemCalibrationBounds === null
             ? 0
             : rawBarBounds.filter(
                 (bar) =>
-                  bar.x >= systemVerticalBounds.x - 2 && bar.x + bar.w <= systemVerticalBounds.x + systemVerticalBounds.w + 2,
+                  bar.x >= systemCalibrationBounds.x - 2 &&
+                  bar.x + bar.w <= systemCalibrationBounds.x + systemCalibrationBounds.w + 2,
               ).length;
         const localXInsideCount =
-          systemVerticalBounds === null
+          systemCalibrationBounds === null
             ? 0
-            : rawBarBounds.filter((bar) => bar.x >= -2 && bar.x + bar.w <= systemVerticalBounds.w + 2).length;
+            : rawBarBounds.filter((bar) => bar.x >= -2 && bar.x + bar.w <= systemCalibrationBounds.w + 2).length;
         const absYInsideCount =
-          systemVerticalBounds === null
+          systemCalibrationBounds === null
             ? 0
             : rawBarBounds.filter(
                 (bar) =>
-                  bar.y >= systemVerticalBounds.y - 2 && bar.y + bar.h <= systemVerticalBounds.y + systemVerticalBounds.h + 2,
+                  bar.y >= systemCalibrationBounds.y - 2 &&
+                  bar.y + bar.h <= systemCalibrationBounds.y + systemCalibrationBounds.h + 2,
               ).length;
         const localYInsideCount =
-          systemVerticalBounds === null
+          systemCalibrationBounds === null
             ? 0
-            : rawBarBounds.filter((bar) => bar.y >= -2 && bar.y + bar.h <= systemVerticalBounds.h + 2).length;
+            : rawBarBounds.filter((bar) => bar.y >= -2 && bar.y + bar.h <= systemCalibrationBounds.h + 2).length;
         const calibrationModeX: "local-to-system" | "absolute" =
-          systemVerticalBounds && localXInsideCount > absXInsideCount ? "local-to-system" : "absolute";
+          systemCalibrationBounds && localXInsideCount > absXInsideCount ? "local-to-system" : "absolute";
         const calibrationModeY: "local-to-system" | "absolute" =
-          systemVerticalBounds && localYInsideCount > absYInsideCount ? "local-to-system" : "absolute";
+          systemCalibrationBounds && localYInsideCount > absYInsideCount ? "local-to-system" : "absolute";
+        const sortedClusterSeedRects = [...indexedBarBounds].sort((left, right) => left.rect.y - right.rect.y);
+        const heightValues = sortedClusterSeedRects.map((entry) => entry.rect.h).sort((left, right) => left - right);
+        const medianHeight =
+          heightValues.length > 0 ? heightValues[Math.floor(heightValues.length / 2)] ?? heightValues[0] ?? 0 : 0;
+        const clusterTolerance = medianHeight > 0 ? Math.max(1, medianHeight * 0.08) : 1;
+        const rowClusters: Array<{ top: number; bottom: number; barIndices: number[]; bottoms: number[] }> = [];
+        sortedClusterSeedRects.forEach(({ barIndexInSystem, rect }) => {
+          const rectTop = rect.y;
+          const rectBottom = rect.y + rect.h;
+          const clusterIndex = rowClusters.findIndex(
+            (cluster) => rectBottom >= cluster.top - clusterTolerance && rectTop <= cluster.bottom + clusterTolerance,
+          );
+          if (clusterIndex >= 0) {
+            const cluster = rowClusters[clusterIndex];
+            cluster.top = Math.min(cluster.top, rectTop);
+            cluster.bottom = Math.max(cluster.bottom, rectBottom);
+            cluster.barIndices.push(barIndexInSystem);
+            cluster.bottoms.push(rectBottom);
+            return;
+          }
+          rowClusters.push({ top: rectTop, bottom: rectBottom, barIndices: [barIndexInSystem], bottoms: [rectBottom] });
+        });
+        const toMedian = (values: number[]): number => {
+          if (values.length === 0) {
+            return 0;
+          }
+          const sorted = [...values].sort((left, right) => left - right);
+          const midIndex = Math.floor(sorted.length / 2);
+          return sorted[midIndex] ?? sorted[0] ?? 0;
+        };
+        const rowClusterBands = rowClusters.map((cluster) => ({
+          y: cluster.top,
+          h: cluster.bottom - cluster.top,
+          rowBottom: toMedian(cluster.bottoms),
+          barIndexSet: new Set(cluster.barIndices),
+        }));
 
         bars.forEach((barItem, barIndexInSystem) => {
           if (!barItem || typeof barItem !== "object") {
@@ -1693,24 +1969,135 @@ export async function createGpRenderer(
             return;
           }
           const calibratedX =
-            systemVerticalBounds && calibrationModeX === "local-to-system" ? systemVerticalBounds.x + barBounds.x : barBounds.x;
-          let calibratedY =
-            systemVerticalBounds && calibrationModeY === "local-to-system" ? systemVerticalBounds.y + barBounds.y : barBounds.y;
+            systemCalibrationBounds && calibrationModeX === "local-to-system"
+              ? systemCalibrationBounds.x + barBounds.x
+              : barBounds.x;
+          const matchedClusterIndex = rowClusterBands.findIndex((cluster) => cluster.barIndexSet.has(barIndexInSystem));
+          const matchedCluster = matchedClusterIndex >= 0 ? rowClusterBands[matchedClusterIndex] : null;
+          let systemVerticalBounds =
+            chosenParentVerticalCandidate?.rect ?? (matchedCluster ? { x: 0, y: matchedCluster.y, w: 0, h: matchedCluster.h } : null);
+          let chosenVerticalSource: string = chosenParentVerticalCandidate
+            ? chosenParentVerticalCandidate.source
+            : systemVerticalBounds
+              ? "staffSystem.rowClusterBand"
+              : "bar-local-fallback";
+          if (systemVerticalBounds && parentSystemOuterBounds) {
+            const clampedTop = Math.max(systemVerticalBounds.y, parentSystemOuterBounds.y);
+            const clampedBottom = Math.min(
+              systemVerticalBounds.y + systemVerticalBounds.h,
+              parentSystemOuterBounds.y + parentSystemOuterBounds.h,
+            );
+            if (clampedBottom > clampedTop + 1) {
+              systemVerticalBounds = { ...systemVerticalBounds, y: clampedTop, h: clampedBottom - clampedTop };
+              chosenVerticalSource = chosenParentVerticalCandidate
+                ? `${chosenParentVerticalCandidate.source}-clamped`
+                : "staffSystem.rowClusterBand-clamped";
+            }
+          } else if (!systemVerticalBounds && parentSystemOuterBounds) {
+            systemVerticalBounds = parentSystemOuterBounds;
+            chosenVerticalSource = "system.outerBounds-fallback";
+          }
+          let calibratedY = barBounds.y;
           let calibratedH = barBounds.h;
           if (systemVerticalBounds) {
-            const clippedTop = Math.max(calibratedY, systemVerticalBounds.y);
-            const clippedBottom = Math.min(calibratedY + calibratedH, systemVerticalBounds.y + systemVerticalBounds.h);
-            if (clippedBottom > clippedTop + 1) {
-              calibratedY = clippedTop;
-              calibratedH = clippedBottom - clippedTop;
+            calibratedY = systemVerticalBounds.y;
+            calibratedH = systemVerticalBounds.h;
+          }
+          const barRangeStartX = calibratedX;
+          const barRangeEndX = calibratedX + barBounds.w;
+          const detectedHorizontalLineEntries = collectHorizontalLineYs(horizontalAnchorSvg, barRangeStartX, barRangeEndX);
+          const detectedHorizontalLineYs = detectedHorizontalLineEntries.map((entry) => entry.y);
+          const detectedHorizontalLineSources = Array.from(new Set(detectedHorizontalLineEntries.map((entry) => entry.source)));
+          const yClusterTolerance = Math.max(0.5, Math.min(3, calibratedH * 0.04));
+          const horizontalLineClusters = clusterYValues(detectedHorizontalLineYs, yClusterTolerance);
+          const currentBarCenterY = barBounds.y + barBounds.h * 0.5;
+          const currentRowBottomHint = matchedCluster?.rowBottom ?? calibratedY + calibratedH;
+          const chosenLineCluster =
+            horizontalLineClusters.length > 0
+              ? [...horizontalLineClusters].sort((left, right) => {
+                  const leftTop = Math.min(...left);
+                  const leftBottom = Math.max(...left);
+                  const rightTop = Math.min(...right);
+                  const rightBottom = Math.max(...right);
+                  const leftCenter = (leftTop + leftBottom) * 0.5;
+                  const rightCenter = (rightTop + rightBottom) * 0.5;
+                  return Math.abs(leftCenter - currentBarCenterY) - Math.abs(rightCenter - currentBarCenterY);
+                })[0]
+              : null;
+          const chosenRowTopLineY = chosenLineCluster ? Math.min(...chosenLineCluster) : null;
+          const chosenRowBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
+          const clusterRowBottom = chosenRowBottomLineY ?? currentRowBottomHint;
+          const chosenRowClusterIndex = chosenLineCluster ? horizontalLineClusters.indexOf(chosenLineCluster) : -1;
+          let chosenVerticalAnchorMode: "parent-primary" | "line-refine" | "cluster-fallback" =
+            chosenParentVerticalCandidate ? "parent-primary" : "cluster-fallback";
+          let rowAnchoredY = calibratedY;
+          if (chosenRowBottomLineY !== null) {
+            const bottomAnchoredY = chosenRowBottomLineY - calibratedH;
+            if (bottomAnchoredY < rowAnchoredY) {
+              rowAnchoredY = bottomAnchoredY;
+              chosenVerticalAnchorMode = "line-refine";
+              chosenVerticalSource = chosenParentVerticalCandidate
+                ? `${chosenParentVerticalCandidate.source}+svg.horizontalRowBottomLine`
+                : "svg.horizontalRowBottomLine";
             }
+          }
+          const structuralBottomBoundary =
+            parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
+              ? parentSystemOuterBounds.y + parentSystemOuterBounds.h
+              : Number.POSITIVE_INFINITY;
+          const maxTopFromBottomBoundary = structuralBottomBoundary - calibratedH;
+          calibratedY = Math.min(rowAnchoredY, maxTopFromBottomBoundary);
+          const structuralTopBoundary = parentSystemOuterBounds?.y ?? systemVerticalBounds?.y ?? calibratedY;
+          calibratedY = Math.max(calibratedY, structuralTopBoundary);
+          const finalRect = {
+            x: calibratedX,
+            y: calibratedY,
+            w: barBounds.w,
+            h: calibratedH,
+          };
+          if (!didLogVerticalSelection) {
+            didLogVerticalSelection = true;
+            console.debug("[alphaTabGpRenderer] bar bounds vertical source", {
+              availableVerticalSources: resolvedVerticalCandidates
+                .map((candidate) => ({ source: candidate.source, height: candidate.rect.h }))
+                .sort((left, right) => left.height - right.height)
+                .slice(0, 10),
+              parentSystemCandidateRects: resolvedVerticalCandidates
+                .map((candidate) => ({ source: candidate.source, rect: candidate.rect }))
+                .slice(0, 8),
+              chosenParentVerticalRectSource: chosenParentVerticalCandidate?.source ?? null,
+              totalBarsInSystem: bars.length,
+              rowClusterCount: rowClusterBands.length,
+              firstBarClusterIndex: chosenRowClusterIndex >= 0 ? chosenRowClusterIndex : matchedClusterIndex,
+              detectedHorizontalLineYs: detectedHorizontalLineYs.slice(0, 24),
+              detectedHorizontalLineSources,
+              chosenRowTopLineY,
+              firstBarRowBottom: clusterRowBottom,
+              chosenRowBottomLineY,
+              chosenVerticalAnchorMode,
+              finalVerticalSourcePath: chosenParentVerticalCandidate ? "parent-system-primary" : "cluster-fallback",
+              firstBarHeight: calibratedH,
+              chosenVerticalSource,
+              systemVisualBounds,
+              systemRealBounds,
+              chosenVerticalSourceHeight: systemVerticalBounds?.h ?? null,
+              firstBarRawRect: barBounds,
+              firstBarFinalRect: finalRect,
+            });
           }
           if (!familyCalibrationSummary) {
             familyCalibrationSummary = {
               calibrationModeX,
               calibrationModeY,
-              systemOriginX: systemVerticalBounds?.x ?? null,
-              systemOriginY: systemVerticalBounds?.y ?? null,
+              systemOriginX: systemCalibrationBounds?.x ?? null,
+              systemOriginY: systemCalibrationBounds?.y ?? null,
+              chosenVerticalSource,
+              chosenVerticalSourceHeight: systemVerticalBounds?.h ?? null,
+              availableVerticalSources: resolvedVerticalCandidates
+                .map((candidate) => ({ source: candidate.source, height: candidate.rect.h }))
+                .sort((left, right) => left.height - right.height)
+                .slice(0, 12),
+              parentSystemRect: systemVerticalBounds,
               firstBarRawRect: barBounds,
               firstBarCalibratedRect: {
                 x: calibratedX,
@@ -1906,35 +2293,37 @@ export async function createGpRenderer(
         : svgPixelScore >= hostLocalScore
           ? "svg-pixel-to-host"
           : "host-local";
+    const coordinateSpaceModeX: "host-local" | "svg-pixel-to-host" | "viewbox-to-host" = coordinateSpaceMode;
+    const coordinateSpaceModeY: "host-local" | "svg-pixel-to-host" | "viewbox-to-host" = "host-local";
     const modeReason =
       coordinateSpaceMode === "viewbox-to-host"
         ? `viewboxScore=${viewBoxScore} dominates`
         : coordinateSpaceMode === "svg-pixel-to-host"
           ? `svgPixelScore=${svgPixelScore} dominates`
           : `hostLocalScore=${hostLocalScore} dominates`;
+    let transformAppliedX = false;
+    let transformAppliedY = false;
     const transformedCandidateRects = candidateRects.map((rect) => {
       const width = Math.max(rect.endX - rect.startX, 1);
-      if (coordinateSpaceMode === "viewbox-to-host" && svgViewBox) {
-        const mappedX = offsetX + (rect.startX - svgViewBox.x) * scaleX;
-        const mappedY = offsetY + (rect.y - svgViewBox.y) * scaleY;
-        return {
-          ...rect,
-          startX: mappedX,
-          endX: mappedX + width * scaleX,
-          y: mappedY,
-          height: rect.height * scaleY,
-        };
+      let mappedStartX = rect.startX;
+      let mappedWidth = width;
+      if (coordinateSpaceModeX === "viewbox-to-host" && svgViewBox) {
+        transformAppliedX = true;
+        mappedStartX = offsetX + (rect.startX - svgViewBox.x) * scaleX;
+        mappedWidth = width * scaleX;
+      } else if (coordinateSpaceModeX === "svg-pixel-to-host") {
+        transformAppliedX = true;
+        mappedStartX = offsetX + rect.startX;
       }
-      if (coordinateSpaceMode === "svg-pixel-to-host") {
-        return {
-          ...rect,
-          startX: offsetX + rect.startX,
-          endX: offsetX + rect.endX,
-          y: offsetY + rect.y,
-          height: rect.height,
-        };
-      }
-      return rect;
+      let mappedY = rect.y;
+      let mappedHeight = rect.height;
+      return {
+        ...rect,
+        startX: mappedStartX,
+        endX: mappedStartX + mappedWidth,
+        y: mappedY,
+        height: mappedHeight,
+      };
     });
     const firstFinalRectForTransform =
       transformedCandidateRects.length > 0
@@ -2013,6 +2402,8 @@ export async function createGpRenderer(
       calibrationSummary: authoritativeFamily?.calibrationSummary ?? null,
       transformSummary: {
         coordinateSpaceMode,
+        coordinateSpaceModeX,
+        coordinateSpaceModeY,
         modeReason,
         hostLocalScore,
         svgPixelScore,
@@ -2035,7 +2426,10 @@ export async function createGpRenderer(
         transformScaleY: scaleY,
         transformOffsetX: offsetX,
         transformOffsetY: offsetY,
+        transformAppliedX,
+        transformAppliedY,
         firstBarRawRect: firstRawRectForTransform,
+        firstBarCalibratedRect: firstRawRectForTransform,
         firstBarFinalRect: firstFinalRectForTransform,
       },
     };
