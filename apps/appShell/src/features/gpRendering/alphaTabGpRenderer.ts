@@ -346,6 +346,7 @@ const USE_WORKERS = false;
 const RENDER_TIMEOUT_MS = 5000;
 const HEAVY_TRACK_NOTE_THRESHOLD = 5000;
 const HEAVY_TRACK_BAR_THRESHOLD = 400;
+const GLOBAL_HIGHLIGHT_Y_OFFSET_PX = 5;
 
 type RenderMode =
   | "string-tab"
@@ -427,7 +428,7 @@ interface BarBoundsExtractionDiagnostics {
     firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
     firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
   } | null;
-  transformSummary?: {
+    transformSummary?: {
     coordinateSpaceMode: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
     coordinateSpaceModeX?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
     coordinateSpaceModeY?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
@@ -442,11 +443,14 @@ interface BarBoundsExtractionDiagnostics {
     transformOffsetX: number;
     transformOffsetY: number;
     transformAppliedX?: boolean;
-    transformAppliedY?: boolean;
-    firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
-    firstBarCalibratedRect?: { x: number; y: number; w: number; h: number } | null;
-    firstBarFinalRect: { x: number; y: number; w: number; h: number } | null;
-  } | null;
+      transformAppliedY?: boolean;
+      firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
+      firstBarCalibratedRect?: { x: number; y: number; w: number; h: number } | null;
+      firstBarFinalRect: { x: number; y: number; w: number; h: number } | null;
+      globalYOffsetPx?: number;
+      firstBarYBeforeGlobalOffset?: number | null;
+      firstBarYAfterGlobalOffset?: number | null;
+    } | null;
 }
 
 interface BarBoundsRootCandidateSummary {
@@ -2431,11 +2435,22 @@ export async function createGpRenderer(
     const normalizedRowMap = new Map<number, number>();
     orderedRowIndices.forEach((rowIndex, normalizedIndex) => normalizedRowMap.set(rowIndex, normalizedIndex));
 
+    let firstBarYBeforeGlobalOffset: number | null = null;
+    let firstBarYAfterGlobalOffset: number | null = null;
     const normalizedBars = orderedBars
-      .map((bar) => ({
-        ...bar,
-        rowIndex: normalizedRowMap.get(bar.rowIndex) ?? 0,
-      }))
+      .map((bar, barIndex) => {
+        const yBeforeGlobalOffset = bar.y;
+        const yAfterGlobalOffset = yBeforeGlobalOffset + GLOBAL_HIGHLIGHT_Y_OFFSET_PX;
+        if (barIndex === 0) {
+          firstBarYBeforeGlobalOffset = yBeforeGlobalOffset;
+          firstBarYAfterGlobalOffset = yAfterGlobalOffset;
+        }
+        return {
+          ...bar,
+          y: yAfterGlobalOffset,
+          rowIndex: normalizedRowMap.get(bar.rowIndex) ?? 0,
+        };
+      })
       .filter((bar) => bar.endX > bar.startX + 1 && bar.height > 0);
 
     const rootCandidateSummaries =
@@ -2502,6 +2517,9 @@ export async function createGpRenderer(
         firstBarRawRect: firstRawRectForTransform,
         firstBarCalibratedRect: firstRawRectForTransform,
         firstBarFinalRect: firstFinalRectForTransform,
+        globalYOffsetPx: GLOBAL_HIGHLIGHT_Y_OFFSET_PX,
+        firstBarYBeforeGlobalOffset,
+        firstBarYAfterGlobalOffset,
       },
     };
 
