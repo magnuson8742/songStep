@@ -229,6 +229,8 @@ export interface GpRenderDebugInfo {
       systemOriginX: number | null;
       systemOriginY: number | null;
       chosenVerticalSource?: string | null;
+      chosenVerticalSourceHeight?: number | null;
+      availableVerticalSources?: Array<{ source: string; height: number }>;
       parentSystemRect?: { x: number; y: number; w: number; h: number } | null;
       firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
       firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
@@ -414,6 +416,8 @@ interface BarBoundsExtractionDiagnostics {
     systemOriginX: number | null;
     systemOriginY: number | null;
     chosenVerticalSource?: string | null;
+    chosenVerticalSourceHeight?: number | null;
+    availableVerticalSources?: Array<{ source: string; height: number }>;
     parentSystemRect?: { x: number; y: number; w: number; h: number } | null;
     firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
     firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
@@ -1639,16 +1643,25 @@ export async function createGpRenderer(
           { source: "staffSystemBounds.systemAlignedBounds", rect: toXywhRect(systemBoundsContainer?.systemAlignedBounds) },
           { source: "system.lineAlignedBounds", rect: toXywhRect(systemRecord.lineAlignedBounds) },
           { source: "system.systemAlignedBounds", rect: toXywhRect(systemRecord.systemAlignedBounds) },
-          { source: "staffSystemBounds.visualBounds", rect: toXywhRect(systemBoundsContainer?.visualBounds) },
-          { source: "system.visualBounds", rect: toXywhRect(systemRecord.visualBounds) },
           { source: "staffSystemBounds.realBounds", rect: toXywhRect(systemBoundsContainer?.realBounds) },
           { source: "system.realBounds", rect: toXywhRect(systemRecord.realBounds) },
+          { source: "staffSystemBounds.contentBounds", rect: toXywhRect(systemBoundsContainer?.contentBounds) },
+          { source: "system.contentBounds", rect: toXywhRect(systemRecord.contentBounds) },
+          { source: "staffSystemBounds.drawingBounds", rect: toXywhRect(systemBoundsContainer?.drawingBounds) },
+          { source: "system.drawingBounds", rect: toXywhRect(systemRecord.drawingBounds) },
+          { source: "staffSystemBounds.staffBounds", rect: toXywhRect(systemBoundsContainer?.staffBounds) },
+          { source: "system.staffBounds", rect: toXywhRect(systemRecord.staffBounds) },
+          { source: "staffSystemBounds.visualBounds", rect: toXywhRect(systemBoundsContainer?.visualBounds) },
+          { source: "system.visualBounds", rect: toXywhRect(systemRecord.visualBounds) },
           { source: "staffSystemBounds", rect: toXywhRect(systemBoundsContainer) },
           { source: "system", rect: toXywhRect(systemRecord) },
         ];
-        const chosenVertical = verticalCandidates.find((candidate) => candidate.rect !== null) ?? null;
-        const systemVerticalBounds = chosenVertical?.rect ?? null;
-        const chosenVerticalSource = chosenVertical?.source ?? "bar-local-fallback";
+        const resolvedVerticalCandidates = verticalCandidates
+          .filter((candidate): candidate is { source: string; rect: { x: number; y: number; w: number; h: number } } => candidate.rect !== null);
+        const systemCalibrationBounds =
+          toXywhRect(systemBoundsContainer?.visualBounds) ??
+          toXywhRect(systemBoundsContainer?.realBounds) ??
+          toXywhRect(systemBoundsContainer);
 
         const rawBarBounds = bars
           .map((barItem) => (barItem && typeof barItem === "object" ? (barItem as Record<string, unknown>) : null))
@@ -1659,31 +1672,33 @@ export async function createGpRenderer(
           )
           .filter((rect): rect is { x: number; y: number; w: number; h: number } => rect !== null);
         const absXInsideCount =
-          systemVerticalBounds === null
+          systemCalibrationBounds === null
             ? 0
             : rawBarBounds.filter(
                 (bar) =>
-                  bar.x >= systemVerticalBounds.x - 2 && bar.x + bar.w <= systemVerticalBounds.x + systemVerticalBounds.w + 2,
+                  bar.x >= systemCalibrationBounds.x - 2 &&
+                  bar.x + bar.w <= systemCalibrationBounds.x + systemCalibrationBounds.w + 2,
               ).length;
         const localXInsideCount =
-          systemVerticalBounds === null
+          systemCalibrationBounds === null
             ? 0
-            : rawBarBounds.filter((bar) => bar.x >= -2 && bar.x + bar.w <= systemVerticalBounds.w + 2).length;
+            : rawBarBounds.filter((bar) => bar.x >= -2 && bar.x + bar.w <= systemCalibrationBounds.w + 2).length;
         const absYInsideCount =
-          systemVerticalBounds === null
+          systemCalibrationBounds === null
             ? 0
             : rawBarBounds.filter(
                 (bar) =>
-                  bar.y >= systemVerticalBounds.y - 2 && bar.y + bar.h <= systemVerticalBounds.y + systemVerticalBounds.h + 2,
+                  bar.y >= systemCalibrationBounds.y - 2 &&
+                  bar.y + bar.h <= systemCalibrationBounds.y + systemCalibrationBounds.h + 2,
               ).length;
         const localYInsideCount =
-          systemVerticalBounds === null
+          systemCalibrationBounds === null
             ? 0
-            : rawBarBounds.filter((bar) => bar.y >= -2 && bar.y + bar.h <= systemVerticalBounds.h + 2).length;
+            : rawBarBounds.filter((bar) => bar.y >= -2 && bar.y + bar.h <= systemCalibrationBounds.h + 2).length;
         const calibrationModeX: "local-to-system" | "absolute" =
-          systemVerticalBounds && localXInsideCount > absXInsideCount ? "local-to-system" : "absolute";
+          systemCalibrationBounds && localXInsideCount > absXInsideCount ? "local-to-system" : "absolute";
         const calibrationModeY: "local-to-system" | "absolute" =
-          systemVerticalBounds && localYInsideCount > absYInsideCount ? "local-to-system" : "absolute";
+          systemCalibrationBounds && localYInsideCount > absYInsideCount ? "local-to-system" : "absolute";
 
         bars.forEach((barItem, barIndexInSystem) => {
           if (!barItem || typeof barItem !== "object") {
@@ -1709,9 +1724,48 @@ export async function createGpRenderer(
             return;
           }
           const calibratedX =
-            systemVerticalBounds && calibrationModeX === "local-to-system" ? systemVerticalBounds.x + barBounds.x : barBounds.x;
-          let calibratedY =
-            systemVerticalBounds && calibrationModeY === "local-to-system" ? systemVerticalBounds.y + barBounds.y : barBounds.y;
+            systemCalibrationBounds && calibrationModeX === "local-to-system"
+              ? systemCalibrationBounds.x + barBounds.x
+              : barBounds.x;
+          const containingVerticalCandidates = resolvedVerticalCandidates.filter(({ rect }) => {
+            const absContains = barBounds.y >= rect.y - 2 && barBounds.y + barBounds.h <= rect.y + rect.h + 2;
+            const localContains = barBounds.y >= -2 && barBounds.y + barBounds.h <= rect.h + 2;
+            return absContains || localContains;
+          });
+          const sourceRank = (source: string): number => {
+            if (source.includes("lineAlignedBounds")) {
+              return 0;
+            }
+            if (source.includes("systemAlignedBounds")) {
+              return 1;
+            }
+            if (source.includes("realBounds")) {
+              return 2;
+            }
+            if (source.includes("contentBounds") || source.includes("drawingBounds") || source.includes("staffBounds")) {
+              return 3;
+            }
+            if (source.includes("visualBounds")) {
+              return 9;
+            }
+            return 8;
+          };
+          const chosenVerticalCandidate =
+            containingVerticalCandidates.length > 0
+              ? [...containingVerticalCandidates].sort((left, right) => {
+                  if (left.rect.h !== right.rect.h) {
+                    return left.rect.h - right.rect.h;
+                  }
+                  const rankDelta = sourceRank(left.source) - sourceRank(right.source);
+                  if (rankDelta !== 0) {
+                    return rankDelta;
+                  }
+                  return left.source.localeCompare(right.source);
+                })[0]
+              : null;
+          const systemVerticalBounds = chosenVerticalCandidate?.rect ?? null;
+          const chosenVerticalSource = chosenVerticalCandidate?.source ?? "bar-local-fallback";
+          let calibratedY = barBounds.y;
           let calibratedH = barBounds.h;
           if (systemVerticalBounds) {
             calibratedY = systemVerticalBounds.y;
@@ -1720,9 +1774,16 @@ export async function createGpRenderer(
           if (!didLogVerticalSelection) {
             didLogVerticalSelection = true;
             console.debug("[alphaTabGpRenderer] bar bounds vertical source", {
+              availableVerticalSources: resolvedVerticalCandidates
+                .map((candidate) => ({ source: candidate.source, height: candidate.rect.h }))
+                .sort((left, right) => left.height - right.height)
+                .slice(0, 10),
               chosenVerticalSource,
+              chosenVerticalSourceHeight: systemVerticalBounds?.h ?? null,
               barLocalRect: barBounds,
-              parentSystemRect: systemVerticalBounds,
+              parentSystemRectCandidates: resolvedVerticalCandidates
+                .map((candidate) => ({ source: candidate.source, rect: candidate.rect }))
+                .slice(0, 8),
               finalRect: {
                 x: calibratedX,
                 y: calibratedY,
@@ -1735,9 +1796,14 @@ export async function createGpRenderer(
             familyCalibrationSummary = {
               calibrationModeX,
               calibrationModeY,
-              systemOriginX: systemVerticalBounds?.x ?? null,
-              systemOriginY: systemVerticalBounds?.y ?? null,
+              systemOriginX: systemCalibrationBounds?.x ?? null,
+              systemOriginY: systemCalibrationBounds?.y ?? null,
               chosenVerticalSource,
+              chosenVerticalSourceHeight: systemVerticalBounds?.h ?? null,
+              availableVerticalSources: resolvedVerticalCandidates
+                .map((candidate) => ({ source: candidate.source, height: candidate.rect.h }))
+                .sort((left, right) => left.height - right.height)
+                .slice(0, 12),
               parentSystemRect: systemVerticalBounds,
               firstBarRawRect: barBounds,
               firstBarCalibratedRect: {
