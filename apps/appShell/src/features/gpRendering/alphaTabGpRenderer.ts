@@ -213,6 +213,14 @@ export interface GpRenderDebugInfo {
       systemKeys: string[];
       structuralCollectionCandidates: Array<{ key: string; length: number }>;
     }>;
+    barItemSummaries?: Array<{
+      systemIndex: number;
+      barIndexInSystem: number;
+      keys: string[];
+      nestedObjectKeys: string[];
+      numericFields: string[];
+      objectFieldKeys: Array<{ key: string; keys: string[] }>;
+    }>;
   } | null;
 }
 
@@ -362,6 +370,14 @@ interface BarBoundsExtractionDiagnostics {
     rowIndex: number;
     systemKeys: string[];
     structuralCollectionCandidates: Array<{ key: string; length: number }>;
+  }>;
+  barItemSummaries?: Array<{
+    systemIndex: number;
+    barIndexInSystem: number;
+    keys: string[];
+    nestedObjectKeys: string[];
+    numericFields: string[];
+    objectFieldKeys: Array<{ key: string; keys: string[] }>;
   }>;
 }
 
@@ -1361,6 +1377,20 @@ export async function createGpRenderer(
       "area",
       "frame",
     ];
+    const directBarRectFieldCandidates = [
+      "bounds",
+      "visualBounds",
+      "actualBounds",
+      "layoutBounds",
+      "barBounds",
+      "realBounds",
+      "drawingBounds",
+      "contentBounds",
+      "rect",
+      "area",
+      "frame",
+    ];
+    const immediateStructuralBarChildren = ["layout", "renderer", "barRenderer", "masterBar", "bar", "barLayout"];
 
     const barIndexPathCandidates = [
       "masterBar.index",
@@ -1439,6 +1469,67 @@ export async function createGpRenderer(
     let discoveredBarCollectionCount = 0;
     const usedBarCollectionPaths = new Set<string>();
     const systemSummaries: BarBoundsSystemSummary[] = [];
+    const barItemSummaries: Array<{
+      systemIndex: number;
+      barIndexInSystem: number;
+      keys: string[];
+      nestedObjectKeys: string[];
+      numericFields: string[];
+      objectFieldKeys: Array<{ key: string; keys: string[] }>;
+    }> = [];
+    const summarizeBarItem = (systemIndex: number, barIndexInSystem: number, barItem: Record<string, unknown>): void => {
+      if (barItemSummaries.length >= 5) {
+        return;
+      }
+      const keys = Object.keys(barItem).slice(0, 20);
+      const numericFields = keys.filter((key) => typeof barItem[key] === "number").slice(0, 12);
+      const objectFieldKeys = keys
+        .map((key) => ({ key, value: barItem[key] }))
+        .filter((entry) => !!entry.value && typeof entry.value === "object" && !Array.isArray(entry.value))
+        .slice(0, 8)
+        .map((entry) => ({
+          key: entry.key,
+          keys: Object.keys(entry.value as Record<string, unknown>).slice(0, 12),
+        }));
+      barItemSummaries.push({
+        systemIndex,
+        barIndexInSystem,
+        keys,
+        nestedObjectKeys: objectFieldKeys.flatMap((entry) => entry.keys).slice(0, 20),
+        numericFields,
+        objectFieldKeys,
+      });
+    };
+    const extractRectFromBarItem = (barItem: Record<string, unknown>): { x: number; y: number; width: number; height: number } | null => {
+      const fromDirect = toRect(barItem);
+      if (fromDirect) {
+        return fromDirect;
+      }
+      for (const key of directBarRectFieldCandidates) {
+        const fromField = toRect(barItem[key]);
+        if (fromField) {
+          return fromField;
+        }
+      }
+      for (const childKey of immediateStructuralBarChildren) {
+        const child = barItem[childKey];
+        if (!child || typeof child !== "object") {
+          continue;
+        }
+        const childRecord = child as Record<string, unknown>;
+        const childDirect = toRect(childRecord);
+        if (childDirect) {
+          return childDirect;
+        }
+        for (const key of directBarRectFieldCandidates) {
+          const fromChildField = toRect(childRecord[key]);
+          if (fromChildField) {
+            return fromChildField;
+          }
+        }
+      }
+      return null;
+    };
     dedupedSystems.forEach((systemEntry) => {
       const { system, systemOrder } = systemEntry;
       const barItems: unknown[] = [];
@@ -1487,13 +1578,15 @@ export async function createGpRenderer(
         });
       }
 
-      barItems.forEach((barItem) => {
+      barItems.forEach((barItem, barIndexInSystem) => {
         if (!barItem || typeof barItem !== "object") {
           return;
         }
+        const barItemObject = barItem as Record<string, unknown>;
 
-        const barNumberRaw = readNumberPath(barItem, barIndexPathCandidates);
+        const barNumberRaw = readNumberPath(barItemObject, barIndexPathCandidates);
         if (barNumberRaw === null) {
+          summarizeBarItem(systemOrder, barIndexInSystem, barItemObject);
           return;
         }
         const barNumber = Math.round(barNumberRaw) + 1;
@@ -1504,14 +1597,17 @@ export async function createGpRenderer(
           return;
         }
 
-        let rect: { x: number; y: number; width: number; height: number } | null = null;
-        for (const rectPath of barRectPathCandidates) {
-          rect = toRect(readPath(barItem, rectPath));
-          if (rect) {
-            break;
+        let rect: { x: number; y: number; width: number; height: number } | null = extractRectFromBarItem(barItemObject);
+        if (!rect) {
+          for (const rectPath of barRectPathCandidates) {
+            rect = toRect(readPath(barItemObject, rectPath));
+            if (rect) {
+              break;
+            }
           }
         }
         if (!rect) {
+          summarizeBarItem(systemOrder, barIndexInSystem, barItemObject);
           return;
         }
 
@@ -1585,6 +1681,8 @@ export async function createGpRenderer(
       usedBarCollectionPaths: Array.from(usedBarCollectionPaths),
       rootCandidateSummaries: targetedBranchSummaries ?? rootCandidateSummaries,
       systemSummaries: dedupedSystems.size > 0 && discoveredBarCollectionCount === 0 ? systemSummaries : undefined,
+      barItemSummaries:
+        dedupedSystems.size > 0 && discoveredBarCollectionCount > 0 && candidateRects.length === 0 ? barItemSummaries : undefined,
     };
 
     return normalizedBars;
