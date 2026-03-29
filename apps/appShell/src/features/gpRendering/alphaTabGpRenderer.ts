@@ -201,6 +201,18 @@ export interface GpRenderDebugInfo {
     discoveredBarRectCount: number;
     usedLayoutPaths: string[];
     usedBarCollectionPaths: string[];
+    rootCandidateSummaries?: Array<{
+      rootPath: string;
+      keys: string[];
+      childObjectKeys: string[];
+      arrayLikeChildren: Array<{ key: string; length: number }>;
+      objectLikeChildren: Array<{ key: string; keys: string[] }>;
+    }>;
+    systemSummaries?: Array<{
+      rowIndex: number;
+      systemKeys: string[];
+      structuralCollectionCandidates: Array<{ key: string; length: number }>;
+    }>;
   } | null;
 }
 
@@ -339,6 +351,32 @@ interface BarBoundsExtractionDiagnostics {
   discoveredBarRectCount: number;
   usedLayoutPaths: string[];
   usedBarCollectionPaths: string[];
+  rootCandidateSummaries?: Array<{
+    rootPath: string;
+    keys: string[];
+    childObjectKeys: string[];
+    arrayLikeChildren: Array<{ key: string; length: number }>;
+    objectLikeChildren: Array<{ key: string; keys: string[] }>;
+  }>;
+  systemSummaries?: Array<{
+    rowIndex: number;
+    systemKeys: string[];
+    structuralCollectionCandidates: Array<{ key: string; length: number }>;
+  }>;
+}
+
+interface BarBoundsRootCandidateSummary {
+  rootPath: string;
+  keys: string[];
+  childObjectKeys: string[];
+  arrayLikeChildren: Array<{ key: string; length: number }>;
+  objectLikeChildren: Array<{ key: string; keys: string[] }>;
+}
+
+interface BarBoundsSystemSummary {
+  rowIndex: number;
+  systemKeys: string[];
+  structuralCollectionCandidates: Array<{ key: string; length: number }>;
 }
 
 interface ReloadOptions {
@@ -1201,6 +1239,7 @@ export async function createGpRenderer(
       renderer?: Record<string, unknown>;
       boundsLookup?: Record<string, unknown>;
     };
+    const apiUnsafeRecord = unsafeApi as unknown as Record<string, unknown>;
 
     const readPath = (root: unknown, path: string): unknown => {
       if (!root || typeof root !== "object") {
@@ -1266,14 +1305,38 @@ export async function createGpRenderer(
       return { x, y, width, height };
     };
 
-    const rendererRoots: unknown[] = [
-      unsafeApi.renderer,
-      readPath(unsafeApi.renderer, "renderEngine"),
-      readPath(unsafeApi.renderer, "scoreRenderer"),
-      readPath(unsafeApi.renderer, "renderEngine.scoreRenderer"),
+    const rendererRootEntries: Array<{ rootPath: string; value: unknown }> = [
+      { rootPath: "api.renderer", value: unsafeApi.renderer },
+      { rootPath: "api.renderer.layout", value: readPath(unsafeApi.renderer, "layout") },
+      { rootPath: "api.renderer.scoreRenderer", value: readPath(unsafeApi.renderer, "scoreRenderer") },
+      { rootPath: "api.renderer.renderEngine", value: readPath(unsafeApi.renderer, "renderEngine") },
+      { rootPath: "api.renderer.renderer", value: readPath(unsafeApi.renderer, "renderer") },
+      { rootPath: "api.renderer._renderer", value: readPath(unsafeApi.renderer, "_renderer") },
+      { rootPath: "api.renderer._renderEngine", value: readPath(unsafeApi.renderer, "_renderEngine") },
+      { rootPath: "api.renderer._layout", value: readPath(unsafeApi.renderer, "_layout") },
+      { rootPath: "api._renderer", value: apiUnsafeRecord._renderer },
+      { rootPath: "api._renderEngine", value: apiUnsafeRecord._renderEngine },
+      { rootPath: "api._layout", value: apiUnsafeRecord._layout },
+      { rootPath: "api.scoreRenderer", value: apiUnsafeRecord.scoreRenderer },
+      { rootPath: "api.renderEngine", value: apiUnsafeRecord.renderEngine },
     ];
 
-    const systemPathCandidates = ["layout.systems", "systems", "staffSystems", "staveGroups", "renderedSystems", "renderSystems"];
+    const systemPathCandidates = [
+      "layout.systems",
+      "systems",
+      "staffSystems",
+      "staveSystems",
+      "renderedSystems",
+      "systemLayouts",
+      "staffSystemLayouts",
+      "staveGroupLayouts",
+      "lineGroups",
+      "rows",
+      "staffLines",
+      "staveGroups",
+      "layoutSystems",
+      "renderSystems",
+    ];
 
     const barCollectionPathCandidates = [
       "masterBarRenderers",
@@ -1282,6 +1345,8 @@ export async function createGpRenderer(
       "bars",
       "masterBars",
       "barBounds",
+      "layoutBars",
+      "renderedBars",
     ];
 
     const barRectPathCandidates = [
@@ -1291,7 +1356,10 @@ export async function createGpRenderer(
       "barBounds",
       "layout.bounds",
       "barLayout.bounds",
+      "layoutBounds",
       "rect",
+      "area",
+      "frame",
     ];
 
     const barIndexPathCandidates = [
@@ -1304,6 +1372,37 @@ export async function createGpRenderer(
 
     const systemEntries: Array<{ system: Record<string, unknown>; systemOrder: number }> = [];
     const usedLayoutPaths = new Set<string>();
+    const summarizeRoot = (rootPath: string, rootValue: unknown): BarBoundsRootCandidateSummary | null => {
+      if (!rootValue || typeof rootValue !== "object") {
+        return null;
+      }
+      const rootObject = rootValue as Record<string, unknown>;
+      const keys = Object.keys(rootObject).slice(0, 20);
+      const arrayLikeChildren = keys
+        .map((key) => ({ key, value: rootObject[key] }))
+        .filter((entry) => Array.isArray(entry.value))
+        .slice(0, 10)
+        .map((entry) => ({
+          key: entry.key,
+          length: (entry.value as unknown[]).length,
+        }));
+      const objectLikeChildren = keys
+        .map((key) => ({ key, value: rootObject[key] }))
+        .filter((entry) => !!entry.value && typeof entry.value === "object" && !Array.isArray(entry.value))
+        .slice(0, 8)
+        .map((entry) => ({
+          key: entry.key,
+          keys: Object.keys(entry.value as Record<string, unknown>).slice(0, 12),
+        }));
+      const childObjectKeys = objectLikeChildren.flatMap((entry) => entry.keys).slice(0, 24);
+      return {
+        rootPath,
+        keys,
+        childObjectKeys,
+        arrayLikeChildren,
+        objectLikeChildren,
+      };
+    };
     const pushSystemEntry = (system: unknown): void => {
       if (!system || typeof system !== "object") {
         return;
@@ -1319,11 +1418,11 @@ export async function createGpRenderer(
       });
     };
 
-    rendererRoots.forEach((root) => {
+    rendererRootEntries.forEach(({ rootPath, value: root }) => {
       systemPathCandidates.forEach((path) => {
         const candidateSystems = readPath(root, path);
         if (Array.isArray(candidateSystems)) {
-          usedLayoutPaths.add(path);
+          usedLayoutPaths.add(`${rootPath}.${path}`);
           candidateSystems.forEach((system) => pushSystemEntry(system));
         }
       });
@@ -1339,15 +1438,18 @@ export async function createGpRenderer(
     const candidateRects: RenderedBarBound[] = [];
     let discoveredBarCollectionCount = 0;
     const usedBarCollectionPaths = new Set<string>();
+    const systemSummaries: BarBoundsSystemSummary[] = [];
     dedupedSystems.forEach((systemEntry) => {
       const { system, systemOrder } = systemEntry;
       const barItems: unknown[] = [];
+      const structuralCollectionCandidates: Array<{ key: string; length: number }> = [];
 
       barCollectionPathCandidates.forEach((collectionPath) => {
         const maybeCollection = readPath(system, collectionPath);
         if (Array.isArray(maybeCollection)) {
           discoveredBarCollectionCount += 1;
           usedBarCollectionPaths.add(collectionPath);
+          structuralCollectionCandidates.push({ key: collectionPath, length: maybeCollection.length });
           maybeCollection.forEach((item) => barItems.push(item));
         }
       });
@@ -1370,10 +1472,18 @@ export async function createGpRenderer(
               if (Array.isArray(maybeCollection)) {
                 discoveredBarCollectionCount += 1;
                 usedBarCollectionPaths.add(`nested:${collectionPath}`);
+                structuralCollectionCandidates.push({ key: `nested:${collectionPath}`, length: maybeCollection.length });
                 maybeCollection.forEach((item) => barItems.push(item));
               }
             });
           });
+        });
+      }
+      if (systemSummaries.length < 20) {
+        systemSummaries.push({
+          rowIndex: systemOrder,
+          systemKeys: Object.keys(system).slice(0, 20),
+          structuralCollectionCandidates: structuralCollectionCandidates.slice(0, 16),
         });
       }
 
@@ -1447,12 +1557,22 @@ export async function createGpRenderer(
       }))
       .filter((bar) => bar.endX > bar.startX + 1 && bar.height > 0);
 
+    const rootCandidateSummaries =
+      dedupedSystems.size === 0
+        ? rendererRootEntries
+            .map(({ rootPath, value }) => summarizeRoot(rootPath, value))
+            .filter((summary): summary is NonNullable<typeof summary> => summary !== null)
+            .slice(0, 16)
+        : undefined;
+
     lastBarBoundsExtractionDiagnostics = {
       discoveredSystemCount: dedupedSystems.size,
       discoveredBarCollectionCount,
       discoveredBarRectCount: candidateRects.length,
       usedLayoutPaths: Array.from(usedLayoutPaths),
       usedBarCollectionPaths: Array.from(usedBarCollectionPaths),
+      rootCandidateSummaries,
+      systemSummaries: dedupedSystems.size > 0 && discoveredBarCollectionCount === 0 ? systemSummaries : undefined,
     };
 
     return normalizedBars;
