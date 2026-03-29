@@ -221,6 +221,8 @@ export interface GpRenderDebugInfo {
       numericFields: string[];
       objectFieldKeys: Array<{ key: string; keys: string[] }>;
     }>;
+    chosenLayoutFamily?: string;
+    familyRectCounts?: Array<{ sourcePath: string; rectCount: number; barCount: number }>;
   } | null;
 }
 
@@ -379,6 +381,8 @@ interface BarBoundsExtractionDiagnostics {
     numericFields: string[];
     objectFieldKeys: Array<{ key: string; keys: string[] }>;
   }>;
+  chosenLayoutFamily?: string;
+  familyRectCounts?: Array<{ sourcePath: string; rectCount: number; barCount: number }>;
 }
 
 interface BarBoundsRootCandidateSummary {
@@ -1465,7 +1469,7 @@ export async function createGpRenderer(
       }
     });
 
-    const candidateRects: RenderedBarBound[] = [];
+    let candidateRects: RenderedBarBound[] = [];
     let discoveredBarCollectionCount = 0;
     const usedBarCollectionPaths = new Set<string>();
     const systemSummaries: BarBoundsSystemSummary[] = [];
@@ -1555,8 +1559,10 @@ export async function createGpRenderer(
         directStaffSystemEntries.push({ sourcePath: `api.${path}`, systems });
       }
     });
+    const familyResults: Array<{ sourcePath: string; rects: RenderedBarBound[] }> = [];
     directStaffSystemEntries.forEach(({ sourcePath, systems }) => {
       usedLayoutPaths.add(sourcePath);
+      const familyRects: RenderedBarBound[] = [];
       systems.forEach((systemItem, systemIndex) => {
         if (!systemItem || typeof systemItem !== "object") {
           return;
@@ -1600,19 +1606,67 @@ export async function createGpRenderer(
             summarizeBarItem(systemIndex, barIndexInSystem, barRecord);
             return;
           }
-          const verticalY = systemVerticalBounds?.y ?? barBounds.y;
-          const verticalH = systemVerticalBounds?.h ?? barBounds.h;
-          candidateRects.push({
+          let finalY = barBounds.y;
+          let finalH = barBounds.h;
+          if (systemVerticalBounds) {
+            const clippedTop = Math.max(barBounds.y, systemVerticalBounds.y);
+            const clippedBottom = Math.min(barBounds.y + barBounds.h, systemVerticalBounds.y + systemVerticalBounds.h);
+            if (clippedBottom > clippedTop + 1) {
+              finalY = clippedTop;
+              finalH = clippedBottom - clippedTop;
+            }
+          }
+          familyRects.push({
             barNumber,
             startX: barBounds.x,
             endX: barBounds.x + barBounds.w,
-            y: verticalY,
-            height: verticalH,
+            y: finalY,
+            height: finalH,
             rowIndex: systemIndex,
           });
         });
       });
+      familyResults.push({ sourcePath, rects: familyRects });
     });
+
+    const familyRectCounts = familyResults.map((family) => ({
+      sourcePath: family.sourcePath,
+      rectCount: family.rects.length,
+      barCount: new Set(family.rects.map((item) => item.barNumber)).size,
+    }));
+    const pickAuthoritativeFamily = (): { sourcePath: string; rects: RenderedBarBound[] } | null => {
+      const prioritized = [...familyResults].sort((left, right) => {
+        if (left.sourcePath === "api.renderer.boundsLookup.staffSystems") {
+          return -1;
+        }
+        if (right.sourcePath === "api.renderer.boundsLookup.staffSystems") {
+          return 1;
+        }
+        if (left.sourcePath === "api.renderer._instance.boundsLookup.staffSystems") {
+          return -1;
+        }
+        if (right.sourcePath === "api.renderer._instance.boundsLookup.staffSystems") {
+          return 1;
+        }
+        return 0;
+      });
+      for (const family of prioritized) {
+        if (family.rects.length === 0) {
+          continue;
+        }
+        const uniqueBars = Array.from(new Set(family.rects.map((item) => item.barNumber))).sort((a, b) => a - b);
+        const contiguous = uniqueBars.every((bar, index) => bar === index + 1);
+        const completeForScore = totalBars === null || totalBars <= 0 ? true : uniqueBars.length === totalBars;
+        if (contiguous && completeForScore) {
+          return family;
+        }
+      }
+      return prioritized.find((family) => family.rects.length > 0) ?? null;
+    };
+    const authoritativeFamily = pickAuthoritativeFamily();
+    if (authoritativeFamily) {
+      candidateRects = authoritativeFamily.rects;
+    }
 
     if (candidateRects.length === 0) {
       dedupedSystems.forEach((systemEntry) => {
@@ -1769,6 +1823,8 @@ export async function createGpRenderer(
       systemSummaries: dedupedSystems.size > 0 && discoveredBarCollectionCount === 0 ? systemSummaries : undefined,
       barItemSummaries:
         dedupedSystems.size > 0 && discoveredBarCollectionCount > 0 && candidateRects.length === 0 ? barItemSummaries : undefined,
+      chosenLayoutFamily: authoritativeFamily?.sourcePath,
+      familyRectCounts,
     };
 
     return normalizedBars;
