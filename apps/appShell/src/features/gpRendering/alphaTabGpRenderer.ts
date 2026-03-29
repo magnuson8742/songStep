@@ -1184,145 +1184,249 @@ export async function createGpRenderer(
       renderer?: Record<string, unknown>;
       boundsLookup?: Record<string, unknown>;
     };
-    const rootCandidates: unknown[] = [
-      unsafeApi.boundsLookup,
-      unsafeApi.renderer?.boundsLookup,
-      (unsafeApi.renderer as { renderEngine?: { boundsLookup?: unknown } } | undefined)?.renderEngine?.boundsLookup,
-      unsafeApi.renderer,
-    ];
-    const candidates: Array<{ barNumber: number; startX: number; endX: number; y: number; height: number }> = [];
 
-    const tryExtractFromItem = (item: unknown): void => {
-      if (!item || typeof item !== "object") {
-        return;
+    const readPath = (root: unknown, path: string): unknown => {
+      if (!root || typeof root !== "object") {
+        return null;
       }
-      const unsafeItem = item as Record<string, unknown>;
-      const barIndexCandidate = [unsafeItem.barIndex, unsafeItem.masterBarIndex, unsafeItem.index, unsafeItem.bar];
-      const barIndexValue = barIndexCandidate.find((value) => typeof value === "number");
-      const barNumber = typeof barIndexValue === "number" ? barIndexValue + 1 : null;
-      const rectCandidate =
-        (unsafeItem.bounds as Record<string, unknown> | undefined) ??
-        (unsafeItem.visualBounds as Record<string, unknown> | undefined) ??
-        (unsafeItem.rect as Record<string, unknown> | undefined);
-      if (!rectCandidate || barNumber === null || barNumber <= 0) {
-        return;
+      const segments = path.split(".");
+      let current: unknown = root;
+      for (const segment of segments) {
+        if (!current || typeof current !== "object") {
+          return null;
+        }
+        current = (current as Record<string, unknown>)[segment];
       }
-      const x = typeof rectCandidate.x === "number" ? rectCandidate.x : null;
-      const y = typeof rectCandidate.y === "number" ? rectCandidate.y : null;
+      return current;
+    };
+
+    const readNumberPath = (root: unknown, paths: string[]): number | null => {
+      for (const path of paths) {
+        const value = readPath(root, path);
+        if (typeof value === "number" && Number.isFinite(value)) {
+          return value;
+        }
+      }
+      return null;
+    };
+
+    const toRect = (source: unknown): { x: number; y: number; width: number; height: number } | null => {
+      if (!source || typeof source !== "object") {
+        return null;
+      }
+      const unsafeSource = source as Record<string, unknown>;
+      const x =
+        typeof unsafeSource.x === "number"
+          ? unsafeSource.x
+          : typeof unsafeSource.left === "number"
+            ? unsafeSource.left
+            : null;
+      const y =
+        typeof unsafeSource.y === "number"
+          ? unsafeSource.y
+          : typeof unsafeSource.top === "number"
+            ? unsafeSource.top
+            : null;
       const width =
-        typeof rectCandidate.w === "number"
-          ? rectCandidate.w
-          : typeof rectCandidate.width === "number"
-            ? rectCandidate.width
-            : null;
+        typeof unsafeSource.w === "number"
+          ? unsafeSource.w
+          : typeof unsafeSource.width === "number"
+            ? unsafeSource.width
+            : typeof unsafeSource.right === "number" && x !== null
+              ? unsafeSource.right - x
+              : null;
       const height =
-        typeof rectCandidate.h === "number"
-          ? rectCandidate.h
-          : typeof rectCandidate.height === "number"
-            ? rectCandidate.height
-            : null;
+        typeof unsafeSource.h === "number"
+          ? unsafeSource.h
+          : typeof unsafeSource.height === "number"
+            ? unsafeSource.height
+            : typeof unsafeSource.bottom === "number" && y !== null
+              ? unsafeSource.bottom - y
+              : null;
       if (x === null || y === null || width === null || height === null || width <= 0 || height <= 0) {
+        return null;
+      }
+      return { x, y, width, height };
+    };
+
+    const rendererRoots: unknown[] = [
+      unsafeApi.renderer,
+      readPath(unsafeApi.renderer, "renderEngine"),
+      readPath(unsafeApi.renderer, "scoreRenderer"),
+      readPath(unsafeApi.renderer, "renderEngine.scoreRenderer"),
+    ];
+
+    const systemPathCandidates = [
+      "systems",
+      "layout.systems",
+      "staffSystems",
+      "staffSystemLayouts",
+      "renderSystems",
+      "scoreLayout.systems",
+    ];
+
+    const barCollectionPathCandidates = [
+      "masterBarRenderers",
+      "barRenderers",
+      "bars",
+      "masterBars",
+      "staveGroups",
+      "staffGroups",
+    ];
+
+    const barRectPathCandidates = [
+      "bounds",
+      "visualBounds",
+      "actualBounds",
+      "barBounds",
+      "rect",
+    ];
+
+    const barIndexPathCandidates = [
+      "masterBar.index",
+      "bar.masterBar.index",
+      "bar.index",
+      "masterBarIndex",
+      "barIndex",
+      "index",
+    ];
+
+    const systemEntries: Array<{ system: Record<string, unknown>; systemOrder: number }> = [];
+    const pushSystemEntry = (system: unknown): void => {
+      if (!system || typeof system !== "object") {
         return;
       }
-      if (totalBars !== null && totalBars > 0 && barNumber > totalBars) {
-        return;
-      }
-      candidates.push({
-        barNumber,
-        startX: x,
-        endX: x + width,
-        y,
-        height,
+      const systemObject = system as Record<string, unknown>;
+      const systemOrder =
+        readNumberPath(systemObject, ["index", "systemIndex", "order"]) ??
+        readNumberPath(systemObject, ["layout.index", "layout.systemIndex"]) ??
+        systemEntries.length;
+      systemEntries.push({
+        system: systemObject,
+        systemOrder: Math.max(0, Math.round(systemOrder)),
       });
     };
 
-    const visited = new WeakSet<object>();
-    const visitNode = (node: unknown, depth: number): void => {
-      if (!node || typeof node !== "object" || depth > 8) {
-        return;
-      }
-      const nodeObject = node as object;
-      if (visited.has(nodeObject)) {
-        return;
-      }
-      visited.add(nodeObject);
-      tryExtractFromItem(node);
-      if (Array.isArray(node)) {
-        node.forEach((entry) => visitNode(entry, depth + 1));
-        return;
-      }
-      const values = Object.values(node as Record<string, unknown>);
-      values.forEach((value) => visitNode(value, depth + 1));
-    };
-
-    rootCandidates.forEach((root) => visitNode(root, 0));
-
-    const byBar = new Map<number, Array<{ startX: number; endX: number; y: number; height: number }>>();
-    candidates.forEach((candidate) => {
-      const items = byBar.get(candidate.barNumber) ?? [];
-      items.push(candidate);
-      byBar.set(candidate.barNumber, items);
+    rendererRoots.forEach((root) => {
+      systemPathCandidates.forEach((path) => {
+        const candidateSystems = readPath(root, path);
+        if (Array.isArray(candidateSystems)) {
+          candidateSystems.forEach((system) => pushSystemEntry(system));
+        }
+      });
     });
 
-    const mergedBounds = Array.from(byBar.entries())
-      .map(([barNumber, items]) => {
-        const startX = Math.min(...items.map((item) => item.startX));
-        const endX = Math.max(...items.map((item) => item.endX));
-        const top = Math.min(...items.map((item) => item.y));
-        const bottom = Math.max(...items.map((item) => item.y + item.height));
-        return {
-          barNumber,
-          startX,
-          endX,
-          y: top,
-          height: Math.max(bottom - top, 12),
-        };
-      })
-      .filter((item) => Number.isFinite(item.startX) && Number.isFinite(item.endX) && item.endX > item.startX + 1)
-      .sort((left, right) => left.barNumber - right.barNumber);
+    const dedupedSystems = new Map<object, { system: Record<string, unknown>; systemOrder: number }>();
+    systemEntries.forEach((entry) => {
+      if (!dedupedSystems.has(entry.system)) {
+        dedupedSystems.set(entry.system, entry);
+      }
+    });
 
-    const rows: Array<{ index: number; yCenter: number; yMin: number; yMax: number }> = [];
-    const rowIndexByBar = new Map<number, number>();
-    mergedBounds.forEach((bound) => {
-      const centerY = bound.y + bound.height / 2;
-      const existingRowIndex = rows.findIndex((row) => Math.abs(row.yCenter - centerY) <= 28);
-      if (existingRowIndex >= 0) {
-        const row = rows[existingRowIndex];
-        if (!row) {
+    const candidateRects: RenderedBarBound[] = [];
+    dedupedSystems.forEach((systemEntry) => {
+      const { system, systemOrder } = systemEntry;
+      const barItems: unknown[] = [];
+
+      barCollectionPathCandidates.forEach((collectionPath) => {
+        const maybeCollection = readPath(system, collectionPath);
+        if (Array.isArray(maybeCollection)) {
+          maybeCollection.forEach((item) => barItems.push(item));
+        }
+      });
+
+      if (barItems.length === 0) {
+        const nestedGroups = [
+          readPath(system, "staveGroups"),
+          readPath(system, "staffGroups"),
+          readPath(system, "staves"),
+          readPath(system, "staffSystems"),
+        ].filter((group): group is unknown[] => Array.isArray(group));
+
+        nestedGroups.forEach((group) => {
+          group.forEach((entry) => {
+            if (!entry || typeof entry !== "object") {
+              return;
+            }
+            barCollectionPathCandidates.forEach((collectionPath) => {
+              const maybeCollection = readPath(entry, collectionPath);
+              if (Array.isArray(maybeCollection)) {
+                maybeCollection.forEach((item) => barItems.push(item));
+              }
+            });
+          });
+        });
+      }
+
+      barItems.forEach((barItem) => {
+        if (!barItem || typeof barItem !== "object") {
           return;
         }
-        row.yMin = Math.min(row.yMin, bound.y);
-        row.yMax = Math.max(row.yMax, bound.y + bound.height);
-        row.yCenter = (row.yMin + row.yMax) / 2;
-        rowIndexByBar.set(bound.barNumber, existingRowIndex);
+
+        const barNumberRaw = readNumberPath(barItem, barIndexPathCandidates);
+        if (barNumberRaw === null) {
+          return;
+        }
+        const barNumber = Math.round(barNumberRaw) + 1;
+        if (barNumber <= 0) {
+          return;
+        }
+        if (totalBars !== null && totalBars > 0 && barNumber > totalBars) {
+          return;
+        }
+
+        let rect: { x: number; y: number; width: number; height: number } | null = null;
+        for (const rectPath of barRectPathCandidates) {
+          rect = toRect(readPath(barItem, rectPath));
+          if (rect) {
+            break;
+          }
+        }
+        if (!rect) {
+          return;
+        }
+
+        candidateRects.push({
+          barNumber,
+          startX: rect.x,
+          endX: rect.x + rect.width,
+          y: rect.y,
+          height: rect.height,
+          rowIndex: systemOrder,
+        });
+      });
+    });
+
+    const byBarNumber = new Map<number, RenderedBarBound>();
+    candidateRects.forEach((candidate) => {
+      const existing = byBarNumber.get(candidate.barNumber);
+      if (!existing) {
+        byBarNumber.set(candidate.barNumber, candidate);
         return;
       }
-      rows.push({
-        index: rows.length,
-        yCenter: centerY,
-        yMin: bound.y,
-        yMax: bound.y + bound.height,
+      const top = Math.min(existing.y, candidate.y);
+      const bottom = Math.max(existing.y + existing.height, candidate.y + candidate.height);
+      byBarNumber.set(candidate.barNumber, {
+        barNumber: candidate.barNumber,
+        startX: Math.min(existing.startX, candidate.startX),
+        endX: Math.max(existing.endX, candidate.endX),
+        y: top,
+        height: Math.max(bottom - top, 12),
+        rowIndex: Math.min(existing.rowIndex, candidate.rowIndex),
       });
-      rowIndexByBar.set(bound.barNumber, rows.length - 1);
     });
 
-    const sortedRows = [...rows]
-      .map((row) => ({ ...row, yCenter: (row.yMin + row.yMax) / 2 }))
-      .sort((left, right) => left.yCenter - right.yCenter);
-    const normalizedRowIndexByOriginal = new Map<number, number>();
-    sortedRows.forEach((row, normalizedIndex) => normalizedRowIndexByOriginal.set(row.index, normalizedIndex));
+    const orderedBars = Array.from(byBarNumber.values()).sort((left, right) => left.barNumber - right.barNumber);
+    const orderedRowIndices = Array.from(new Set(orderedBars.map((bar) => bar.rowIndex))).sort((left, right) => left - right);
+    const normalizedRowMap = new Map<number, number>();
+    orderedRowIndices.forEach((rowIndex, normalizedIndex) => normalizedRowMap.set(rowIndex, normalizedIndex));
 
-    return mergedBounds.map((bound) => {
-      const rawRowIndex = rowIndexByBar.get(bound.barNumber) ?? 0;
-      return {
-        barNumber: bound.barNumber,
-        startX: bound.startX,
-        endX: bound.endX,
-        y: bound.y,
-        height: bound.height,
-        rowIndex: normalizedRowIndexByOriginal.get(rawRowIndex) ?? 0,
-      };
-    });
+    return orderedBars
+      .map((bar) => ({
+        ...bar,
+        rowIndex: normalizedRowMap.get(bar.rowIndex) ?? 0,
+      }))
+      .filter((bar) => bar.endX > bar.startX + 1 && bar.height > 0);
   };
 
   const getBarTickRange = (barNumber: number): { startTick: number; endTickExclusive: number | null } | null => {

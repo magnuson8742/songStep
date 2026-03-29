@@ -1006,7 +1006,7 @@ function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[]
   const rawBounds = state.gpRenderer?.getRenderedBarBounds() ?? [];
   if (rawBounds.length === 0) {
     state.playbackAnchorStrategyAttempts =
-      "chosenSource=renderer:layout-rectangles,rawBoundsCount=0,normalizedBars=0,rowCount=0,validation=fail,reason=noBounds";
+      "chosenSource=renderer:layout-tree-bars,rawBoundsCount=0,normalizedBars=0,rowCount=0,validation=fail,reason=noBounds";
     return [];
   }
 
@@ -1079,7 +1079,7 @@ function resolveRendererPlaybackBarAnchors(state: AppState): PlaybackBarAnchor[]
   const validationPass = normalizedContiguous && normalizedMatchesTotal && rowMonotonic && sameRowNonOverlap && positiveWidths;
   const rowCount = new Set(byBarOrder.map((anchor) => anchor.rowIndex)).size;
 
-  state.playbackAnchorStrategyAttempts = `chosenSource=renderer:layout-rectangles,rawBoundsCount=${rawBounds.length},normalizedBars=${byBarOrder.length},rowCount=${rowCount},validation=${validationPass ? "pass" : "fail"}`;
+  state.playbackAnchorStrategyAttempts = `chosenSource=renderer:layout-tree-bars,rawBoundsCount=${rawBounds.length},normalizedBars=${byBarOrder.length},rowCount=${rowCount},validation=${validationPass ? "pass" : "fail"}`;
 
   if (!validationPass) {
     return [];
@@ -1209,7 +1209,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
     if (strictErrors.length === 0) {
       state.latestAnchorStrategyDebug = [
         {
-          source: "renderer:layout-rectangles",
+          source: "renderer:layout-tree-bars",
           validation: "pass",
           rawElementCount: rendererAnchors.length,
           normalizedAnchors: rendererAnchors,
@@ -1217,21 +1217,21 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       ];
       state.playbackBarAnchors = rendererAnchors;
       state.playbackBarAnchorCount = rendererAnchors.length;
-      state.playbackBarAnchorSource = "renderer:layout-rectangles";
+      state.playbackBarAnchorSource = "renderer:layout-tree-bars";
       updateDebugField(rootElement, "playback-bar-anchor-count", String(state.playbackBarAnchorCount));
       updateDebugField(rootElement, "playback-bar-anchor-source", state.playbackBarAnchorSource);
       updateDebugField(
         rootElement,
         "playback-anchor-strategy-attempts",
         state.playbackAnchorStrategyAttempts ??
-          `chosenSource=renderer:layout-rectangles,rawBoundsCount=${rendererAnchors.length}`,
+          `chosenSource=renderer:layout-tree-bars,rawBoundsCount=${rendererAnchors.length}`,
       );
-      logAnchorRebuildOutcome("renderer-bounds-success");
+      logAnchorRebuildOutcome("renderer:layout-tree-bars success");
       return;
     }
-    strategyAttempts.push(`renderer:layout-rectangles rejected,reason=${strictErrors.join("+")}`);
+    strategyAttempts.push(`renderer:layout-tree-bars rejected,reason=${strictErrors.join("+")}`);
   } else {
-    strategyAttempts.push("renderer:layout-rectangles empty");
+    strategyAttempts.push("renderer:layout-tree-bars empty");
   }
 
   state.latestAnchorStrategyDebug = strategyDebugResults;
@@ -1248,7 +1248,7 @@ function rebuildPlaybackBarAnchors(state: AppState, rootElement: HTMLElement): v
       ? state.playbackAnchorStrategyAttempts
       : "-",
   );
-  logAnchorRebuildOutcome("renderer-bounds-fail");
+  logAnchorRebuildOutcome("renderer:layout-tree-bars fail");
   return;
 
 }
