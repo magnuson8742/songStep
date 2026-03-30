@@ -6,6 +6,10 @@ interface AlphaTabApi {
   load: (scoreData: unknown, trackIndexes?: number[]) => boolean;
   score?: AlphaTabScore;
   tracks?: AlphaTabTrack[];
+  changeTrackMute?: (tracks: AlphaTabTrack[], mute: boolean) => void;
+  changeTrackSolo?: (tracks: AlphaTabTrack[], solo: boolean) => void;
+  changeTrackVolume?: (tracks: AlphaTabTrack[], volume: number) => void;
+  masterVolume?: number;
   play?: () => boolean;
   pause?: () => void;
   stop?: () => void;
@@ -1348,22 +1352,6 @@ export async function createGpRenderer(
   const clampUnit = (value: number): number => Math.max(0, Math.min(1, value));
   const clampPan = (value: number): number => Math.max(-1, Math.min(1, value));
 
-  const tryCall = (target: Record<string, unknown> | null | undefined, methodName: string, ...args: unknown[]): boolean => {
-    if (!target) {
-      return false;
-    }
-    const method = target[methodName];
-    if (typeof method !== "function") {
-      return false;
-    }
-    try {
-      (method as (...params: unknown[]) => unknown)(...args);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
   const trySetNumber = (target: Record<string, unknown> | null | undefined, key: string, value: number): boolean => {
     if (!target || !(key in target)) {
       return false;
@@ -1378,77 +1366,63 @@ export async function createGpRenderer(
 
   const applyMixerStateToApi = (api: AlphaTabApi, reason: string): boolean => {
     const unsafeApi = api as unknown as Record<string, unknown>;
-    const unsafePlayer = (unsafeApi.player as Record<string, unknown> | undefined) ?? null;
     const settingsPlayer = (unsafeApi.settings as { player?: Record<string, unknown> } | undefined)?.player ?? null;
     const anySoloActive = soloTrackIndexes.size > 0;
     const activeTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+    const activeTrackObject =
+      api.score?.tracks.find((track) => track.index === activeTrackIndex) ?? api.tracks?.[0] ?? null;
+    const activeTrackName = activeTrackObject?.name ?? null;
     const activeTrackMuted = mutedTrackIndexes.has(activeTrackIndex);
     const activeTrackSoloed = soloTrackIndexes.has(activeTrackIndex);
     const activeTrackAudible = !activeTrackMuted && (!anySoloActive || activeTrackSoloed);
 
-    const trackVolumeRatio = clampUnit((trackVolumeByIndex.get(activeTrackIndex) ?? 100) / 100);
-    const masterVolumeRatio = clampUnit(masterVolume / 100);
-    const effectiveTrackVolume = activeTrackAudible ? clampUnit(trackVolumeRatio * masterVolumeRatio) : 0;
+    const trackVolume01 = clampUnit((trackVolumeByIndex.get(activeTrackIndex) ?? 100) / 100);
+    const masterVolume01 = clampUnit(masterVolume / 100);
+    const effectiveTrackVolume01 = activeTrackAudible ? clampUnit(trackVolume01 * masterVolume01) : 0;
 
-    const trackPan = clampPan((trackBalanceByIndex.get(activeTrackIndex) ?? 0) / 50);
-    const masterPan = clampPan(masterBalance / 50);
+    const effectiveTrackPan = clampPan((trackBalanceByIndex.get(activeTrackIndex) ?? 0) / 50);
+    const effectiveMasterPan = clampPan(masterBalance / 50);
 
     const usedApiPaths = new Set<string>();
-    const activeTrackRuntimeObject =
-      (api.tracks ?? []).find((track) => track.index === activeTrackIndex) ??
-      (lastLoadedScoreTracks.find((track) => track.index === activeTrackIndex) ?? null);
+    let usedOfficialTrackMute = false;
+    let usedOfficialTrackSolo = false;
+    let usedOfficialTrackVolume = false;
+    let usedOfficialMasterVolume = false;
 
-    const applyTrackMethod = (methodNames: string[], value: number): boolean => {
-      for (const methodName of methodNames) {
-        if (
-          tryCall(unsafePlayer, methodName, activeTrackIndex, value) ||
-          tryCall(unsafeApi, methodName, activeTrackIndex, value)
-        ) {
-          usedApiPaths.add(`player.${methodName}`);
-          return true;
-        }
+    if (activeTrackObject && typeof api.changeTrackMute === "function") {
+      try {
+        api.changeTrackMute([activeTrackObject], !activeTrackAudible);
+        usedOfficialTrackMute = true;
+        usedApiPaths.add("api.changeTrackMute");
+      } catch {
+        usedOfficialTrackMute = false;
       }
-      return false;
-    };
-
-    const trackVolumeApplied =
-      applyTrackMethod(["setTrackVolume", "setChannelVolume"], effectiveTrackVolume) ||
-      applyTrackMethod(["setTrackVolume", "setChannelVolume"], Math.round(effectiveTrackVolume * 16)) ||
-      trySetNumber(activeTrackRuntimeObject as Record<string, unknown> | null, "volume", effectiveTrackVolume) ||
-      trySetNumber(activeTrackRuntimeObject as Record<string, unknown> | null, "playbackVolume", effectiveTrackVolume);
-    if (trackVolumeApplied) {
-      usedApiPaths.add("activeTrack.volume");
     }
-    const trackPanApplied =
-      applyTrackMethod(["setTrackBalance", "setTrackPan", "setChannelPan"], trackPan) ||
-      trySetNumber(activeTrackRuntimeObject as Record<string, unknown> | null, "balance", trackPan) ||
-      trySetNumber(activeTrackRuntimeObject as Record<string, unknown> | null, "pan", trackPan);
-    if (trackPanApplied) {
-      usedApiPaths.add("activeTrack.pan");
+    if (activeTrackObject && typeof api.changeTrackSolo === "function") {
+      try {
+        api.changeTrackSolo([activeTrackObject], anySoloActive ? activeTrackSoloed : false);
+        usedOfficialTrackSolo = true;
+        usedApiPaths.add("api.changeTrackSolo");
+      } catch {
+        usedOfficialTrackSolo = false;
+      }
     }
-
-    const masterVolumeApplied =
-      tryCall(unsafePlayer, "setMasterVolume", masterVolumeRatio) ||
-      tryCall(unsafeApi, "setMasterVolume", masterVolumeRatio) ||
-      trySetNumber(unsafePlayer, "masterVolume", masterVolumeRatio) ||
-      trySetNumber(unsafeApi, "masterVolume", masterVolumeRatio) ||
-      trySetNumber(settingsPlayer, "masterVolume", masterVolumeRatio);
-    if (masterVolumeApplied) {
-      usedApiPaths.add("masterVolume");
+    if (activeTrackObject && typeof api.changeTrackVolume === "function") {
+      try {
+        api.changeTrackVolume([activeTrackObject], effectiveTrackVolume01);
+        usedOfficialTrackVolume = true;
+        usedApiPaths.add("api.changeTrackVolume");
+      } catch {
+        usedOfficialTrackVolume = false;
+      }
     }
-    const masterPanApplied =
-      tryCall(unsafePlayer, "setMasterBalance", masterPan) ||
-      tryCall(unsafePlayer, "setMasterPan", masterPan) ||
-      tryCall(unsafeApi, "setMasterBalance", masterPan) ||
-      tryCall(unsafeApi, "setMasterPan", masterPan) ||
-      trySetNumber(unsafePlayer, "masterBalance", masterPan) ||
-      trySetNumber(unsafePlayer, "masterPan", masterPan) ||
-      trySetNumber(unsafeApi, "masterBalance", masterPan) ||
-      trySetNumber(unsafeApi, "masterPan", masterPan) ||
-      trySetNumber(settingsPlayer, "masterBalance", masterPan) ||
-      trySetNumber(settingsPlayer, "masterPan", masterPan);
-    if (masterPanApplied) {
-      usedApiPaths.add("masterPan");
+    if (typeof api.masterVolume === "number") {
+      api.masterVolume = masterVolume01;
+      usedOfficialMasterVolume = true;
+      usedApiPaths.add("api.masterVolume");
+    } else if (trySetNumber(settingsPlayer, "masterVolume", masterVolume01)) {
+      usedOfficialMasterVolume = true;
+      usedApiPaths.add("settings.player.masterVolume");
     }
 
     const settingsUpdated = typeof api.updateSettings === "function" ? (() => {
@@ -1460,41 +1434,32 @@ export async function createGpRenderer(
       }
     })() : false;
 
-    const trackOperationApplied = trackVolumeApplied || trackPanApplied;
-    const masterOperationApplied = masterVolumeApplied || masterPanApplied;
+    const trackOperationApplied = usedOfficialTrackMute || usedOfficialTrackSolo || usedOfficialTrackVolume;
+    const masterOperationApplied = usedOfficialMasterVolume;
     const overallApplied = trackOperationApplied || masterOperationApplied;
 
     if (overallApplied && !hasLoggedMixerApplySuccess) {
       hasLoggedMixerApplySuccess = true;
       console.debug("[alphaTabGpRenderer] mixer apply", {
         reason,
-        renderedTracks: (api.tracks ?? []).map((track) => ({ index: track.index, name: track.name })),
-        requestedMixerState: {
-          mutedTrackIndexes: Array.from(mutedTrackIndexes),
-          soloTrackIndexes: Array.from(soloTrackIndexes),
-          trackVolumeByIndex: Object.fromEntries(trackVolumeByIndex.entries()),
-          trackBalanceByIndex: Object.fromEntries(trackBalanceByIndex.entries()),
-          masterVolume,
-          masterBalance,
-        },
-        appliedMixerState: {
-          activeTrackIndex,
-          anySoloActive,
-          activeTrackMuted,
-          activeTrackSoloed,
-          activeTrackAudible,
-          effectiveTrackVolume,
-          effectiveTrackPan: trackPan,
-          effectiveMasterVolume: masterVolumeRatio,
-          effectiveMasterPan: masterPan,
-          muteSoloViaActiveTrackVolumeGate: !activeTrackAudible,
-          trackOperationApplied,
-          masterOperationApplied,
-          overallApplied,
-          settingsUpdated,
-          masterVolumeRatio,
-          masterPan,
-        },
+        activeTrackIndex,
+        activeTrackName,
+        activeTrackAudible,
+        activeTrackMuted,
+        activeTrackSoloed,
+        anySoloActive,
+        effectiveTrackVolume01,
+        effectiveTrackPan,
+        effectiveMasterVolume01: masterVolume01,
+        effectiveMasterPan,
+        usedOfficialTrackMute,
+        usedOfficialTrackSolo,
+        usedOfficialTrackVolume,
+        usedOfficialMasterVolume,
+        trackOperationApplied,
+        masterOperationApplied,
+        settingsUpdated,
+        overallApplied,
         usedApiPaths: Array.from(usedApiPaths),
       });
     }
