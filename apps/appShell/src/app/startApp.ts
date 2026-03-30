@@ -279,6 +279,20 @@ function updateTrackRowVisualState(state: AppState, rootElement: HTMLElement): v
   });
 }
 
+function applyMixerStateToRenderer(state: AppState): void {
+  if (!state.gpRenderer) {
+    return;
+  }
+  state.gpRenderer.applyMixerState({
+    mutedTrackIndexes: state.mutedTrackIndexes,
+    soloTrackIndexes: state.soloTrackIndexes,
+    trackVolumeByIndex: state.trackVolumeByIndex,
+    trackBalanceByIndex: state.trackBalanceByIndex,
+    masterVolume: state.masterVolume,
+    masterBalance: state.masterBalance,
+  });
+}
+
 function renderPlayerFieldValue(value: string | number | null): string {
   if (value === null || value === "") {
     return "-";
@@ -2692,6 +2706,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.mutedTrackIndexes = isMuted
             ? state.mutedTrackIndexes.filter((value) => value !== trackIndex)
             : [...state.mutedTrackIndexes, trackIndex];
+          state.gpRenderer?.setTrackMuted(trackIndex, !isMuted);
+          applyMixerStateToRenderer(state);
           updateTrackToggleVisualState(state, rootElement);
           updateTrackControlVisualState(state, rootElement);
         },
@@ -2700,23 +2716,33 @@ export function startApp(rootElement: HTMLElement): void {
           state.soloTrackIndexes = isSolo
             ? state.soloTrackIndexes.filter((value) => value !== trackIndex)
             : [...state.soloTrackIndexes, trackIndex];
+          state.gpRenderer?.setTrackSoloed(trackIndex, !isSolo);
+          applyMixerStateToRenderer(state);
           updateTrackToggleVisualState(state, rootElement);
           updateTrackControlVisualState(state, rootElement);
         },
         onTrackVolumeChange: (trackIndex, volume) => {
           state.trackVolumeByIndex[trackIndex] = volume;
+          state.gpRenderer?.setTrackVolume(trackIndex, volume);
+          applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onTrackBalanceChange: (trackIndex, balance) => {
           state.trackBalanceByIndex[trackIndex] = balance;
+          state.gpRenderer?.setTrackBalance(trackIndex, balance);
+          applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onMasterVolumeChange: (volume) => {
           state.masterVolume = volume;
+          state.gpRenderer?.setMasterVolume(volume);
+          applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onMasterBalanceChange: (balance) => {
           state.masterBalance = balance;
+          state.gpRenderer?.setMasterBalance(balance);
+          applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onPlay: () => {
@@ -3006,6 +3032,7 @@ export function startApp(rootElement: HTMLElement): void {
             trackIndex,
           });
           tryCompletePendingOverviewNavigationAfterRender(state, rootElement, trackIndex);
+          applyMixerStateToRenderer(state);
           nudgeRenderedSectionLabels(rootElement, state);
           updateLoopHandlesVisual(state, rootElement);
         },
@@ -3317,6 +3344,7 @@ export function startApp(rootElement: HTMLElement): void {
         .then((renderer) => {
           state.gpRenderer = renderer;
           state.gpRenderer.setPlaybackSpeedPercent(state.playbackSpeedPercent);
+          applyMixerStateToRenderer(state);
         })
         .catch((error: unknown) => {
           state.projectStatusMessage =

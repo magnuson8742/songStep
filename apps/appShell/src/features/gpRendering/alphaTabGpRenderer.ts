@@ -324,6 +324,20 @@ export interface GpRendererController {
     rowIndex: number;
   }>;
   setPlaybackSpeedPercent: (speedPercent: number) => boolean;
+  setTrackMuted: (trackIndex: number, muted: boolean) => boolean;
+  setTrackSoloed: (trackIndex: number, soloed: boolean) => boolean;
+  setTrackVolume: (trackIndex: number, volumePercent: number) => boolean;
+  setTrackBalance: (trackIndex: number, balancePercent: number) => boolean;
+  setMasterVolume: (volumePercent: number) => boolean;
+  setMasterBalance: (balancePercent: number) => boolean;
+  applyMixerState: (state: {
+    mutedTrackIndexes: number[];
+    soloTrackIndexes: number[];
+    trackVolumeByIndex: Record<number, number>;
+    trackBalanceByIndex: Record<number, number>;
+    masterVolume: number;
+    masterBalance: number;
+  }) => boolean;
   play: () => void;
   pause: () => void;
   stop: () => void;
@@ -836,6 +850,13 @@ export async function createGpRenderer(
   let renderAttemptCounter = 0;
   let activeRenderAttemptId: string | null = null;
   let lastBarBoundsExtractionDiagnostics: BarBoundsExtractionDiagnostics | null = null;
+  const mutedTrackIndexes = new Set<number>();
+  const soloTrackIndexes = new Set<number>();
+  const trackVolumeByIndex = new Map<number, number>();
+  const trackBalanceByIndex = new Map<number, number>();
+  let masterVolume = 80;
+  let masterBalance = 0;
+  let hasLoggedMixerApplySuccess = false;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1320,6 +1341,153 @@ export async function createGpRenderer(
     }
 
     return speedApplied;
+  };
+
+  const clampVolumePercent = (value: number): number => Math.max(0, Math.min(100, Math.round(value)));
+  const clampBalancePercent = (value: number): number => Math.max(-50, Math.min(50, Math.round(value)));
+  const clampUnit = (value: number): number => Math.max(0, Math.min(1, value));
+  const clampPan = (value: number): number => Math.max(-1, Math.min(1, value));
+
+  const tryCall = (target: Record<string, unknown> | null | undefined, methodName: string, ...args: unknown[]): boolean => {
+    if (!target) {
+      return false;
+    }
+    const method = target[methodName];
+    if (typeof method !== "function") {
+      return false;
+    }
+    try {
+      (method as (...params: unknown[]) => unknown)(...args);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const trySetNumber = (target: Record<string, unknown> | null | undefined, key: string, value: number): boolean => {
+    if (!target || !(key in target)) {
+      return false;
+    }
+    const existing = target[key];
+    if (typeof existing !== "number") {
+      return false;
+    }
+    target[key] = value;
+    return true;
+  };
+
+  const applyMixerStateToApi = (api: AlphaTabApi, reason: string): boolean => {
+    const unsafeApi = api as unknown as Record<string, unknown>;
+    const unsafePlayer = (unsafeApi.player as Record<string, unknown> | undefined) ?? null;
+    const settingsPlayer = (unsafeApi.settings as { player?: Record<string, unknown> } | undefined)?.player ?? null;
+    const knownTrackIndexes = new Set<number>([
+      ...lastLoadedScoreTracks.map((track) => track.index),
+      ...(api.tracks ?? []).map((track) => track.index),
+      ...mutedTrackIndexes,
+      ...soloTrackIndexes,
+      ...Array.from(trackVolumeByIndex.keys()),
+      ...Array.from(trackBalanceByIndex.keys()),
+    ]);
+
+    const anySoloActive = soloTrackIndexes.size > 0;
+    const masterVolumeRatio = clampUnit(masterVolume / 100);
+    const masterPan = clampPan(masterBalance / 50);
+    const mixerOperationResults: Array<{ trackIndex: number; mutedApplied: boolean; volumeApplied: boolean; panApplied: boolean }> = [];
+    const usedApiPaths = new Set<string>();
+
+    const applyTrackMethod = (trackIndex: number, methodNames: string[], value: number | boolean): boolean => {
+      for (const methodName of methodNames) {
+        if (tryCall(unsafePlayer, methodName, trackIndex, value) || tryCall(unsafeApi, methodName, trackIndex, value)) {
+          usedApiPaths.add(`player.${methodName}`);
+          return true;
+        }
+      }
+      return false;
+    };
+
+    knownTrackIndexes.forEach((trackIndex) => {
+      const explicitMuted = mutedTrackIndexes.has(trackIndex);
+      const soloed = soloTrackIndexes.has(trackIndex);
+      const effectiveMuted = explicitMuted || (anySoloActive && !soloed);
+      const trackVolumeRatio = clampUnit((trackVolumeByIndex.get(trackIndex) ?? 100) / 100);
+      const effectiveVolume = clampUnit(trackVolumeRatio * masterVolumeRatio);
+      const trackPan = clampPan((trackBalanceByIndex.get(trackIndex) ?? 0) / 50);
+      const effectivePan = clampPan(trackPan + masterPan);
+
+      const mutedApplied =
+        applyTrackMethod(trackIndex, ["setTrackMuted", "setMuted", "muteTrack", "setTrackMute"], effectiveMuted) ||
+        applyTrackMethod(trackIndex, ["setTrackSolo", "setSolo"], soloed);
+      const volumeApplied =
+        applyTrackMethod(trackIndex, ["setTrackVolume", "setVolume", "setChannelVolume"], effectiveVolume) ||
+        applyTrackMethod(trackIndex, ["setTrackVolume", "setVolume", "setChannelVolume"], Math.round(effectiveVolume * 16));
+      const panApplied = applyTrackMethod(trackIndex, ["setTrackBalance", "setTrackPan", "setPan", "setChannelPan"], effectivePan);
+
+      mixerOperationResults.push({ trackIndex, mutedApplied, volumeApplied, panApplied });
+    });
+
+    const masterVolumeApplied =
+      tryCall(unsafePlayer, "setMasterVolume", masterVolumeRatio) ||
+      tryCall(unsafeApi, "setMasterVolume", masterVolumeRatio) ||
+      trySetNumber(unsafePlayer, "masterVolume", masterVolumeRatio) ||
+      trySetNumber(unsafeApi, "masterVolume", masterVolumeRatio) ||
+      trySetNumber(settingsPlayer, "masterVolume", masterVolumeRatio);
+    if (masterVolumeApplied) {
+      usedApiPaths.add("masterVolume");
+    }
+    const masterPanApplied =
+      tryCall(unsafePlayer, "setMasterBalance", masterPan) ||
+      tryCall(unsafePlayer, "setMasterPan", masterPan) ||
+      tryCall(unsafeApi, "setMasterBalance", masterPan) ||
+      tryCall(unsafeApi, "setMasterPan", masterPan) ||
+      trySetNumber(unsafePlayer, "masterBalance", masterPan) ||
+      trySetNumber(unsafePlayer, "masterPan", masterPan) ||
+      trySetNumber(unsafeApi, "masterBalance", masterPan) ||
+      trySetNumber(unsafeApi, "masterPan", masterPan) ||
+      trySetNumber(settingsPlayer, "masterBalance", masterPan) ||
+      trySetNumber(settingsPlayer, "masterPan", masterPan);
+    if (masterPanApplied) {
+      usedApiPaths.add("masterPan");
+    }
+
+    const settingsUpdated = typeof api.updateSettings === "function" ? (() => {
+      try {
+        api.updateSettings();
+        return true;
+      } catch {
+        return false;
+      }
+    })() : false;
+
+    const anyTrackOperationApplied = mixerOperationResults.some(
+      (operation) => operation.mutedApplied || operation.volumeApplied || operation.panApplied,
+    );
+    const mixerApplied = anyTrackOperationApplied || masterVolumeApplied || masterPanApplied || settingsUpdated;
+
+    if (mixerApplied && !hasLoggedMixerApplySuccess) {
+      hasLoggedMixerApplySuccess = true;
+      console.debug("[alphaTabGpRenderer] mixer apply", {
+        reason,
+        renderedTracks: (api.tracks ?? []).map((track) => ({ index: track.index, name: track.name })),
+        requestedMixerState: {
+          mutedTrackIndexes: Array.from(mutedTrackIndexes),
+          soloTrackIndexes: Array.from(soloTrackIndexes),
+          trackVolumeByIndex: Object.fromEntries(trackVolumeByIndex.entries()),
+          trackBalanceByIndex: Object.fromEntries(trackBalanceByIndex.entries()),
+          masterVolume,
+          masterBalance,
+        },
+        appliedMixerState: {
+          anySoloActive,
+          masterVolumeRatio,
+          masterPan,
+          trackResults: mixerOperationResults,
+        },
+        usedApiPaths: Array.from(usedApiPaths),
+        settingsUpdated,
+      });
+    }
+
+    return mixerApplied;
   };
 
   const extractRenderedBarBoundsFromApi = (api: AlphaTabApi, totalBars: number | null): RenderedBarBound[] => {
@@ -2887,6 +3055,7 @@ export async function createGpRenderer(
     const api = createAlphaTabApi(container, renderPlan, zoomPercent);
     applyPlaybackSpeedPercentToApi(api, playbackSpeedPercent);
     activeApi = api;
+    applyMixerStateToApi(api, "renderer-created");
     const playbackAvailable = isPlaybackApiAvailable(api);
     if (!playbackAvailable) {
       setPlaybackCapabilityMessage("Playback is unavailable in this runtime.");
@@ -3030,6 +3199,7 @@ export async function createGpRenderer(
       };
       emitPlaybackRuntimeInfo();
       emitDebugInfo();
+      applyMixerStateToApi(api, "score-loaded");
     });
 
     api.renderStarted?.on(() => {
@@ -3273,6 +3443,102 @@ export async function createGpRenderer(
         return false;
       }
       return applyPlaybackSpeedPercentToApi(activeApi, normalizedSpeedPercent);
+    },
+    setTrackMuted: (trackIndex: number, muted: boolean) => {
+      if (!Number.isFinite(trackIndex)) {
+        return false;
+      }
+      if (muted) {
+        mutedTrackIndexes.add(trackIndex);
+      } else {
+        mutedTrackIndexes.delete(trackIndex);
+      }
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setTrackMuted");
+    },
+    setTrackSoloed: (trackIndex: number, soloed: boolean) => {
+      if (!Number.isFinite(trackIndex)) {
+        return false;
+      }
+      if (soloed) {
+        soloTrackIndexes.add(trackIndex);
+      } else {
+        soloTrackIndexes.delete(trackIndex);
+      }
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setTrackSoloed");
+    },
+    setTrackVolume: (trackIndex: number, volumePercent: number) => {
+      if (!Number.isFinite(trackIndex)) {
+        return false;
+      }
+      trackVolumeByIndex.set(trackIndex, clampVolumePercent(volumePercent));
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setTrackVolume");
+    },
+    setTrackBalance: (trackIndex: number, balancePercent: number) => {
+      if (!Number.isFinite(trackIndex)) {
+        return false;
+      }
+      trackBalanceByIndex.set(trackIndex, clampBalancePercent(balancePercent));
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setTrackBalance");
+    },
+    setMasterVolume: (volumePercent: number) => {
+      masterVolume = clampVolumePercent(volumePercent);
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setMasterVolume");
+    },
+    setMasterBalance: (balancePercent: number) => {
+      masterBalance = clampBalancePercent(balancePercent);
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setMasterBalance");
+    },
+    applyMixerState: (state) => {
+      mutedTrackIndexes.clear();
+      state.mutedTrackIndexes.forEach((trackIndex) => {
+        if (Number.isFinite(trackIndex)) {
+          mutedTrackIndexes.add(trackIndex);
+        }
+      });
+      soloTrackIndexes.clear();
+      state.soloTrackIndexes.forEach((trackIndex) => {
+        if (Number.isFinite(trackIndex)) {
+          soloTrackIndexes.add(trackIndex);
+        }
+      });
+      trackVolumeByIndex.clear();
+      Object.entries(state.trackVolumeByIndex).forEach(([trackIndex, value]) => {
+        const parsedTrackIndex = Number(trackIndex);
+        if (Number.isFinite(parsedTrackIndex)) {
+          trackVolumeByIndex.set(parsedTrackIndex, clampVolumePercent(value));
+        }
+      });
+      trackBalanceByIndex.clear();
+      Object.entries(state.trackBalanceByIndex).forEach(([trackIndex, value]) => {
+        const parsedTrackIndex = Number(trackIndex);
+        if (Number.isFinite(parsedTrackIndex)) {
+          trackBalanceByIndex.set(parsedTrackIndex, clampBalancePercent(value));
+        }
+      });
+      masterVolume = clampVolumePercent(state.masterVolume);
+      masterBalance = clampBalancePercent(state.masterBalance);
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "applyMixerState");
     },
     play: () => {
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
