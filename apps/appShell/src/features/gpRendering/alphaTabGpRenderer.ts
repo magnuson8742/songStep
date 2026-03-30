@@ -1380,24 +1380,30 @@ export async function createGpRenderer(
     const unsafeApi = api as unknown as Record<string, unknown>;
     const unsafePlayer = (unsafeApi.player as Record<string, unknown> | undefined) ?? null;
     const settingsPlayer = (unsafeApi.settings as { player?: Record<string, unknown> } | undefined)?.player ?? null;
-    const knownTrackIndexes = new Set<number>([
-      ...lastLoadedScoreTracks.map((track) => track.index),
-      ...(api.tracks ?? []).map((track) => track.index),
-      ...mutedTrackIndexes,
-      ...soloTrackIndexes,
-      ...Array.from(trackVolumeByIndex.keys()),
-      ...Array.from(trackBalanceByIndex.keys()),
-    ]);
-
     const anySoloActive = soloTrackIndexes.size > 0;
-    const masterVolumeRatio = clampUnit(masterVolume / 100);
-    const masterPan = clampPan(masterBalance / 50);
-    const mixerOperationResults: Array<{ trackIndex: number; mutedApplied: boolean; volumeApplied: boolean; panApplied: boolean }> = [];
-    const usedApiPaths = new Set<string>();
+    const activeTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+    const activeTrackMuted = mutedTrackIndexes.has(activeTrackIndex);
+    const activeTrackSoloed = soloTrackIndexes.has(activeTrackIndex);
+    const activeTrackAudible = !activeTrackMuted && (!anySoloActive || activeTrackSoloed);
 
-    const applyTrackMethod = (trackIndex: number, methodNames: string[], value: number | boolean): boolean => {
+    const trackVolumeRatio = clampUnit((trackVolumeByIndex.get(activeTrackIndex) ?? 100) / 100);
+    const masterVolumeRatio = clampUnit(masterVolume / 100);
+    const effectiveTrackVolume = activeTrackAudible ? clampUnit(trackVolumeRatio * masterVolumeRatio) : 0;
+
+    const trackPan = clampPan((trackBalanceByIndex.get(activeTrackIndex) ?? 0) / 50);
+    const masterPan = clampPan(masterBalance / 50);
+
+    const usedApiPaths = new Set<string>();
+    const activeTrackRuntimeObject =
+      (api.tracks ?? []).find((track) => track.index === activeTrackIndex) ??
+      (lastLoadedScoreTracks.find((track) => track.index === activeTrackIndex) ?? null);
+
+    const applyTrackMethod = (methodNames: string[], value: number): boolean => {
       for (const methodName of methodNames) {
-        if (tryCall(unsafePlayer, methodName, trackIndex, value) || tryCall(unsafeApi, methodName, trackIndex, value)) {
+        if (
+          tryCall(unsafePlayer, methodName, activeTrackIndex, value) ||
+          tryCall(unsafeApi, methodName, activeTrackIndex, value)
+        ) {
           usedApiPaths.add(`player.${methodName}`);
           return true;
         }
@@ -1405,25 +1411,21 @@ export async function createGpRenderer(
       return false;
     };
 
-    knownTrackIndexes.forEach((trackIndex) => {
-      const explicitMuted = mutedTrackIndexes.has(trackIndex);
-      const soloed = soloTrackIndexes.has(trackIndex);
-      const effectiveMuted = explicitMuted || (anySoloActive && !soloed);
-      const trackVolumeRatio = clampUnit((trackVolumeByIndex.get(trackIndex) ?? 100) / 100);
-      const effectiveVolume = clampUnit(trackVolumeRatio * masterVolumeRatio);
-      const trackPan = clampPan((trackBalanceByIndex.get(trackIndex) ?? 0) / 50);
-      const effectivePan = clampPan(trackPan + masterPan);
-
-      const mutedApplied =
-        applyTrackMethod(trackIndex, ["setTrackMuted", "setMuted", "muteTrack", "setTrackMute"], effectiveMuted) ||
-        applyTrackMethod(trackIndex, ["setTrackSolo", "setSolo"], soloed);
-      const volumeApplied =
-        applyTrackMethod(trackIndex, ["setTrackVolume", "setVolume", "setChannelVolume"], effectiveVolume) ||
-        applyTrackMethod(trackIndex, ["setTrackVolume", "setVolume", "setChannelVolume"], Math.round(effectiveVolume * 16));
-      const panApplied = applyTrackMethod(trackIndex, ["setTrackBalance", "setTrackPan", "setPan", "setChannelPan"], effectivePan);
-
-      mixerOperationResults.push({ trackIndex, mutedApplied, volumeApplied, panApplied });
-    });
+    const trackVolumeApplied =
+      applyTrackMethod(["setTrackVolume", "setChannelVolume"], effectiveTrackVolume) ||
+      applyTrackMethod(["setTrackVolume", "setChannelVolume"], Math.round(effectiveTrackVolume * 16)) ||
+      trySetNumber(activeTrackRuntimeObject as Record<string, unknown> | null, "volume", effectiveTrackVolume) ||
+      trySetNumber(activeTrackRuntimeObject as Record<string, unknown> | null, "playbackVolume", effectiveTrackVolume);
+    if (trackVolumeApplied) {
+      usedApiPaths.add("activeTrack.volume");
+    }
+    const trackPanApplied =
+      applyTrackMethod(["setTrackBalance", "setTrackPan", "setChannelPan"], trackPan) ||
+      trySetNumber(activeTrackRuntimeObject as Record<string, unknown> | null, "balance", trackPan) ||
+      trySetNumber(activeTrackRuntimeObject as Record<string, unknown> | null, "pan", trackPan);
+    if (trackPanApplied) {
+      usedApiPaths.add("activeTrack.pan");
+    }
 
     const masterVolumeApplied =
       tryCall(unsafePlayer, "setMasterVolume", masterVolumeRatio) ||
@@ -1458,12 +1460,11 @@ export async function createGpRenderer(
       }
     })() : false;
 
-    const anyTrackOperationApplied = mixerOperationResults.some(
-      (operation) => operation.mutedApplied || operation.volumeApplied || operation.panApplied,
-    );
-    const mixerApplied = anyTrackOperationApplied || masterVolumeApplied || masterPanApplied || settingsUpdated;
+    const trackOperationApplied = trackVolumeApplied || trackPanApplied;
+    const masterOperationApplied = masterVolumeApplied || masterPanApplied;
+    const overallApplied = trackOperationApplied || masterOperationApplied;
 
-    if (mixerApplied && !hasLoggedMixerApplySuccess) {
+    if (overallApplied && !hasLoggedMixerApplySuccess) {
       hasLoggedMixerApplySuccess = true;
       console.debug("[alphaTabGpRenderer] mixer apply", {
         reason,
@@ -1477,17 +1478,28 @@ export async function createGpRenderer(
           masterBalance,
         },
         appliedMixerState: {
+          activeTrackIndex,
           anySoloActive,
+          activeTrackMuted,
+          activeTrackSoloed,
+          activeTrackAudible,
+          effectiveTrackVolume,
+          effectiveTrackPan: trackPan,
+          effectiveMasterVolume: masterVolumeRatio,
+          effectiveMasterPan: masterPan,
+          muteSoloViaActiveTrackVolumeGate: !activeTrackAudible,
+          trackOperationApplied,
+          masterOperationApplied,
+          overallApplied,
+          settingsUpdated,
           masterVolumeRatio,
           masterPan,
-          trackResults: mixerOperationResults,
         },
         usedApiPaths: Array.from(usedApiPaths),
-        settingsUpdated,
       });
     }
 
-    return mixerApplied;
+    return overallApplied;
   };
 
   const extractRenderedBarBoundsFromApi = (api: AlphaTabApi, totalBars: number | null): RenderedBarBound[] => {
