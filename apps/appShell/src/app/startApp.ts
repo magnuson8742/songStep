@@ -380,7 +380,7 @@ function playMetronomeClick(state: AppState, isDownbeat: boolean): void {
 
 function stopPlaybackMetronome(state: AppState): void {
   if (state.pendingMetronomeIntervalId !== null) {
-    window.clearInterval(state.pendingMetronomeIntervalId);
+    window.clearTimeout(state.pendingMetronomeIntervalId);
     state.pendingMetronomeIntervalId = null;
   }
 }
@@ -388,12 +388,55 @@ function stopPlaybackMetronome(state: AppState): void {
 function startPlaybackMetronome(state: AppState): void {
   stopPlaybackMetronome(state);
   const beatDurationMs = Math.max(120, Math.round(60000 / resolveEffectiveTempoBpm(state)));
-  let beatCounter = 0;
-  playMetronomeClick(state, true);
-  state.pendingMetronomeIntervalId = window.setInterval(() => {
-    beatCounter += 1;
-    playMetronomeClick(state, beatCounter % 4 === 0);
-  }, beatDurationMs);
+  const beatsPerBar = 4;
+  const currentTick = state.playbackCurrentTick;
+  const currentBarStartTick = state.playbackCurrentBarStartTick;
+  const currentBarEndTickExclusive = state.playbackCurrentBarEndTickExclusive;
+  const barTickSpan =
+    currentBarStartTick === null || currentBarEndTickExclusive === null ? null : currentBarEndTickExclusive - currentBarStartTick;
+
+  let initialBeatInBar = 0;
+  let initialDelayMs = 0;
+
+  if (
+    currentTick !== null &&
+    currentBarStartTick !== null &&
+    barTickSpan !== null &&
+    barTickSpan > 0 &&
+    Number.isFinite(barTickSpan)
+  ) {
+    const ticksPerBeat = barTickSpan / beatsPerBar;
+    if (ticksPerBeat > 0 && Number.isFinite(ticksPerBeat)) {
+      const tickOffsetInBar = Math.min(Math.max(currentTick - currentBarStartTick, 0), Math.max(barTickSpan - 1, 0));
+      const beatProgress = tickOffsetInBar / ticksPerBeat;
+      const nearestBoundary = Math.round(beatProgress);
+      const boundaryEpsilonBeats = 0.02;
+      const isOnBoundary = Math.abs(beatProgress - nearestBoundary) <= boundaryEpsilonBeats;
+      if (isOnBoundary) {
+        const normalizedBeat = ((nearestBoundary % beatsPerBar) + beatsPerBar) % beatsPerBar;
+        initialBeatInBar = normalizedBeat;
+        initialDelayMs = 0;
+      } else {
+        const nextBeatOrdinal = Math.floor(beatProgress) + 1;
+        const beatsUntilNextBoundary = Math.max(nextBeatOrdinal - beatProgress, 0);
+        initialBeatInBar = ((nextBeatOrdinal % beatsPerBar) + beatsPerBar) % beatsPerBar;
+        initialDelayMs = Math.max(0, Math.round(beatDurationMs * beatsUntilNextBoundary));
+      }
+    }
+  }
+
+  const scheduleBeat = (beatInBar: number, delayMs: number): void => {
+    state.pendingMetronomeIntervalId = window.setTimeout(() => {
+      if (!state.metronomeEnabled || !state.playbackTransportActive || state.countInInProgress) {
+        state.pendingMetronomeIntervalId = null;
+        return;
+      }
+      playMetronomeClick(state, beatInBar === 0);
+      scheduleBeat((beatInBar + 1) % beatsPerBar, beatDurationMs);
+    }, Math.max(0, delayMs));
+  };
+
+  scheduleBeat(initialBeatInBar, initialDelayMs);
 }
 
 function clearCountInTimer(state: AppState): void {
@@ -2688,12 +2731,22 @@ export function startApp(rootElement: HTMLElement): void {
             state.loopEnabled && state.loopStartTick !== null
               ? state.loopStartTick
               : getActiveManualNavigationTarget(state)?.targetTick ?? null;
+          const targetBar =
+            state.loopEnabled && state.loopStartBar !== null
+              ? state.loopStartBar
+              : getActiveManualNavigationTarget(state)?.targetBar ?? null;
           const startPlaybackNow = (): void => {
             if (!state.gpRenderer) {
               return;
             }
             if (targetTick !== null) {
               state.gpRenderer.seekToTick(targetTick);
+              state.playbackCurrentTick = targetTick;
+              if (targetBar !== null) {
+                const targetBarRange = state.gpRenderer.getBarTickRange(targetBar);
+                state.playbackCurrentBarStartTick = targetBarRange?.startTick ?? targetTick;
+                state.playbackCurrentBarEndTickExclusive = targetBarRange?.endTickExclusive ?? null;
+              }
             }
             state.playbackTransportActive = true;
             clearNavigationSelectionState(state, rootElement);
