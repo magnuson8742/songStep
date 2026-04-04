@@ -947,3 +947,153 @@ select {
 .playerDockBottomBandRight {
   min-height: var(--dock-bottom-band-height);
 }
+
+@media (max-width: 900px) {
+  .playerLayoutShell {
+    --player-dock-height: 212px;
+    grid-template-rows: auto auto minmax(180px, 1fr) var(--player-dock-height);
+  }
+
+  .playerTopHeader {
+    padding: 6px 8px 8px;
+  }
+
+  .playerTopHeaderMain {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 8px;
+    align-items: start;
+  }
+
+  .playerTopMeta {
+    grid-column: 1 / -1;
+  }
+
+  .playerTopTitle {
+    font-size: 17px;
+    line-height: 1.2;
+  }
+
+  .appSubtitle {
+    margin: 2px 0 0;
+    font-size: 11px;
+  }
+
+  .playerTransport,
+  .playerCountInControls,
+  .playerMetronomeControls,
+  .playerLoopControls,
+  .playerSpeedControls {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .playerTransport .primaryButton,
+  .playerTransport .secondaryButton,
+  .playerCountInControls .primaryButton,
+  .playerCountInControls .secondaryButton,
+  .playerMetronomeControls .primaryButton,
+  .playerMetronomeControls .secondaryButton,
+  .playerLoopControls .primaryButton,
+  .playerLoopControls .secondaryButton {
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+
+  .playerSpeedControls {
+    grid-template-columns: auto minmax(86px, 1fr) auto auto;
+    gap: 4px;
+  }
+
+  .playerTopInfo {
+    margin-top: 6px;
+    grid-template-columns: repeat(3, auto minmax(0, 1fr));
+    gap: 3px 6px;
+    font-size: 11px;
+  }
+
+  .playerTabViewportShell {
+    padding: 0 6px 6px;
+  }
+
+  .playerTabViewport {
+    padding: 4px;
+  }
+
+  .playerTabViewport .gpRenderHost {
+    min-height: 420px;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: visible;
+  }
+
+  .playerBottomDock {
+    --dock-row-height: 28px;
+    --dock-row-gap: 2px;
+    --dock-top-band-height: 20px;
+    --dock-bottom-band-height: 20px;
+    --dock-timeline-end-gutter: 16px;
+    grid-template-rows: 6px auto auto minmax(0, 1fr) auto;
+  }
+
+  .playerDockHeaders,
+  .playerDockTopBand,
+  .playerDockBottomBand,
+  .playerDockMiddleScroll {
+    grid-template-columns: 236px minmax(0, 1fr);
+  }
+
+  .playerDockTopBand,
+  .playerDockBottomBand {
+    column-gap: 4px;
+    padding: 0 4px;
+  }
+
+  .playerDockMiddleScroll {
+    padding: 4px;
+    column-gap: 4px;
+  }
+
+  .playerDockLeftTopHeader {
+    grid-template-columns: minmax(54px, 1fr) 22px 22px 66px 66px;
+    padding: 0 2px;
+    font-size: 10px;
+  }
+
+  .trackControlRowCompact {
+    grid-template-columns: minmax(54px, 1fr) 22px 22px 66px 66px;
+  }
+
+  .masterTrackControlRow {
+    grid-template-columns: minmax(88px, 1fr) 76px 76px;
+  }
+
+  .trackControlButton {
+    width: 22px;
+    min-width: 22px;
+    min-height: 18px;
+    font-size: 10px;
+  }
+
+  .trackNameCompact {
+    font-size: 10px;
+  }
+
+  .trackControlValue {
+    font-size: 8px;
+  }
+
+  .playerDockRightTopHeader,
+  .playerDockRightMiddle,
+  .playerDockRightBottomFooter,
+  .timelineViewport {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x;
+  }
+
+  .arrangementOverviewDock {
+    min-width: 820px;
+  }
+}

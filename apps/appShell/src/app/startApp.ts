@@ -41,6 +41,8 @@ const MAX_BOTTOM_DOCK_HEIGHT_PX = 520;
 const ARRANGEMENT_BAR_WIDTH_PX = 24;
 const ARRANGEMENT_BAR_GAP_PX = 4;
 const DEFAULT_TAB_ZOOM_PERCENT = 100;
+const MOBILE_DEFAULT_TAB_ZOOM_PERCENT = 65;
+const MOBILE_LAYOUT_BREAKPOINT_PX = 900;
 const MIN_TAB_ZOOM_PERCENT = 60;
 const MAX_TAB_ZOOM_PERCENT = 160;
 const TAB_ZOOM_STEP_PERCENT = 10;
@@ -306,6 +308,17 @@ function clampPlaybackSpeedPercent(speedPercent: number): number {
     return DEFAULT_PLAYBACK_SPEED_PERCENT;
   }
   return Math.max(MIN_PLAYBACK_SPEED_PERCENT, Math.min(MAX_PLAYBACK_SPEED_PERCENT, Math.round(speedPercent)));
+}
+
+function resolveInitialTabZoomPercent(): number {
+  if (typeof window === "undefined") {
+    return DEFAULT_TAB_ZOOM_PERCENT;
+  }
+  const viewportWidth = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0);
+  if (viewportWidth > 0 && viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX) {
+    return MOBILE_DEFAULT_TAB_ZOOM_PERCENT;
+  }
+  return DEFAULT_TAB_ZOOM_PERCENT;
 }
 
 function formatEffectiveTempoBpm(tempoBpm: number | null, playbackSpeedPercent: number): string {
@@ -2276,7 +2289,7 @@ export function startApp(rootElement: HTMLElement): void {
     mutedTrackIndexes: [],
     soloTrackIndexes: [],
     bottomDockHeightPx: DEFAULT_BOTTOM_DOCK_HEIGHT_PX,
-    tabZoomPercent: DEFAULT_TAB_ZOOM_PERCENT,
+    tabZoomPercent: resolveInitialTabZoomPercent(),
     latestAnchorStrategyDebug: [],
     latestPercussionAnchorDebug: null,
     latestAnchorDebugSnapshot: null,
