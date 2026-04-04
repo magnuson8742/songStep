@@ -6,6 +6,10 @@ interface AlphaTabApi {
   load: (scoreData: unknown, trackIndexes?: number[]) => boolean;
   score?: AlphaTabScore;
   tracks?: AlphaTabTrack[];
+  changeTrackMute?: (tracks: AlphaTabTrack[], mute: boolean) => void;
+  changeTrackSolo?: (tracks: AlphaTabTrack[], solo: boolean) => void;
+  changeTrackVolume?: (tracks: AlphaTabTrack[], volume: number) => void;
+  masterVolume?: number;
   play?: () => boolean;
   pause?: () => void;
   stop?: () => void;
@@ -62,6 +66,9 @@ interface AlphaTabScore {
 interface AlphaTabTrack {
   index: number;
   name: string;
+  shortName?: string;
+  displayName?: string;
+  instrumentName?: string;
   isPercussion?: boolean;
   staves?: AlphaTabStaff[];
 }
@@ -147,6 +154,7 @@ interface TrackContentSignature {
 export interface GpTrackInfo {
   index: number;
   name: string;
+  displayLabel: string;
   runtimeTrackPosition: number;
   isPercussion: boolean;
   totalBars: number;
@@ -324,6 +332,20 @@ export interface GpRendererController {
     rowIndex: number;
   }>;
   setPlaybackSpeedPercent: (speedPercent: number) => boolean;
+  setTrackMuted: (trackIndex: number, muted: boolean) => boolean;
+  setTrackSoloed: (trackIndex: number, soloed: boolean) => boolean;
+  setTrackVolume: (trackIndex: number, volumePercent: number) => boolean;
+  setTrackBalance: (trackIndex: number, balancePercent: number) => boolean;
+  setMasterVolume: (volumePercent: number) => boolean;
+  setMasterBalance: (balancePercent: number) => boolean;
+  applyMixerState: (state: {
+    mutedTrackIndexes: number[];
+    soloTrackIndexes: number[];
+    trackVolumeByIndex: Record<number, number>;
+    trackBalanceByIndex: Record<number, number>;
+    masterVolume: number;
+    masterBalance: number;
+  }) => boolean;
   play: () => void;
   pause: () => void;
   stop: () => void;
@@ -346,6 +368,7 @@ const USE_WORKERS = false;
 const RENDER_TIMEOUT_MS = 5000;
 const HEAVY_TRACK_NOTE_THRESHOLD = 5000;
 const HEAVY_TRACK_BAR_THRESHOLD = 400;
+const GLOBAL_HIGHLIGHT_Y_OFFSET_PX = 6;
 
 type RenderMode =
   | "string-tab"
@@ -427,7 +450,7 @@ interface BarBoundsExtractionDiagnostics {
     firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
     firstBarCalibratedRect: { x: number; y: number; w: number; h: number } | null;
   } | null;
-  transformSummary?: {
+    transformSummary?: {
     coordinateSpaceMode: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
     coordinateSpaceModeX?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
     coordinateSpaceModeY?: "host-local" | "svg-pixel-to-host" | "viewbox-to-host";
@@ -442,11 +465,14 @@ interface BarBoundsExtractionDiagnostics {
     transformOffsetX: number;
     transformOffsetY: number;
     transformAppliedX?: boolean;
-    transformAppliedY?: boolean;
-    firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
-    firstBarCalibratedRect?: { x: number; y: number; w: number; h: number } | null;
-    firstBarFinalRect: { x: number; y: number; w: number; h: number } | null;
-  } | null;
+      transformAppliedY?: boolean;
+      firstBarRawRect: { x: number; y: number; w: number; h: number } | null;
+      firstBarCalibratedRect?: { x: number; y: number; w: number; h: number } | null;
+      firstBarFinalRect: { x: number; y: number; w: number; h: number } | null;
+      globalYOffsetPx?: number;
+      firstBarYBeforeGlobalOffset?: number | null;
+      firstBarYAfterGlobalOffset?: number | null;
+    } | null;
 }
 
 interface BarBoundsRootCandidateSummary {
@@ -484,6 +510,7 @@ function toTrackInfoList(tracks: AlphaTabTrack[]): GpTrackInfo[] {
     return {
       index: track.index,
       name: track.name || `Track ${track.index + 1}`,
+      displayLabel: deriveCompactTrackDisplayLabel(track),
       runtimeTrackPosition,
       isPercussion: track.isPercussion === true || track.staves?.some((staff) => staff.isPercussion === true) === true,
       totalBars: signature.totalBars,
@@ -500,6 +527,42 @@ function countNotesInBar(bar: AlphaTabBar | undefined): number {
     const beatNoteCount = beats.reduce((sum, beat) => sum + (beat.notes?.length ?? 0), 0);
     return voiceNoteCount + beatNoteCount;
   }, 0);
+}
+
+function deriveCompactTrackDisplayLabel(track: AlphaTabTrack): string {
+  const rawTrackName = track.name?.trim();
+  if (rawTrackName && rawTrackName.length > 0) {
+    if (rawTrackName.includes("|")) {
+      const pipeSegments = rawTrackName
+        .split("|")
+        .map((segment) => segment.trim())
+        .filter((segment) => segment.length > 0);
+      if (pipeSegments.length > 1) {
+        return pipeSegments[pipeSegments.length - 1] as string;
+      }
+    }
+
+    const separators = ["—", "-", ":"];
+    for (const separator of separators) {
+      const segments = rawTrackName
+        .split(separator)
+        .map((segment) => segment.trim())
+        .filter((segment) => segment.length > 0);
+      if (segments.length > 1) {
+        return segments[segments.length - 1] as string;
+      }
+    }
+  }
+
+  const unsafeTrack = track as AlphaTabTrack & { playbackInfo?: { programName?: string } };
+  const metadataCandidates = [track.displayName, track.instrumentName, track.shortName, unsafeTrack.playbackInfo?.programName];
+  for (const candidate of metadataCandidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+
+  return rawTrackName || `Track ${track.index + 1}`;
 }
 
 function computeTrackContentSignature(track: AlphaTabTrack, fallbackBarCount: number): TrackContentSignature {
@@ -832,6 +895,13 @@ export async function createGpRenderer(
   let renderAttemptCounter = 0;
   let activeRenderAttemptId: string | null = null;
   let lastBarBoundsExtractionDiagnostics: BarBoundsExtractionDiagnostics | null = null;
+  const mutedTrackIndexes = new Set<number>();
+  const soloTrackIndexes = new Set<number>();
+  const trackVolumeByIndex = new Map<number, number>();
+  const trackBalanceByIndex = new Map<number, number>();
+  let masterVolume = 80;
+  let masterBalance = 0;
+  let hasLoggedMixerApplySuccess = false;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1316,6 +1386,126 @@ export async function createGpRenderer(
     }
 
     return speedApplied;
+  };
+
+  const clampVolumePercent = (value: number): number => Math.max(0, Math.min(100, Math.round(value)));
+  const clampBalancePercent = (value: number): number => Math.max(-50, Math.min(50, Math.round(value)));
+  const clampUnit = (value: number): number => Math.max(0, Math.min(1, value));
+  const clampPan = (value: number): number => Math.max(-1, Math.min(1, value));
+
+  const trySetNumber = (target: Record<string, unknown> | null | undefined, key: string, value: number): boolean => {
+    if (!target || !(key in target)) {
+      return false;
+    }
+    const existing = target[key];
+    if (typeof existing !== "number") {
+      return false;
+    }
+    target[key] = value;
+    return true;
+  };
+
+  const applyMixerStateToApi = (api: AlphaTabApi, reason: string): boolean => {
+    const unsafeApi = api as unknown as Record<string, unknown>;
+    const settingsPlayer = (unsafeApi.settings as { player?: Record<string, unknown> } | undefined)?.player ?? null;
+    const anySoloActive = soloTrackIndexes.size > 0;
+    const activeTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+    const activeTrackObject =
+      api.score?.tracks.find((track) => track.index === activeTrackIndex) ?? api.tracks?.[0] ?? null;
+    const activeTrackName = activeTrackObject?.name ?? null;
+    const activeTrackMuted = mutedTrackIndexes.has(activeTrackIndex);
+    const activeTrackSoloed = soloTrackIndexes.has(activeTrackIndex);
+    const activeTrackAudible = !activeTrackMuted && (!anySoloActive || activeTrackSoloed);
+
+    const trackVolume01 = clampUnit((trackVolumeByIndex.get(activeTrackIndex) ?? 100) / 100);
+    const masterVolume01 = clampUnit(masterVolume / 100);
+    const effectiveTrackVolume01 = activeTrackAudible ? clampUnit(trackVolume01 * masterVolume01) : 0;
+
+    const effectiveTrackPan = clampPan((trackBalanceByIndex.get(activeTrackIndex) ?? 0) / 50);
+    const effectiveMasterPan = clampPan(masterBalance / 50);
+
+    const usedApiPaths = new Set<string>();
+    let usedOfficialTrackMute = false;
+    let usedOfficialTrackSolo = false;
+    let usedOfficialTrackVolume = false;
+    let usedOfficialMasterVolume = false;
+
+    if (activeTrackObject && typeof api.changeTrackMute === "function") {
+      try {
+        api.changeTrackMute([activeTrackObject], !activeTrackAudible);
+        usedOfficialTrackMute = true;
+        usedApiPaths.add("api.changeTrackMute");
+      } catch {
+        usedOfficialTrackMute = false;
+      }
+    }
+    if (activeTrackObject && typeof api.changeTrackSolo === "function") {
+      try {
+        api.changeTrackSolo([activeTrackObject], anySoloActive ? activeTrackSoloed : false);
+        usedOfficialTrackSolo = true;
+        usedApiPaths.add("api.changeTrackSolo");
+      } catch {
+        usedOfficialTrackSolo = false;
+      }
+    }
+    if (activeTrackObject && typeof api.changeTrackVolume === "function") {
+      try {
+        api.changeTrackVolume([activeTrackObject], effectiveTrackVolume01);
+        usedOfficialTrackVolume = true;
+        usedApiPaths.add("api.changeTrackVolume");
+      } catch {
+        usedOfficialTrackVolume = false;
+      }
+    }
+    if (typeof api.masterVolume === "number") {
+      api.masterVolume = masterVolume01;
+      usedOfficialMasterVolume = true;
+      usedApiPaths.add("api.masterVolume");
+    } else if (trySetNumber(settingsPlayer, "masterVolume", masterVolume01)) {
+      usedOfficialMasterVolume = true;
+      usedApiPaths.add("settings.player.masterVolume");
+    }
+
+    const settingsUpdated = typeof api.updateSettings === "function" ? (() => {
+      try {
+        api.updateSettings();
+        return true;
+      } catch {
+        return false;
+      }
+    })() : false;
+
+    const trackOperationApplied = usedOfficialTrackMute || usedOfficialTrackSolo || usedOfficialTrackVolume;
+    const masterOperationApplied = usedOfficialMasterVolume;
+    const overallApplied = trackOperationApplied || masterOperationApplied;
+
+    if (overallApplied && !hasLoggedMixerApplySuccess) {
+      hasLoggedMixerApplySuccess = true;
+      console.debug("[alphaTabGpRenderer] mixer apply", {
+        reason,
+        activeTrackIndex,
+        activeTrackName,
+        activeTrackAudible,
+        activeTrackMuted,
+        activeTrackSoloed,
+        anySoloActive,
+        effectiveTrackVolume01,
+        effectiveTrackPan,
+        effectiveMasterVolume01: masterVolume01,
+        effectiveMasterPan,
+        usedOfficialTrackMute,
+        usedOfficialTrackSolo,
+        usedOfficialTrackVolume,
+        usedOfficialMasterVolume,
+        trackOperationApplied,
+        masterOperationApplied,
+        settingsUpdated,
+        overallApplied,
+        usedApiPaths: Array.from(usedApiPaths),
+      });
+    }
+
+    return overallApplied;
   };
 
   const extractRenderedBarBoundsFromApi = (api: AlphaTabApi, totalBars: number | null): RenderedBarBound[] => {
@@ -1974,13 +2164,8 @@ export async function createGpRenderer(
               : barBounds.x;
           const matchedClusterIndex = rowClusterBands.findIndex((cluster) => cluster.barIndexSet.has(barIndexInSystem));
           const matchedCluster = matchedClusterIndex >= 0 ? rowClusterBands[matchedClusterIndex] : null;
-          let systemVerticalBounds =
-            chosenParentVerticalCandidate?.rect ?? (matchedCluster ? { x: 0, y: matchedCluster.y, w: 0, h: matchedCluster.h } : null);
-          let chosenVerticalSource: string = chosenParentVerticalCandidate
-            ? chosenParentVerticalCandidate.source
-            : systemVerticalBounds
-              ? "staffSystem.rowClusterBand"
-              : "bar-local-fallback";
+          let systemVerticalBounds = matchedCluster ? { x: 0, y: matchedCluster.y, w: 0, h: matchedCluster.h } : null;
+          let chosenVerticalSource: string = systemVerticalBounds ? "staffSystem.rowClusterBand" : "bar-local-fallback";
           if (systemVerticalBounds && parentSystemOuterBounds) {
             const clampedTop = Math.max(systemVerticalBounds.y, parentSystemOuterBounds.y);
             const clampedBottom = Math.min(
@@ -1989,9 +2174,7 @@ export async function createGpRenderer(
             );
             if (clampedBottom > clampedTop + 1) {
               systemVerticalBounds = { ...systemVerticalBounds, y: clampedTop, h: clampedBottom - clampedTop };
-              chosenVerticalSource = chosenParentVerticalCandidate
-                ? `${chosenParentVerticalCandidate.source}-clamped`
-                : "staffSystem.rowClusterBand-clamped";
+              chosenVerticalSource = "staffSystem.rowClusterBand-clamped";
             }
           } else if (!systemVerticalBounds && parentSystemOuterBounds) {
             systemVerticalBounds = parentSystemOuterBounds;
@@ -2010,52 +2193,104 @@ export async function createGpRenderer(
           const detectedHorizontalLineSources = Array.from(new Set(detectedHorizontalLineEntries.map((entry) => entry.source)));
           const yClusterTolerance = Math.max(0.5, Math.min(3, calibratedH * 0.04));
           const horizontalLineClusters = clusterYValues(detectedHorizontalLineYs, yClusterTolerance);
+          const clusterSummaries = horizontalLineClusters.map((cluster, clusterIndex) => {
+            const top = Math.min(...cluster);
+            const bottom = Math.max(...cluster);
+            return {
+              index: clusterIndex,
+              top,
+              bottom,
+              center: (top + bottom) * 0.5,
+              count: cluster.length,
+            };
+          });
           const currentBarCenterY = barBounds.y + barBounds.h * 0.5;
           const currentRowBottomHint = matchedCluster?.rowBottom ?? calibratedY + calibratedH;
-          const chosenLineCluster =
-            horizontalLineClusters.length > 0
-              ? [...horizontalLineClusters].sort((left, right) => {
-                  const leftTop = Math.min(...left);
-                  const leftBottom = Math.max(...left);
-                  const rightTop = Math.min(...right);
-                  const rightBottom = Math.max(...right);
-                  const leftCenter = (leftTop + leftBottom) * 0.5;
-                  const rightCenter = (rightTop + rightBottom) * 0.5;
-                  return Math.abs(leftCenter - currentBarCenterY) - Math.abs(rightCenter - currentBarCenterY);
-                })[0]
-              : null;
-          const chosenRowTopLineY = chosenLineCluster ? Math.min(...chosenLineCluster) : null;
-          const chosenRowBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
-          const clusterRowBottom = chosenRowBottomLineY ?? currentRowBottomHint;
-          const chosenRowClusterIndex = chosenLineCluster ? horizontalLineClusters.indexOf(chosenLineCluster) : -1;
-          let chosenVerticalAnchorMode: "parent-primary" | "line-refine" | "cluster-fallback" =
-            chosenParentVerticalCandidate ? "parent-primary" : "cluster-fallback";
-          let rowAnchoredY = calibratedY;
-          if (chosenRowBottomLineY !== null) {
-            const bottomAnchoredY = chosenRowBottomLineY - calibratedH;
-            if (bottomAnchoredY < rowAnchoredY) {
-              rowAnchoredY = bottomAnchoredY;
-              chosenVerticalAnchorMode = "line-refine";
-              chosenVerticalSource = chosenParentVerticalCandidate
-                ? `${chosenParentVerticalCandidate.source}+svg.horizontalRowBottomLine`
-                : "svg.horizontalRowBottomLine";
-            }
+          const nearestCenterClusterIndex =
+            clusterSummaries.length > 0
+              ? clusterSummaries
+                  .map((cluster) => ({
+                    clusterIndex: cluster.index,
+                    centerDistance: Math.abs(cluster.center - currentBarCenterY),
+                  }))
+                  .sort((left, right) => left.centerDistance - right.centerDistance)[0]?.clusterIndex ?? -1
+              : -1;
+          const nearestCenterCluster =
+            nearestCenterClusterIndex >= 0 ? horizontalLineClusters[nearestCenterClusterIndex] ?? null : null;
+          const nearestCenterTopLineY = nearestCenterCluster ? Math.min(...nearestCenterCluster) : null;
+          const nearestCenterBottomLineY = nearestCenterCluster ? Math.max(...nearestCenterCluster) : null;
+          const nearestCenterRowBottom = nearestCenterBottomLineY ?? currentRowBottomHint;
+          let chosenVerticalAnchorMode: "top" | "bottom" = "bottom";
+          let restoredY = nearestCenterRowBottom - calibratedH;
+          if (nearestCenterTopLineY !== null && nearestCenterBottomLineY !== null) {
+            const rowLineSpan = Math.max(nearestCenterBottomLineY - nearestCenterTopLineY, 0);
+            const topAnchoredY = nearestCenterTopLineY;
+            const bottomAnchoredY = nearestCenterBottomLineY - calibratedH;
+            chosenVerticalAnchorMode =
+              calibratedH > rowLineSpan + yClusterTolerance || bottomAnchoredY > topAnchoredY + rowLineSpan * 0.25
+                ? "top"
+                : "bottom";
+            restoredY = chosenVerticalAnchorMode === "top" ? topAnchoredY : bottomAnchoredY;
           }
+          if (nearestCenterBottomLineY !== null) {
+            chosenVerticalSource =
+              chosenVerticalAnchorMode === "top" ? "svg.horizontalRowTopLine" : "svg.horizontalRowBottomLine";
+          }
+          const restoredBottomY = restoredY + calibratedH;
+          const rowBandTop = matchedCluster?.y ?? restoredY;
+          const rowBandBottom = matchedCluster ? matchedCluster.y + matchedCluster.h : restoredBottomY;
+          const rowLocalWindowPad = Math.max(2, yClusterTolerance * 4, calibratedH * 0.25);
+          const previousGlobalLowestClusterIndex =
+            clusterSummaries
+              .filter((cluster) => cluster.count >= 2)
+              .sort((left, right) => right.bottom - left.bottom || right.count - left.count)[0]?.index ?? -1;
+          const rowLocalTabClusterCandidates = clusterSummaries.filter(
+            (cluster) =>
+              cluster.count >= 2 &&
+              cluster.bottom >= rowBandTop - rowLocalWindowPad &&
+              cluster.top <= rowBandBottom + rowLocalWindowPad,
+          );
+          const chosenRowLocalTabClusterIndex =
+            rowLocalTabClusterCandidates.sort((left, right) => right.bottom - left.bottom || right.count - left.count)[0]?.index ??
+            -1;
+          const chosenTabClusterIndex =
+            chosenRowLocalTabClusterIndex >= 0 ? chosenRowLocalTabClusterIndex : nearestCenterClusterIndex;
+          const chosenLineCluster =
+            chosenTabClusterIndex >= 0 ? horizontalLineClusters[chosenTabClusterIndex] ?? null : null;
+          const targetTabBottomLineY = chosenLineCluster ? Math.max(...chosenLineCluster) : null;
+          const appliedYOffsetCorrection = targetTabBottomLineY !== null ? targetTabBottomLineY - restoredBottomY : 0;
+          const correctedY = restoredY + appliedYOffsetCorrection;
+          const correctedBottomY = correctedY + calibratedH;
+          const bottomDeltaBeforeClamp =
+            targetTabBottomLineY !== null ? correctedBottomY - targetTabBottomLineY : null;
+          const correctedRect = {
+            x: calibratedX,
+            y: correctedY,
+            w: barBounds.w,
+            h: calibratedH,
+          };
+          const chosenRowClusterIndex = chosenTabClusterIndex;
+          let rowAnchoredY = correctedY;
           const structuralBottomBoundary =
             parentSystemOuterBounds?.y !== undefined && parentSystemOuterBounds?.h !== undefined
               ? parentSystemOuterBounds.y + parentSystemOuterBounds.h
               : Number.POSITIVE_INFINITY;
-          const maxTopFromBottomBoundary = structuralBottomBoundary - calibratedH;
+          const effectiveBottomBoundary =
+            targetTabBottomLineY !== null ? Math.max(structuralBottomBoundary, targetTabBottomLineY) : structuralBottomBoundary;
+          const maxTopFromBottomBoundary = effectiveBottomBoundary - calibratedH;
+          const bottomClampChangedY = rowAnchoredY > maxTopFromBottomBoundary;
           calibratedY = Math.min(rowAnchoredY, maxTopFromBottomBoundary);
           const structuralTopBoundary = parentSystemOuterBounds?.y ?? systemVerticalBounds?.y ?? calibratedY;
           calibratedY = Math.max(calibratedY, structuralTopBoundary);
+          const finalBottomY = calibratedY + calibratedH;
+          const bottomDeltaAfterClamp = targetTabBottomLineY !== null ? finalBottomY - targetTabBottomLineY : null;
           const finalRect = {
             x: calibratedX,
             y: calibratedY,
             w: barBounds.w,
             h: calibratedH,
           };
-          if (!didLogVerticalSelection) {
+          if (!didLogVerticalSelection && systemIndex === 0 && barIndexInSystem === 0) {
             didLogVerticalSelection = true;
             console.debug("[alphaTabGpRenderer] bar bounds vertical source", {
               availableVerticalSources: resolvedVerticalCandidates
@@ -2069,11 +2304,37 @@ export async function createGpRenderer(
               totalBarsInSystem: bars.length,
               rowClusterCount: rowClusterBands.length,
               firstBarClusterIndex: chosenRowClusterIndex >= 0 ? chosenRowClusterIndex : matchedClusterIndex,
+              matchedClusterBand: matchedCluster
+                ? { top: matchedCluster.y, bottom: matchedCluster.y + matchedCluster.h, height: matchedCluster.h }
+                : null,
+              restoredVerticalSource: chosenVerticalSource,
+              restoredCalibratedRectBeforeYCorrection: {
+                x: calibratedX,
+                y: restoredY,
+                w: barBounds.w,
+                h: calibratedH,
+              },
               detectedHorizontalLineYs: detectedHorizontalLineYs.slice(0, 24),
+              horizontalLineClusters: clusterSummaries,
+              rowLocalFilteredClusters: rowLocalTabClusterCandidates,
               detectedHorizontalLineSources,
-              chosenRowTopLineY,
-              firstBarRowBottom: clusterRowBottom,
-              chosenRowBottomLineY,
+              nearestCenterClusterIndex,
+              previousGlobalLowestClusterIndex,
+              chosenRowLocalTabClusterIndex,
+              chosenTabClusterIndex,
+              targetTabBottomLineY,
+              restoredBottomY,
+              appliedYOffsetCorrection,
+              correctedY,
+              correctedBottomY,
+              structuralBottomBoundary,
+              maxTopFromBottomBoundary,
+              finalCalibratedY: calibratedY,
+              finalBottomY,
+              bottomDeltaBeforeClamp,
+              bottomDeltaAfterClamp,
+              bottomClampChangedY,
+              correctedRect,
               chosenVerticalAnchorMode,
               finalVerticalSourcePath: chosenParentVerticalCandidate ? "parent-system-primary" : "cluster-fallback",
               firstBarHeight: calibratedH,
@@ -2082,7 +2343,7 @@ export async function createGpRenderer(
               systemRealBounds,
               chosenVerticalSourceHeight: systemVerticalBounds?.h ?? null,
               firstBarRawRect: barBounds,
-              firstBarFinalRect: finalRect,
+              finalRect,
             });
           }
           if (!familyCalibrationSummary) {
@@ -2360,11 +2621,22 @@ export async function createGpRenderer(
     const normalizedRowMap = new Map<number, number>();
     orderedRowIndices.forEach((rowIndex, normalizedIndex) => normalizedRowMap.set(rowIndex, normalizedIndex));
 
+    let firstBarYBeforeGlobalOffset: number | null = null;
+    let firstBarYAfterGlobalOffset: number | null = null;
     const normalizedBars = orderedBars
-      .map((bar) => ({
-        ...bar,
-        rowIndex: normalizedRowMap.get(bar.rowIndex) ?? 0,
-      }))
+      .map((bar, barIndex) => {
+        const yBeforeGlobalOffset = bar.y;
+        const yAfterGlobalOffset = yBeforeGlobalOffset + GLOBAL_HIGHLIGHT_Y_OFFSET_PX;
+        if (barIndex === 0) {
+          firstBarYBeforeGlobalOffset = yBeforeGlobalOffset;
+          firstBarYAfterGlobalOffset = yAfterGlobalOffset;
+        }
+        return {
+          ...bar,
+          y: yAfterGlobalOffset,
+          rowIndex: normalizedRowMap.get(bar.rowIndex) ?? 0,
+        };
+      })
       .filter((bar) => bar.endX > bar.startX + 1 && bar.height > 0);
 
     const rootCandidateSummaries =
@@ -2431,6 +2703,9 @@ export async function createGpRenderer(
         firstBarRawRect: firstRawRectForTransform,
         firstBarCalibratedRect: firstRawRectForTransform,
         firstBarFinalRect: firstFinalRectForTransform,
+        globalYOffsetPx: GLOBAL_HIGHLIGHT_Y_OFFSET_PX,
+        firstBarYBeforeGlobalOffset,
+        firstBarYAfterGlobalOffset,
       },
     };
 
@@ -2798,6 +3073,7 @@ export async function createGpRenderer(
     const api = createAlphaTabApi(container, renderPlan, zoomPercent);
     applyPlaybackSpeedPercentToApi(api, playbackSpeedPercent);
     activeApi = api;
+    applyMixerStateToApi(api, "renderer-created");
     const playbackAvailable = isPlaybackApiAvailable(api);
     if (!playbackAvailable) {
       setPlaybackCapabilityMessage("Playback is unavailable in this runtime.");
@@ -2941,6 +3217,7 @@ export async function createGpRenderer(
       };
       emitPlaybackRuntimeInfo();
       emitDebugInfo();
+      applyMixerStateToApi(api, "score-loaded");
     });
 
     api.renderStarted?.on(() => {
@@ -3185,6 +3462,102 @@ export async function createGpRenderer(
       }
       return applyPlaybackSpeedPercentToApi(activeApi, normalizedSpeedPercent);
     },
+    setTrackMuted: (trackIndex: number, muted: boolean) => {
+      if (!Number.isFinite(trackIndex)) {
+        return false;
+      }
+      if (muted) {
+        mutedTrackIndexes.add(trackIndex);
+      } else {
+        mutedTrackIndexes.delete(trackIndex);
+      }
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setTrackMuted");
+    },
+    setTrackSoloed: (trackIndex: number, soloed: boolean) => {
+      if (!Number.isFinite(trackIndex)) {
+        return false;
+      }
+      if (soloed) {
+        soloTrackIndexes.add(trackIndex);
+      } else {
+        soloTrackIndexes.delete(trackIndex);
+      }
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setTrackSoloed");
+    },
+    setTrackVolume: (trackIndex: number, volumePercent: number) => {
+      if (!Number.isFinite(trackIndex)) {
+        return false;
+      }
+      trackVolumeByIndex.set(trackIndex, clampVolumePercent(volumePercent));
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setTrackVolume");
+    },
+    setTrackBalance: (trackIndex: number, balancePercent: number) => {
+      if (!Number.isFinite(trackIndex)) {
+        return false;
+      }
+      trackBalanceByIndex.set(trackIndex, clampBalancePercent(balancePercent));
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setTrackBalance");
+    },
+    setMasterVolume: (volumePercent: number) => {
+      masterVolume = clampVolumePercent(volumePercent);
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setMasterVolume");
+    },
+    setMasterBalance: (balancePercent: number) => {
+      masterBalance = clampBalancePercent(balancePercent);
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "setMasterBalance");
+    },
+    applyMixerState: (state) => {
+      mutedTrackIndexes.clear();
+      state.mutedTrackIndexes.forEach((trackIndex) => {
+        if (Number.isFinite(trackIndex)) {
+          mutedTrackIndexes.add(trackIndex);
+        }
+      });
+      soloTrackIndexes.clear();
+      state.soloTrackIndexes.forEach((trackIndex) => {
+        if (Number.isFinite(trackIndex)) {
+          soloTrackIndexes.add(trackIndex);
+        }
+      });
+      trackVolumeByIndex.clear();
+      Object.entries(state.trackVolumeByIndex).forEach(([trackIndex, value]) => {
+        const parsedTrackIndex = Number(trackIndex);
+        if (Number.isFinite(parsedTrackIndex)) {
+          trackVolumeByIndex.set(parsedTrackIndex, clampVolumePercent(value));
+        }
+      });
+      trackBalanceByIndex.clear();
+      Object.entries(state.trackBalanceByIndex).forEach(([trackIndex, value]) => {
+        const parsedTrackIndex = Number(trackIndex);
+        if (Number.isFinite(parsedTrackIndex)) {
+          trackBalanceByIndex.set(parsedTrackIndex, clampBalancePercent(value));
+        }
+      });
+      masterVolume = clampVolumePercent(state.masterVolume);
+      masterBalance = clampBalancePercent(state.masterBalance);
+      if (!activeApi) {
+        return false;
+      }
+      return applyMixerStateToApi(activeApi, "applyMixerState");
+    },
     play: () => {
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
         hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
@@ -3196,8 +3569,12 @@ export async function createGpRenderer(
         pendingProgrammaticSeek.sessionToken === activeSessionToken &&
         pendingProgrammaticSeek.trackIndex === confirmedActiveTrackIndex
       ) {
-        pendingPlayAfterProgrammaticSeek = false;
-        seekToTick(pendingProgrammaticSeek.tick);
+        pendingPlayAfterProgrammaticSeek = true;
+        console.debug("[alphaTabGpRenderer] queued play after pending seek", {
+          tick: pendingProgrammaticSeek.tick,
+          trackIndex: pendingProgrammaticSeek.trackIndex,
+        });
+        return;
       }
 
       playbackScrollLockSnapshot = captureRenderViewportScroll();

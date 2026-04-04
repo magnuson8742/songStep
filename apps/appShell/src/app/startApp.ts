@@ -36,19 +36,24 @@ interface PlaybackBarAnchor {
 
 const ENABLE_CUSTOM_PLAYHEAD = true;
 const DEFAULT_BOTTOM_DOCK_HEIGHT_PX = 280;
-const MIN_BOTTOM_DOCK_HEIGHT_PX = 180;
+const MIN_BOTTOM_DOCK_HEIGHT_PX = 28;
 const MAX_BOTTOM_DOCK_HEIGHT_PX = 520;
 const ARRANGEMENT_BAR_WIDTH_PX = 24;
 const ARRANGEMENT_BAR_GAP_PX = 4;
 const DEFAULT_TAB_ZOOM_PERCENT = 100;
+const MOBILE_DEFAULT_TAB_ZOOM_PERCENT = 100;
+const MOBILE_LAYOUT_BREAKPOINT_PX = 900;
 const MIN_TAB_ZOOM_PERCENT = 60;
 const MAX_TAB_ZOOM_PERCENT = 160;
 const TAB_ZOOM_STEP_PERCENT = 10;
+const MOBILE_ZOOM_PRESETS = [110, 100, 90, 80, 72, 65, 58, 52, 46] as const;
 const SECTION_LABEL_VERTICAL_NUDGE_PX = 10;
 const MIN_PLAYBACK_SPEED_PERCENT = 15;
 const MAX_PLAYBACK_SPEED_PERCENT = 175;
 const DEFAULT_PLAYBACK_SPEED_PERCENT = 100;
 const PLAYBACK_SPEED_BUTTON_STEP_PERCENT = 5;
+const COLLAPSED_DOCK_THRESHOLD_PX = 74;
+const COLLAPSED_BOTTOM_DOCK_HEIGHT_PX = 44;
 
 interface AppState {
   currentView: AppView;
@@ -118,12 +123,18 @@ interface AppState {
   activeTrackName: string | null;
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
-  trackBalanceByIndex: Record<number, number>;
   masterVolume: number;
-  masterBalance: number;
   mutedTrackIndexes: number[];
   soloTrackIndexes: number[];
+  pendingPlaybackStart: {
+    requestId: number;
+    targetTrackIndex: number;
+    targetTick: number;
+    targetBar: number | null;
+  } | null;
+  nextPlaybackRequestId: number;
   bottomDockHeightPx: number;
+  isBottomDockCollapsed: boolean;
   tabZoomPercent: number;
   latestAnchorStrategyDebug: Record<string, unknown>[];
   latestPercussionAnchorDebug: Record<string, unknown> | null;
@@ -279,6 +290,31 @@ function updateTrackRowVisualState(state: AppState, rootElement: HTMLElement): v
   });
 }
 
+function applyMixerStateToRenderer(state: AppState): void {
+  if (!state.gpRenderer) {
+    return;
+  }
+  state.gpRenderer.applyMixerState({
+    mutedTrackIndexes: state.mutedTrackIndexes,
+    soloTrackIndexes: state.soloTrackIndexes,
+    trackVolumeByIndex: state.trackVolumeByIndex,
+    masterVolume: state.masterVolume,
+    trackBalanceByIndex: {},
+    masterBalance: 0,
+  });
+}
+
+function logPlaybackPipeline(eventType: string, payload: Record<string, unknown>): void {
+  console.debug(
+    "[songStep] playback-pipeline",
+    JSON.stringify({
+      eventType,
+      timestamp: new Date().toISOString(),
+      ...payload,
+    }),
+  );
+}
+
 function renderPlayerFieldValue(value: string | number | null): string {
   if (value === null || value === "") {
     return "-";
@@ -292,6 +328,25 @@ function clampPlaybackSpeedPercent(speedPercent: number): number {
     return DEFAULT_PLAYBACK_SPEED_PERCENT;
   }
   return Math.max(MIN_PLAYBACK_SPEED_PERCENT, Math.min(MAX_PLAYBACK_SPEED_PERCENT, Math.round(speedPercent)));
+}
+
+function resolveInitialTabZoomPercent(): number {
+  if (typeof window === "undefined") {
+    return DEFAULT_TAB_ZOOM_PERCENT;
+  }
+  const viewportWidth = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0);
+  if (viewportWidth > 0 && viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX) {
+    return MOBILE_DEFAULT_TAB_ZOOM_PERCENT;
+  }
+  return DEFAULT_TAB_ZOOM_PERCENT;
+}
+
+function isMobileViewport(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const viewportWidth = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0);
+  return viewportWidth > 0 && viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX;
 }
 
 function formatEffectiveTempoBpm(tempoBpm: number | null, playbackSpeedPercent: number): string {
@@ -380,7 +435,7 @@ function playMetronomeClick(state: AppState, isDownbeat: boolean): void {
 
 function stopPlaybackMetronome(state: AppState): void {
   if (state.pendingMetronomeIntervalId !== null) {
-    window.clearInterval(state.pendingMetronomeIntervalId);
+    window.clearTimeout(state.pendingMetronomeIntervalId);
     state.pendingMetronomeIntervalId = null;
   }
 }
@@ -388,12 +443,55 @@ function stopPlaybackMetronome(state: AppState): void {
 function startPlaybackMetronome(state: AppState): void {
   stopPlaybackMetronome(state);
   const beatDurationMs = Math.max(120, Math.round(60000 / resolveEffectiveTempoBpm(state)));
-  let beatCounter = 0;
-  playMetronomeClick(state, true);
-  state.pendingMetronomeIntervalId = window.setInterval(() => {
-    beatCounter += 1;
-    playMetronomeClick(state, beatCounter % 4 === 0);
-  }, beatDurationMs);
+  const beatsPerBar = 4;
+  const currentTick = state.playbackCurrentTick;
+  const currentBarStartTick = state.playbackCurrentBarStartTick;
+  const currentBarEndTickExclusive = state.playbackCurrentBarEndTickExclusive;
+  const barTickSpan =
+    currentBarStartTick === null || currentBarEndTickExclusive === null ? null : currentBarEndTickExclusive - currentBarStartTick;
+
+  let initialBeatInBar = 0;
+  let initialDelayMs = 0;
+
+  if (
+    currentTick !== null &&
+    currentBarStartTick !== null &&
+    barTickSpan !== null &&
+    barTickSpan > 0 &&
+    Number.isFinite(barTickSpan)
+  ) {
+    const ticksPerBeat = barTickSpan / beatsPerBar;
+    if (ticksPerBeat > 0 && Number.isFinite(ticksPerBeat)) {
+      const tickOffsetInBar = Math.min(Math.max(currentTick - currentBarStartTick, 0), Math.max(barTickSpan - 1, 0));
+      const beatProgress = tickOffsetInBar / ticksPerBeat;
+      const nearestBoundary = Math.round(beatProgress);
+      const boundaryEpsilonBeats = 0.02;
+      const isOnBoundary = Math.abs(beatProgress - nearestBoundary) <= boundaryEpsilonBeats;
+      if (isOnBoundary) {
+        const normalizedBeat = ((nearestBoundary % beatsPerBar) + beatsPerBar) % beatsPerBar;
+        initialBeatInBar = normalizedBeat;
+        initialDelayMs = 0;
+      } else {
+        const nextBeatOrdinal = Math.floor(beatProgress) + 1;
+        const beatsUntilNextBoundary = Math.max(nextBeatOrdinal - beatProgress, 0);
+        initialBeatInBar = ((nextBeatOrdinal % beatsPerBar) + beatsPerBar) % beatsPerBar;
+        initialDelayMs = Math.max(0, Math.round(beatDurationMs * beatsUntilNextBoundary));
+      }
+    }
+  }
+
+  const scheduleBeat = (beatInBar: number, delayMs: number): void => {
+    state.pendingMetronomeIntervalId = window.setTimeout(() => {
+      if (!state.metronomeEnabled || !state.playbackTransportActive || state.countInInProgress) {
+        state.pendingMetronomeIntervalId = null;
+        return;
+      }
+      playMetronomeClick(state, beatInBar === 0);
+      scheduleBeat((beatInBar + 1) % beatsPerBar, beatDurationMs);
+    }, Math.max(0, delayMs));
+  };
+
+  scheduleBeat(initialBeatInBar, initialDelayMs);
 }
 
 function clearCountInTimer(state: AppState): void {
@@ -472,36 +570,13 @@ function updateTrackControlVisualState(state: AppState, rootElement: HTMLElement
     }
   });
 
-  const balanceInputs = rootElement.querySelectorAll<HTMLInputElement>("[data-track-balance-index]");
-  balanceInputs.forEach((input) => {
-    const trackIndex = Number(input.dataset.trackBalanceIndex);
-    if (Number.isNaN(trackIndex)) {
-      return;
-    }
-
-    const value = state.trackBalanceByIndex[trackIndex] ?? 0;
-    input.value = String(value);
-    const valueLabel = rootElement.querySelector<HTMLElement>(`[data-track-balance-value="${trackIndex}"]`);
-    if (valueLabel) {
-      valueLabel.textContent = `${value}`;
-    }
-  });
-
   const masterVolumeInput = rootElement.querySelector<HTMLInputElement>("[data-master-action='set-volume']");
   if (masterVolumeInput) {
     masterVolumeInput.value = String(state.masterVolume);
   }
-  const masterBalanceInput = rootElement.querySelector<HTMLInputElement>("[data-master-action='set-balance']");
-  if (masterBalanceInput) {
-    masterBalanceInput.value = String(state.masterBalance);
-  }
   const masterVolumeValue = rootElement.querySelector<HTMLElement>("[data-master-volume-value='true']");
   if (masterVolumeValue) {
     masterVolumeValue.textContent = String(state.masterVolume);
-  }
-  const masterBalanceValue = rootElement.querySelector<HTMLElement>("[data-master-balance-value='true']");
-  if (masterBalanceValue) {
-    masterBalanceValue.textContent = String(state.masterBalance);
   }
 }
 
@@ -1510,6 +1585,20 @@ function updateLoopControlsVisual(rootElement: HTMLElement, state: AppState): vo
   if (loopEndLabel) {
     loopEndLabel.textContent = `B: ${state.loopEndBar === null ? "-" : String(state.loopEndBar)}`;
   }
+
+  const { canMoveLoopStartLeft, canMoveLoopStartRight, canMoveLoopEndLeft, canMoveLoopEndRight } =
+    resolveLoopMoveAvailability(state);
+
+  const setButtonDisabled = (selector: string, disabled: boolean): void => {
+    const button = rootElement.querySelector<HTMLButtonElement>(selector);
+    if (button) {
+      button.disabled = disabled;
+    }
+  };
+  setButtonDisabled("[data-action='move-loop-start-left']", !canMoveLoopStartLeft);
+  setButtonDisabled("[data-action='move-loop-start-right']", !canMoveLoopStartRight);
+  setButtonDisabled("[data-action='move-loop-end-left']", !canMoveLoopEndLeft);
+  setButtonDisabled("[data-action='move-loop-end-right']", !canMoveLoopEndRight);
 }
 
 function updateProjectStatusBanner(rootElement: HTMLElement, message: string): void {
@@ -1554,16 +1643,23 @@ function setupBottomDockResize(rootElement: HTMLElement, state: AppState): void 
   }
 
   const resolveDynamicDockMaxHeight = (): number => {
-    const middleContentHeight = Math.max(middleScroll.scrollHeight, middleScroll.clientHeight, MIN_BOTTOM_DOCK_HEIGHT_PX);
+    const middleContentHeight = Math.max(middleScroll.scrollHeight, middleScroll.clientHeight, 0);
     const measuredContentHeight =
       resizeHandle.offsetHeight + headers.offsetHeight + topBand.offsetHeight + middleContentHeight + bottomBand.offsetHeight;
     return Math.min(MAX_BOTTOM_DOCK_HEIGHT_PX, Math.max(MIN_BOTTOM_DOCK_HEIGHT_PX, measuredContentHeight));
   };
 
   const applyDockHeight = (): void => {
+    if (state.isBottomDockCollapsed) {
+      layoutShell.style.setProperty("--player-dock-height", `${COLLAPSED_BOTTOM_DOCK_HEIGHT_PX}px`);
+      layoutShell.classList.add("isDockCollapsed");
+      return;
+    }
+
     const dynamicMaxHeight = resolveDynamicDockMaxHeight();
     state.bottomDockHeightPx = Math.min(Math.max(state.bottomDockHeightPx, MIN_BOTTOM_DOCK_HEIGHT_PX), dynamicMaxHeight);
     layoutShell.style.setProperty("--player-dock-height", `${state.bottomDockHeightPx}px`);
+    layoutShell.classList.remove("isDockCollapsed");
   };
   applyDockHeight();
 
@@ -1583,6 +1679,9 @@ function setupBottomDockResize(rootElement: HTMLElement, state: AppState): void 
 
   resizeHandle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) {
+      return;
+    }
+    if (state.isBottomDockCollapsed) {
       return;
     }
     activePointerId = event.pointerId;
@@ -1707,6 +1806,7 @@ function haltPlaybackTransportAfterSeek(state: AppState, rootElement: HTMLElemen
   state.playbackIsPlaying = false;
   state.playbackFollowTargetFound = false;
   state.playbackFollowSource = "seek-paused";
+  state.pendingPlaybackStart = null;
   updatePlaybackFollowDiagnostics(rootElement, false, "seek-paused");
   resetPlaybackFollowBaselineAfterSeek(state);
 }
@@ -1728,6 +1828,110 @@ function clearLoopState(state: AppState): void {
   state.loopEndBar = null;
   state.loopEndTick = null;
   state.loopDragHandle = null;
+}
+
+function resolveActiveTrackAllowedBarRange(state: AppState): { firstAllowedBar: number; lastAllowedBar: number } | null {
+  const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+  const activeTrackRow = state.scoreOverview?.trackRows.find((row) => row.trackIndex === activeTrackIndex) ?? null;
+  const lastAllowedFromOverview = activeTrackRow?.barActivity.length ?? 0;
+  const fallbackLastAllowed = state.totalBars ?? state.scoreOverview?.totalBars ?? 0;
+  const lastAllowedBar = Math.max(lastAllowedFromOverview, fallbackLastAllowed);
+  if (!Number.isFinite(lastAllowedBar) || lastAllowedBar <= 0) {
+    return null;
+  }
+  return {
+    firstAllowedBar: 1,
+    lastAllowedBar,
+  };
+}
+
+function resolveLoopMoveAvailability(state: AppState): {
+  canMoveLoopStartLeft: boolean;
+  canMoveLoopStartRight: boolean;
+  canMoveLoopEndLeft: boolean;
+  canMoveLoopEndRight: boolean;
+} {
+  const allowedRange = resolveActiveTrackAllowedBarRange(state);
+  const startBar = state.loopStartBar;
+  const endBar = state.loopEndBar;
+  if (!allowedRange || startBar === null || endBar === null) {
+    return {
+      canMoveLoopStartLeft: false,
+      canMoveLoopStartRight: false,
+      canMoveLoopEndLeft: false,
+      canMoveLoopEndRight: false,
+    };
+  }
+
+  return {
+    canMoveLoopStartLeft: startBar > allowedRange.firstAllowedBar && startBar - 1 <= endBar,
+    canMoveLoopStartRight: startBar < allowedRange.lastAllowedBar && startBar + 1 <= endBar,
+    canMoveLoopEndLeft: endBar > allowedRange.firstAllowedBar && endBar - 1 >= startBar,
+    canMoveLoopEndRight: endBar < allowedRange.lastAllowedBar && endBar + 1 >= startBar,
+  };
+}
+
+function moveLoopBoundaryByBars(
+  state: AppState,
+  rootElement: HTMLElement,
+  boundary: "start" | "end",
+  delta: -1 | 1,
+): boolean {
+  if (!state.gpRenderer || state.loopStartBar === null || state.loopEndBar === null) {
+    return false;
+  }
+
+  const allowedRange = resolveActiveTrackAllowedBarRange(state);
+  if (!allowedRange) {
+    return false;
+  }
+
+  if (boundary === "start") {
+    const nextStart = Math.min(
+      Math.max(state.loopStartBar + delta, allowedRange.firstAllowedBar),
+      allowedRange.lastAllowedBar,
+    );
+    if (nextStart > state.loopEndBar) {
+      return false;
+    }
+    const nextRange = state.gpRenderer.getBarTickRange(nextStart);
+    if (!nextRange) {
+      return false;
+    }
+    state.loopStartBar = nextStart;
+    state.loopStartTick = nextRange.startTick;
+  } else {
+    const nextEnd = Math.min(
+      Math.max(state.loopEndBar + delta, allowedRange.firstAllowedBar),
+      allowedRange.lastAllowedBar,
+    );
+    if (nextEnd < state.loopStartBar) {
+      return false;
+    }
+    const nextRange = state.gpRenderer.getBarTickRange(nextEnd);
+    if (!nextRange) {
+      return false;
+    }
+    state.loopEndBar = nextEnd;
+    state.loopEndTick = nextRange.endTickExclusive ?? nextRange.startTick + 1;
+  }
+
+  updateLoopHandlesVisual(state, rootElement);
+  updateLoopControlsVisual(rootElement, state);
+  return true;
+}
+
+function getMobileZoomStepIndex(currentZoomPercent: number): number {
+  const presetDistances = MOBILE_ZOOM_PRESETS.map((preset) => Math.abs(currentZoomPercent - preset));
+  let bestIndex = 0;
+  let bestDistance = presetDistances[0] ?? Number.POSITIVE_INFINITY;
+  presetDistances.forEach((distance, index) => {
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  return bestIndex;
 }
 
 function updateLoopHandlesVisual(state: AppState, rootElement: HTMLElement): void {
@@ -1926,7 +2130,17 @@ function setupLoopHandleDrag(rootElement: HTMLElement, state: AppState): void {
     }
 
     if (state.loopDragHandle === "start") {
-      if (state.loopEndBar !== null && nearestAnchor.barNumber >= state.loopEndBar) {
+      const allowedRange = resolveActiveTrackAllowedBarRange(state);
+      if (!allowedRange) {
+        return;
+      }
+      if (
+        nearestAnchor.barNumber < allowedRange.firstAllowedBar ||
+        nearestAnchor.barNumber > allowedRange.lastAllowedBar
+      ) {
+        return;
+      }
+      if (state.loopEndBar !== null && nearestAnchor.barNumber > state.loopEndBar) {
         return;
       }
       const range = state.gpRenderer.getBarTickRange(nearestAnchor.barNumber);
@@ -1936,7 +2150,17 @@ function setupLoopHandleDrag(rootElement: HTMLElement, state: AppState): void {
       state.loopStartBar = nearestAnchor.barNumber;
       state.loopStartTick = range.startTick;
     } else {
-      if (state.loopStartBar !== null && nearestAnchor.barNumber <= state.loopStartBar) {
+      const allowedRange = resolveActiveTrackAllowedBarRange(state);
+      if (!allowedRange) {
+        return;
+      }
+      if (
+        nearestAnchor.barNumber < allowedRange.firstAllowedBar ||
+        nearestAnchor.barNumber > allowedRange.lastAllowedBar
+      ) {
+        return;
+      }
+      if (state.loopStartBar !== null && nearestAnchor.barNumber < state.loopStartBar) {
         return;
       }
       const range = state.gpRenderer.getBarTickRange(nearestAnchor.barNumber);
@@ -2039,7 +2263,12 @@ function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): 
 
     const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
     if (state.loopEnabled && (state.loopStartTick === null || state.loopEndTick === null)) {
-      const loopRange = state.gpRenderer.getBarTickRange(clickedAnchor.barNumber);
+      const allowedRange = resolveActiveTrackAllowedBarRange(state);
+      const clickedBarInRange =
+        allowedRange !== null &&
+        clickedAnchor.barNumber >= allowedRange.firstAllowedBar &&
+        clickedAnchor.barNumber <= allowedRange.lastAllowedBar;
+      const loopRange = clickedBarInRange ? state.gpRenderer.getBarTickRange(clickedAnchor.barNumber) : null;
       if (loopRange) {
         state.loopStartBar = clickedAnchor.barNumber;
         state.loopStartTick = loopRange.startTick;
@@ -2109,7 +2338,12 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
 
     const targetBarNumber = clickedBarIndex + 1;
     if (state.loopEnabled && (state.loopStartTick === null || state.loopEndTick === null)) {
-      const loopRange = state.gpRenderer.getBarTickRange(targetBarNumber);
+      const allowedRange = resolveActiveTrackAllowedBarRange(state);
+      const clickedBarInRange =
+        allowedRange !== null &&
+        targetBarNumber >= allowedRange.firstAllowedBar &&
+        targetBarNumber <= allowedRange.lastAllowedBar;
+      const loopRange = clickedBarInRange ? state.gpRenderer.getBarTickRange(targetBarNumber) : null;
       if (loopRange) {
         state.loopStartBar = targetBarNumber;
         state.loopStartTick = loopRange.startTick;
@@ -2213,13 +2447,14 @@ export function startApp(rootElement: HTMLElement): void {
     activeTrackName: null,
     scoreOverview: null,
     trackVolumeByIndex: {},
-    trackBalanceByIndex: {},
     masterVolume: 80,
-    masterBalance: 0,
     mutedTrackIndexes: [],
     soloTrackIndexes: [],
+    pendingPlaybackStart: null,
+    nextPlaybackRequestId: 0,
     bottomDockHeightPx: DEFAULT_BOTTOM_DOCK_HEIGHT_PX,
-    tabZoomPercent: DEFAULT_TAB_ZOOM_PERCENT,
+    isBottomDockCollapsed: false,
+    tabZoomPercent: resolveInitialTabZoomPercent(),
     latestAnchorStrategyDebug: [],
     latestPercussionAnchorDebug: null,
     latestAnchorDebugSnapshot: null,
@@ -2401,9 +2636,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.activeTrackName = null;
           state.scoreOverview = null;
           state.trackVolumeByIndex = {};
-          state.trackBalanceByIndex = {};
           state.masterVolume = 80;
-          state.masterBalance = 0;
           state.mutedTrackIndexes = [];
           state.soloTrackIndexes = [];
           state.lastClickedTrackIndex = null;
@@ -2414,6 +2647,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
           state.countInEnabled = false;
           state.countInInProgress = false;
+          state.pendingPlaybackStart = null;
           state.pendingCountInTimerId = null;
           state.metronomeEnabled = false;
           stopPlaybackMetronome(state);
@@ -2471,9 +2705,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.activeTrackName = null;
             state.scoreOverview = null;
             state.trackVolumeByIndex = {};
-            state.trackBalanceByIndex = {};
             state.masterVolume = 80;
-            state.masterBalance = 0;
             state.mutedTrackIndexes = [];
             state.soloTrackIndexes = [];
             state.lastClickedTrackIndex = null;
@@ -2484,6 +2716,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
             state.countInEnabled = false;
             state.countInInProgress = false;
+            state.pendingPlaybackStart = null;
             state.pendingCountInTimerId = null;
             state.metronomeEnabled = false;
             stopPlaybackMetronome(state);
@@ -2546,11 +2779,20 @@ export function startApp(rootElement: HTMLElement): void {
         renderHostElementCounts: state.renderHostElementCounts,
         scoreOverview: state.scoreOverview,
         trackVolumeByIndex: state.trackVolumeByIndex,
-        trackBalanceByIndex: state.trackBalanceByIndex,
         masterVolume: state.masterVolume,
-        masterBalance: state.masterBalance,
         mutedTrackIndexes: state.mutedTrackIndexes,
         soloTrackIndexes: state.soloTrackIndexes,
+        canMoveLoopStartLeft: resolveLoopMoveAvailability(state).canMoveLoopStartLeft,
+        canMoveLoopStartRight: resolveLoopMoveAvailability(state).canMoveLoopStartRight,
+        canMoveLoopEndLeft: resolveLoopMoveAvailability(state).canMoveLoopEndLeft,
+        canMoveLoopEndRight: resolveLoopMoveAvailability(state).canMoveLoopEndRight,
+        canZoomIn: isMobileViewport()
+          ? getMobileZoomStepIndex(state.tabZoomPercent) > 0
+          : state.tabZoomPercent < MAX_TAB_ZOOM_PERCENT,
+        canZoomOut: isMobileViewport()
+          ? getMobileZoomStepIndex(state.tabZoomPercent) < MOBILE_ZOOM_PRESETS.length - 1
+          : state.tabZoomPercent > MIN_TAB_ZOOM_PERCENT,
+        isBottomDockCollapsed: state.isBottomDockCollapsed,
         onTrackSelectionChange: (trackIndex: number) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "track-select-requested",
@@ -2649,6 +2891,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.mutedTrackIndexes = isMuted
             ? state.mutedTrackIndexes.filter((value) => value !== trackIndex)
             : [...state.mutedTrackIndexes, trackIndex];
+          state.gpRenderer?.setTrackMuted(trackIndex, !isMuted);
+          applyMixerStateToRenderer(state);
           updateTrackToggleVisualState(state, rootElement);
           updateTrackControlVisualState(state, rootElement);
         },
@@ -2657,29 +2901,83 @@ export function startApp(rootElement: HTMLElement): void {
           state.soloTrackIndexes = isSolo
             ? state.soloTrackIndexes.filter((value) => value !== trackIndex)
             : [...state.soloTrackIndexes, trackIndex];
+          state.gpRenderer?.setTrackSoloed(trackIndex, !isSolo);
+          applyMixerStateToRenderer(state);
           updateTrackToggleVisualState(state, rootElement);
           updateTrackControlVisualState(state, rootElement);
         },
         onTrackVolumeChange: (trackIndex, volume) => {
           state.trackVolumeByIndex[trackIndex] = volume;
-          updateTrackControlVisualState(state, rootElement);
-        },
-        onTrackBalanceChange: (trackIndex, balance) => {
-          state.trackBalanceByIndex[trackIndex] = balance;
+          state.gpRenderer?.setTrackVolume(trackIndex, volume);
+          applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onMasterVolumeChange: (volume) => {
           state.masterVolume = volume;
+          state.gpRenderer?.setMasterVolume(volume);
+          applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
-        onMasterBalanceChange: (balance) => {
-          state.masterBalance = balance;
-          updateTrackControlVisualState(state, rootElement);
+        onMoveLoopStartLeft: () => {
+          moveLoopBoundaryByBars(state, rootElement, "start", -1);
+        },
+        onMoveLoopStartRight: () => {
+          moveLoopBoundaryByBars(state, rootElement, "start", 1);
+        },
+        onMoveLoopEndLeft: () => {
+          moveLoopBoundaryByBars(state, rootElement, "end", -1);
+        },
+        onMoveLoopEndRight: () => {
+          moveLoopBoundaryByBars(state, rootElement, "end", 1);
+        },
+        onZoomIn: () => {
+          const isMobile = isMobileViewport();
+          const nextZoomPercent = isMobile
+            ? MOBILE_ZOOM_PRESETS[Math.max(0, getMobileZoomStepIndex(state.tabZoomPercent) - 1)]
+            : Math.min(MAX_TAB_ZOOM_PERCENT, state.tabZoomPercent + TAB_ZOOM_STEP_PERCENT);
+          if (!nextZoomPercent || nextZoomPercent === state.tabZoomPercent) {
+            return;
+          }
+          state.tabZoomPercent = nextZoomPercent;
+          state.gpRenderer?.setZoom(nextZoomPercent);
+          render();
+        },
+        onZoomOut: () => {
+          const isMobile = isMobileViewport();
+          const nextZoomPercent = isMobile
+            ? MOBILE_ZOOM_PRESETS[Math.min(MOBILE_ZOOM_PRESETS.length - 1, getMobileZoomStepIndex(state.tabZoomPercent) + 1)]
+            : Math.max(MIN_TAB_ZOOM_PERCENT, state.tabZoomPercent - TAB_ZOOM_STEP_PERCENT);
+          if (!nextZoomPercent || nextZoomPercent === state.tabZoomPercent) {
+            return;
+          }
+          state.tabZoomPercent = nextZoomPercent;
+          state.gpRenderer?.setZoom(nextZoomPercent);
+          render();
+        },
+        onCollapseBottomDock: () => {
+          state.isBottomDockCollapsed = true;
+          render();
+        },
+        onExpandBottomDock: () => {
+          state.isBottomDockCollapsed = false;
+          if (state.bottomDockHeightPx <= COLLAPSED_DOCK_THRESHOLD_PX) {
+            state.bottomDockHeightPx = DEFAULT_BOTTOM_DOCK_HEIGHT_PX;
+          }
+          render();
         },
         onPlay: () => {
           if (!state.gpRenderer) {
             state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            return;
+          }
+          if (state.pendingPlaybackStart || state.countInInProgress || state.playbackTransportActive || state.playbackIsPlaying === true) {
+            logPlaybackPipeline("play-ignored-duplicate", {
+              pendingPlaybackStart: state.pendingPlaybackStart !== null,
+              countInInProgress: state.countInInProgress,
+              playbackTransportActive: state.playbackTransportActive,
+              playbackIsPlaying: state.playbackIsPlaying,
+            });
             return;
           }
 
@@ -2688,13 +2986,17 @@ export function startApp(rootElement: HTMLElement): void {
             state.loopEnabled && state.loopStartTick !== null
               ? state.loopStartTick
               : getActiveManualNavigationTarget(state)?.targetTick ?? null;
+          const targetBar =
+            state.loopEnabled && state.loopStartBar !== null
+              ? state.loopStartBar
+              : getActiveManualNavigationTarget(state)?.targetBar ?? null;
+          const requestId = state.nextPlaybackRequestId + 1;
+          state.nextPlaybackRequestId = requestId;
           const startPlaybackNow = (): void => {
             if (!state.gpRenderer) {
               return;
             }
-            if (targetTick !== null) {
-              state.gpRenderer.seekToTick(targetTick);
-            }
+            logPlaybackPipeline("play-dispatch", { requestId, targetTick, targetBar });
             state.playbackTransportActive = true;
             clearNavigationSelectionState(state, rootElement);
             state.manualNavigationVisualOverrideActive = false;
@@ -2707,9 +3009,34 @@ export function startApp(rootElement: HTMLElement): void {
             }
             state.gpRenderer.play();
           };
+          const requiresSeek = targetTick !== null && (state.playbackCurrentTick === null || Math.abs(state.playbackCurrentTick - targetTick) > 1);
+          logPlaybackPipeline("play-request", { requestId, targetTick, targetBar, requiresSeek });
+
+          const schedulePlaybackStart = (): void => {
+            if (!state.gpRenderer) {
+              return;
+            }
+            if (!requiresSeek || targetTick === null) {
+              startPlaybackNow();
+              return;
+            }
+            const seekApplied = state.gpRenderer.seekToTick(targetTick);
+            logPlaybackPipeline("play-seek-dispatched", { requestId, targetTick, seekApplied });
+            if (!seekApplied) {
+              state.projectStatusMessage = "Could not seek to playback start.";
+              updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+              return;
+            }
+            state.pendingPlaybackStart = {
+              requestId,
+              targetTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex,
+              targetTick,
+              targetBar,
+            };
+          };
 
           if (!state.countInEnabled) {
-            startPlaybackNow();
+            schedulePlaybackStart();
             return;
           }
 
@@ -2730,7 +3057,7 @@ export function startApp(rootElement: HTMLElement): void {
               state.pendingCountInTimerId = window.setTimeout(() => {
                 state.pendingCountInTimerId = null;
                 state.countInInProgress = false;
-                startPlaybackNow();
+                schedulePlaybackStart();
               }, beatDurationMs);
               return;
             }
@@ -2748,6 +3075,10 @@ export function startApp(rootElement: HTMLElement): void {
           }
 
           cancelCountIn(state, rootElement);
+          if (state.pendingPlaybackStart) {
+            logPlaybackPipeline("play-cancelled", { reason: "pause", requestId: state.pendingPlaybackStart.requestId });
+          }
+          state.pendingPlaybackStart = null;
           state.playbackTransportActive = false;
           stopPlaybackMetronome(state);
           state.gpRenderer.pause();
@@ -2764,6 +3095,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
           cancelCountIn(state, rootElement);
+          if (state.pendingPlaybackStart) {
+            logPlaybackPipeline("play-cancelled", { reason: "stop", requestId: state.pendingPlaybackStart.requestId });
+          }
+          state.pendingPlaybackStart = null;
           stopPlaybackMetronome(state);
           state.playbackTransportActive = false;
           state.playbackFollowTargetFound = false;
@@ -2928,7 +3263,10 @@ export function startApp(rootElement: HTMLElement): void {
             effectiveStaveProfile: debugInfo.effectiveStaveProfile,
           });
           state.gpRenderDebugInfo = debugInfo;
-          state.activeTrackName = debugInfo.confirmedActiveTrackName ?? null;
+          const matchedTrack = state.gpTracks.find((track) => track.index === debugInfo.confirmedActiveTrackIndex);
+          state.activeTrackName = matchedTrack
+            ? matchedTrack.name
+            : (debugInfo.confirmedActiveTrackName ?? null);
           updateProjectDebugInfoPanel(rootElement, debugInfo);
           updatePlayerRuntimeFields(state, rootElement);
           updateDebugField(rootElement, "requested-track-index", String(state.requestedTrackIndex ?? "-"));
@@ -2953,10 +3291,41 @@ export function startApp(rootElement: HTMLElement): void {
             trackIndex,
           });
           tryCompletePendingOverviewNavigationAfterRender(state, rootElement, trackIndex);
+          applyMixerStateToRenderer(state);
           nudgeRenderedSectionLabels(rootElement, state);
           updateLoopHandlesVisual(state, rootElement);
         },
         onProgrammaticSeekConfirmed: (trackIndex, tick) => {
+          if (
+            state.pendingPlaybackStart &&
+            state.pendingPlaybackStart.targetTrackIndex === trackIndex &&
+            Math.abs(state.pendingPlaybackStart.targetTick - tick) <= 1
+          ) {
+            const pendingStart = state.pendingPlaybackStart;
+            state.pendingPlaybackStart = null;
+            logPlaybackPipeline("play-seek-confirmed", {
+              requestId: pendingStart.requestId,
+              targetTick: pendingStart.targetTick,
+              confirmedTick: tick,
+            });
+            state.playbackTransportActive = true;
+            clearNavigationSelectionState(state, rootElement);
+            state.manualNavigationVisualOverrideActive = false;
+            state.projectStatusMessage = null;
+            updateProjectStatusBanner(rootElement, "");
+            if (state.metronomeEnabled) {
+              startPlaybackMetronome(state);
+            } else {
+              stopPlaybackMetronome(state);
+            }
+            logPlaybackPipeline("play-dispatch", {
+              requestId: pendingStart.requestId,
+              targetTick: pendingStart.targetTick,
+              targetBar: pendingStart.targetBar,
+            });
+            state.gpRenderer?.play();
+          }
+
           if (
             state.pendingOverviewNavigationBar !== null &&
             state.pendingOverviewNavigationTrackIndex === trackIndex &&
@@ -3008,9 +3377,6 @@ export function startApp(rootElement: HTMLElement): void {
           info.trackRows.forEach((row) => {
             if (state.trackVolumeByIndex[row.trackIndex] === undefined) {
               state.trackVolumeByIndex[row.trackIndex] = 80;
-            }
-            if (state.trackBalanceByIndex[row.trackIndex] === undefined) {
-              state.trackBalanceByIndex[row.trackIndex] = 0;
             }
           });
           updateArrangementOverview(state, rootElement);
@@ -3194,7 +3560,10 @@ export function startApp(rootElement: HTMLElement): void {
           if (state.currentProject) {
             state.currentProject.viewState.selectedTrackIndex = trackIndex;
           }
-          state.activeTrackName = state.gpTracks.find((track) => track.index === trackIndex)?.name ?? state.activeTrackName;
+          const matchedTrack = state.gpTracks.find((track) => track.index === trackIndex);
+          state.activeTrackName = matchedTrack
+            ? matchedTrack.name
+            : state.activeTrackName;
 
           updateTrackStripActive(rootElement, trackIndex);
           updateDebugField(rootElement, "selected-track-index", String(trackIndex));
@@ -3264,6 +3633,7 @@ export function startApp(rootElement: HTMLElement): void {
         .then((renderer) => {
           state.gpRenderer = renderer;
           state.gpRenderer.setPlaybackSpeedPercent(state.playbackSpeedPercent);
+          applyMixerStateToRenderer(state);
         })
         .catch((error: unknown) => {
           state.projectStatusMessage =

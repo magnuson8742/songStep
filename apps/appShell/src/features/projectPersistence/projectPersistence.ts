@@ -69,6 +69,11 @@ function getDefaultProjectFileName(projectTitle: string): string {
   return `${normalizedName}${PROJECT_FILE_EXTENSION}`;
 }
 
+function getDefaultProjectTitle(fileName: string): string {
+  const fileNameWithoutExtension = fileName.replace(/\.[^.]+$/, "").trim();
+  return fileNameWithoutExtension || "Untitled Project";
+}
+
 function getWindowWithPickers(): Window & {
   showOpenFilePicker?: (options: OpenFilePickerOptions) => Promise<FilePickerHandle[]>;
   showSaveFilePicker?: (options: SaveFilePickerOptions) => Promise<SaveFilePickerHandle>;
@@ -150,6 +155,7 @@ export async function createProjectFromSource(
   projectTitle: string,
 ): Promise<SongStepProject> {
   const nowIso = new Date().toISOString();
+  const normalizedProjectTitle = projectTitle.trim() || getDefaultProjectTitle(sourceFile.fileName);
 
   const sourceData: SourceFileData = {
     fileName: sourceFile.fileName,
@@ -160,7 +166,7 @@ export async function createProjectFromSource(
 
   return {
     id: crypto.randomUUID(),
-    title: projectTitle.trim(),
+    title: normalizedProjectTitle,
     createdAtIso: nowIso,
     updatedAtIso: nowIso,
     sourceFile: sourceData,
@@ -235,8 +241,6 @@ export async function saveProjectToDisk(project: SongStepProject): Promise<SaveP
 export async function saveProjectAsToDisk(project: SongStepProject): Promise<SaveProjectResult> {
   return saveProjectToDisk(project);
 }
-
-
 
 function normalizeViewState(project: SongStepProject): SongStepProject {
   return {

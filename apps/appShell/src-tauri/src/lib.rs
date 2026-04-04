@@ -3,19 +3,24 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-const SESSION_DEBUG_DIRECTORY: &str = r"C:\Programs\songStep\debug";
+use tauri::Manager;
 
 struct SessionDebugState {
     file_path: PathBuf,
 }
 
-fn build_session_debug_file_path() -> PathBuf {
+enum SessionDebugMode {
+    File(SessionDebugState),
+    ConsoleOnly,
+    Unavailable(String),
+}
+
+fn build_session_debug_file_path(debug_directory: &PathBuf) -> PathBuf {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
-    PathBuf::from(SESSION_DEBUG_DIRECTORY).join(format!("songstep-session-debug-{millis}.jsonl"))
+    debug_directory.join(format!("songstep-session-debug-{millis}.jsonl"))
 }
 
 fn append_jsonl_line(file_path: &PathBuf, line: &str) -> Result<(), String> {
@@ -35,10 +40,27 @@ fn append_jsonl_line(file_path: &PathBuf, line: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn initialize_session_debug_state() -> Result<SessionDebugState, String> {
-    create_dir_all(SESSION_DEBUG_DIRECTORY)
-        .map_err(|error| format!("create debug directory failed: {error}"))?;
-    let file_path = build_session_debug_file_path();
+fn resolve_session_debug_directory(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let path_resolver = app_handle.path();
+    let directory_candidates = [
+        path_resolver.app_log_dir(),
+        path_resolver.app_local_data_dir(),
+        path_resolver.app_data_dir(),
+        path_resolver.app_cache_dir(),
+    ];
+    for candidate in directory_candidates {
+        match candidate {
+            Ok(path) => return Ok(path.join("debug")),
+            Err(_) => continue,
+        }
+    }
+    Err("could not resolve writable app debug directory".to_string())
+}
+
+fn initialize_session_debug_state(app_handle: &tauri::AppHandle) -> Result<SessionDebugState, String> {
+    let debug_directory = resolve_session_debug_directory(app_handle)?;
+    create_dir_all(&debug_directory).map_err(|error| format!("create debug directory failed: {error}"))?;
+    let file_path = build_session_debug_file_path(&debug_directory);
     let startup_events = [
         r#"{"type":"session-start"}"#,
         r#"{"type":"backend-ready"}"#,
@@ -49,34 +71,74 @@ fn initialize_session_debug_state() -> Result<SessionDebugState, String> {
     Ok(SessionDebugState { file_path })
 }
 
+fn initialize_session_debug_mode(app_handle: &tauri::AppHandle) -> SessionDebugMode {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        println!("[songstep-session-debug] {{\"type\":\"session-start\",\"mode\":\"mobile-console\"}}");
+        println!("[songstep-session-debug] {{\"type\":\"backend-ready\",\"mode\":\"mobile-console\"}}");
+        let _ = app_handle;
+        SessionDebugMode::ConsoleOnly
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        match initialize_session_debug_state(app_handle) {
+            Ok(state) => SessionDebugMode::File(state),
+            Err(error) => {
+                eprintln!("session debug logger unavailable: {error}");
+                SessionDebugMode::Unavailable(error)
+            }
+        }
+    }
+}
+
 #[tauri::command]
-fn get_session_debug_log_path(state: tauri::State<'_, Mutex<SessionDebugState>>) -> Result<String, String> {
+fn get_session_debug_log_path(
+    state: tauri::State<'_, Mutex<SessionDebugMode>>,
+) -> Result<String, String> {
     let guard = state
         .lock()
         .map_err(|error| format!("session debug state lock failed: {error}"))?;
-    Ok(guard.file_path.to_string_lossy().to_string())
+    match &*guard {
+        SessionDebugMode::File(session_state) => Ok(session_state.file_path.to_string_lossy().to_string()),
+        SessionDebugMode::ConsoleOnly => Ok("mobile-console-logging".to_string()),
+        SessionDebugMode::Unavailable(reason) => Err(format!("session debug logging unavailable: {reason}")),
+    }
 }
 
 #[tauri::command]
 fn append_session_debug_event(
     event_json: String,
-    state: tauri::State<'_, Mutex<SessionDebugState>>,
+    state: tauri::State<'_, Mutex<SessionDebugMode>>,
 ) -> Result<(), String> {
     let guard = state
         .lock()
         .map_err(|error| format!("session debug state lock failed: {error}"))?;
-    append_jsonl_line(&guard.file_path, event_json.trim_end_matches('\n')).map_err(|error| {
-        eprintln!("append_session_debug_event failed: {error}");
-        error
-    })
+    let trimmed_event_json = event_json.trim_end_matches('\n');
+    match &*guard {
+        SessionDebugMode::File(session_state) => {
+            append_jsonl_line(&session_state.file_path, trimmed_event_json).map_err(|error| {
+                eprintln!("append_session_debug_event failed: {error}");
+                error
+            })
+        }
+        SessionDebugMode::ConsoleOnly => {
+            println!("[songstep-session-debug] {trimmed_event_json}");
+            Ok(())
+        }
+        SessionDebugMode::Unavailable(reason) => {
+            Err(format!("session debug logging unavailable: {reason}"))
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let session_debug_state =
-        initialize_session_debug_state().expect("failed to initialize backend session logger");
     tauri::Builder::default()
-        .manage(Mutex::new(session_debug_state))
+        .setup(|app| {
+            let session_debug_mode = initialize_session_debug_mode(&app.handle());
+            app.manage(Mutex::new(session_debug_mode));
+            Ok(())
+        })
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
