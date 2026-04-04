@@ -574,9 +574,12 @@ select {
 
 .playerLayoutShell {
   --player-dock-height: 280px;
+  --player-safe-bottom: env(safe-area-inset-bottom, 0px);
   display: grid;
-  grid-template-rows: auto auto minmax(240px, 1fr) var(--player-dock-height);
+  grid-template-rows: auto auto minmax(240px, 1fr) calc(var(--player-dock-height) + var(--player-safe-bottom));
   height: 100vh;
+  height: 100dvh;
+  min-height: 100vh;
   overflow: hidden;
   background: #0f131b;
 }
@@ -800,6 +803,8 @@ select {
   display: grid;
   grid-template-rows: 8px auto auto minmax(0, 1fr) auto;
   min-height: 0;
+  padding-bottom: var(--player-safe-bottom);
+  box-sizing: border-box;
   border-top: 1px solid rgba(182, 204, 232, 0.2);
   background: rgba(25, 35, 50, 0.94);
 }
@@ -1018,7 +1023,7 @@ select {
 @media (max-width: 900px) {
   .playerLayoutShell {
     --player-dock-height: 212px;
-    grid-template-rows: auto auto minmax(180px, 1fr) var(--player-dock-height);
+    grid-template-rows: auto auto minmax(180px, 1fr) calc(var(--player-dock-height) + var(--player-safe-bottom));
   }
 
   .playerTopHeader {
