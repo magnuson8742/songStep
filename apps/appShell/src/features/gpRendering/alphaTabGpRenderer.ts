@@ -829,6 +829,11 @@ function waitForAnimationFrame(): Promise<void> {
   });
 }
 
+function hasRenderableHostSize(container: HTMLElement): boolean {
+  const rect = container.getBoundingClientRect();
+  return container.clientWidth > 0 && rect.width > 0 && rect.height > 0;
+}
+
 export async function createGpRenderer(
   container: HTMLElement,
   sourceFile: SourceFileData,
@@ -3150,6 +3155,38 @@ export async function createGpRenderer(
       return;
     }
 
+    if (!hasRenderableHostSize(container)) {
+      traceRenderer("renderer-host-not-ready", {
+        sessionToken,
+        nextTrackIndex,
+        clientWidth: container.clientWidth,
+      });
+      await waitForAnimationFrame();
+      await new Promise<void>((resolve) => {
+        window.setTimeout(() => resolve(), 40);
+      });
+      if (!hasRenderableHostSize(container)) {
+        traceRenderer("renderer-host-not-ready", {
+          sessionToken,
+          nextTrackIndex,
+          clientWidth: container.clientWidth,
+          deferred: true,
+        });
+      } else {
+        traceRenderer("renderer-host-ready", {
+          sessionToken,
+          nextTrackIndex,
+          clientWidth: container.clientWidth,
+        });
+      }
+    } else {
+      traceRenderer("renderer-host-ready", {
+        sessionToken,
+        nextTrackIndex,
+        clientWidth: container.clientWidth,
+      });
+    }
+
     const api = createAlphaTabApi(container, renderPlan, zoomPercent);
     applyPlaybackSpeedPercentToApi(api, playbackSpeedPercent);
     activeApi = api;
@@ -3166,6 +3203,10 @@ export async function createGpRenderer(
       setPlaybackCapabilityMessage("Playback is unavailable in this runtime.");
     } else {
       setPlaybackCapabilityMessage(null);
+      emitRenderLifecycle("playback-runtime-ready-fallback", {
+        sessionToken,
+        reason: "playback-api-available",
+      });
     }
 
     if (playbackAvailable) {

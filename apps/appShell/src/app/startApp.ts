@@ -145,7 +145,10 @@ interface AppState {
   rendererScoreLoaded: boolean;
   rendererRenderFinished: boolean;
   rendererPlayerReady: boolean;
+  rendererFallbackReady: boolean;
   trackSwitchInProgress: boolean;
+  projectRendererCreateInFlight: boolean;
+  projectRendererCreateKey: string | null;
 }
 
 function triggerJsonDownload(fileName: string, payload: unknown): void {
@@ -2507,7 +2510,10 @@ export function startApp(rootElement: HTMLElement): void {
     rendererScoreLoaded: false,
     rendererRenderFinished: false,
     rendererPlayerReady: false,
+    rendererFallbackReady: false,
     trackSwitchInProgress: false,
+    projectRendererCreateInFlight: false,
+    projectRendererCreateKey: null,
   };
 
   const hardCancelPlaybackPipeline = (
@@ -2583,6 +2589,9 @@ export function startApp(rootElement: HTMLElement): void {
     state.rendererScoreLoaded = false;
     state.rendererRenderFinished = false;
     state.rendererPlayerReady = false;
+    state.rendererFallbackReady = false;
+    state.projectRendererCreateInFlight = false;
+    state.projectRendererCreateKey = null;
     if (!state.gpRenderer) {
       traceRendererLifecycle("cleanupRenderer-exit-noop", {
         reason: "no-renderer",
@@ -2590,12 +2599,15 @@ export function startApp(rootElement: HTMLElement): void {
       return;
     }
 
+    traceRendererLifecycle("renderer-destroy-start", {
+      selectedTrackIndex: state.selectedTrackIndex,
+    });
     logPlaybackPipeline("renderer-destroy", {
       selectedTrackIndex: state.selectedTrackIndex,
     });
     state.gpRenderer.destroy();
     state.gpRenderer = null;
-    traceRendererLifecycle("cleanupRenderer-exit-destroyed", {
+    traceRendererLifecycle("renderer-destroy-finish", {
       selectedTrackIndex: state.selectedTrackIndex,
     });
   };
@@ -2857,6 +2869,13 @@ export function startApp(rootElement: HTMLElement): void {
     }
 
     if (state.currentView === "project" && state.currentProject) {
+      const projectCreateKey = `${state.currentProject.sourceFile.fileName}::${state.selectedTrackIndex}`;
+      if (state.projectRendererCreateInFlight && state.projectRendererCreateKey === projectCreateKey) {
+        traceRendererLifecycle("initial-render-in-flight-skip", {
+          projectCreateKey,
+        });
+        return;
+      }
       traceRendererLifecycle("project-render-path", {
         action: "cleanup-before-project-screen",
         selectedTrackIndex: state.selectedTrackIndex,
@@ -2966,6 +2985,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.trackSwitchInProgress = true;
           state.rendererRenderFinished = false;
           state.rendererPlayerReady = false;
+          state.rendererFallbackReady = false;
           hardCancelPlaybackPipeline("track-switch", { resetPosition: true });
           traceTrackSwitch("onTrackSelectionChange-after-hard-cancel", {
             nextTrackIndex: trackIndex,
@@ -3167,20 +3187,22 @@ export function startApp(rootElement: HTMLElement): void {
             rendererScoreLoaded: state.rendererScoreLoaded,
             rendererRenderFinished: state.rendererRenderFinished,
             rendererPlayerReady: state.rendererPlayerReady,
+            rendererFallbackReady: state.rendererFallbackReady,
             confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
             trackSwitchInProgress: state.trackSwitchInProgress,
             requestedTrackIndex: state.requestedTrackIndex,
           };
-          const playbackReady =
+          const playbackReadyBase =
             readiness.hasRenderer &&
             readiness.rendererScoreLoaded &&
             readiness.rendererRenderFinished &&
-            readiness.rendererPlayerReady &&
             readiness.confirmedTrackIndex !== null &&
             !readiness.trackSwitchInProgress &&
             readiness.requestedTrackIndex === null;
+          const playbackReadyPrimary = playbackReadyBase && readiness.rendererPlayerReady;
+          const playbackReadyFallback = playbackReadyBase && readiness.rendererFallbackReady;
 
-          if (!playbackReady) {
+          if (!playbackReadyPrimary && !playbackReadyFallback) {
             if (readiness.trackSwitchInProgress || readiness.requestedTrackIndex !== null) {
               tracePlayback("play-blocked-track-switch-in-progress", {
                 requestId,
@@ -3196,6 +3218,11 @@ export function startApp(rootElement: HTMLElement): void {
             }
             return;
           }
+          tracePlayback(playbackReadyPrimary ? "play-ready-primary" : "play-ready-fallback", {
+            requestId,
+            selectedTrackIndex: state.selectedTrackIndex,
+            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+          });
           const startPlaybackNow = (): void => {
             if (!state.gpRenderer) {
               return;
@@ -3449,6 +3476,12 @@ export function startApp(rootElement: HTMLElement): void {
         reason: "project-screen-init",
         selectedTrackIndex: state.selectedTrackIndex,
       });
+      state.projectRendererCreateInFlight = true;
+      state.projectRendererCreateKey = projectCreateKey;
+      traceRendererLifecycle("renderer-create-start", {
+        projectCreateKey,
+        selectedTrackIndex: state.selectedTrackIndex,
+      });
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
         onTracksLoaded: (tracks) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
@@ -3482,7 +3515,10 @@ export function startApp(rootElement: HTMLElement): void {
           }
 
           state.projectStatusMessage = `Loaded ${tracks.length} track${tracks.length === 1 ? "" : "s"}.`;
-          render();
+          traceRendererLifecycle("project-init-deduped", {
+            reason: "skip-render-on-tracks-loaded",
+            trackCount: tracks.length,
+          });
         },
         onDebugInfo: (debugInfo) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
@@ -3521,6 +3557,8 @@ export function startApp(rootElement: HTMLElement): void {
             state.rendererRenderFinished = true;
           } else if (eventType === "player-ready") {
             state.rendererPlayerReady = true;
+          } else if (eventType === "playback-runtime-ready-fallback") {
+            state.rendererFallbackReady = true;
           } else if (eventType === "active-track-confirmed") {
             state.trackSwitchInProgress = false;
           }
@@ -3905,9 +3943,14 @@ export function startApp(rootElement: HTMLElement): void {
       }, state.tabZoomPercent)
         .then((renderer) => {
           state.gpRenderer = renderer;
+          state.projectRendererCreateInFlight = false;
+          state.projectRendererCreateKey = null;
           traceRendererLifecycle("renderer-created", {
             selectedTrackIndex: state.selectedTrackIndex,
             requestedTrackIndex: state.requestedTrackIndex,
+          });
+          traceRendererLifecycle("renderer-create-finish", {
+            selectedTrackIndex: state.selectedTrackIndex,
           });
           logPlaybackPipeline("renderer-created", {
             selectedTrackIndex: state.selectedTrackIndex,
@@ -3916,6 +3959,8 @@ export function startApp(rootElement: HTMLElement): void {
           applyMixerStateToRenderer(state);
         })
         .catch((error: unknown) => {
+          state.projectRendererCreateInFlight = false;
+          state.projectRendererCreateKey = null;
           state.projectStatusMessage =
             error instanceof Error ? error.message : "Could not initialize GP renderer.";
           render();
