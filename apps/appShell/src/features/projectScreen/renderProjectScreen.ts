@@ -50,6 +50,7 @@ export interface ProjectScreenActions {
   canMoveLoopEndRight: boolean;
   canZoomIn: boolean;
   canZoomOut: boolean;
+  isBottomDockCollapsed: boolean;
   onTrackSelectionChange: (trackIndex: number) => void;
   onToggleTrackMute: (trackIndex: number) => void;
   onToggleTrackSolo: (trackIndex: number) => void;
@@ -61,6 +62,8 @@ export interface ProjectScreenActions {
   onMoveLoopEndRight: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  onCollapseBottomDock: () => void;
+  onExpandBottomDock: () => void;
   onBackToHome: () => void;
   onSaveProject: () => Promise<void>;
   onSaveProjectAs: () => Promise<void>;
@@ -210,7 +213,7 @@ export function renderProjectScreen(
     : "";
 
   container.innerHTML = `
-    <main class="playerLayoutShell">
+    <main class="playerLayoutShell ${actions.isBottomDockCollapsed ? "isDockCollapsed" : ""}">
       <header class="playerMenuBar">
         <div class="playerMenuGroup">
           <details class="playerMenuDetails">
@@ -318,7 +321,10 @@ export function renderProjectScreen(
       <section class="playerBottomDock">
         <div class="playerDockResizeHandle" data-dock-resize-handle="true" role="separator" aria-label="Resize bottom dock" aria-orientation="horizontal"></div>
         <div class="playerDockHeaders">
-          <div class="playerDockLeftHeader">Tracks / Controls</div>
+          <div class="playerDockLeftHeader">
+            <span>Tracks / Controls</span>
+            ${actions.isBottomDockCollapsed ? "" : '<button class="secondaryButton playerDockToggleButton" type="button" data-action="collapse-bottom-dock">Hide</button>'}
+          </div>
           <div class="playerDockRightHeader">Timeline</div>
         </div>
         <div class="playerDockTopBand">
@@ -369,6 +375,16 @@ export function renderProjectScreen(
             </div>
           </div>
         </div>
+        <div class="playerDockCollapsedStrip" data-action="left-controls">
+          <div class="playerDockCollapsedMaster">
+            <span class="trackNameCompact">Master</span>
+            <label class="trackControlLabel trackControlLabelCompact">
+              <input class="trackControlRange" type="range" min="0" max="100" value="${actions.masterVolume}" data-stop-track-select="true" data-master-action="set-volume" />
+              <span class="trackControlValue" data-master-volume-value="true">${actions.masterVolume}</span>
+            </label>
+            <button class="secondaryButton playerDockToggleButton" type="button" data-action="expand-bottom-dock">Expand</button>
+          </div>
+        </div>
       </section>
     </main>
   `;
@@ -387,6 +403,8 @@ export function renderProjectScreen(
   const playbackSpeedSlider = container.querySelector<HTMLInputElement>('[data-action="set-playback-speed"]');
   const zoomOutButton = container.querySelector<HTMLButtonElement>('[data-action="zoom-out"]');
   const zoomInButton = container.querySelector<HTMLButtonElement>('[data-action="zoom-in"]');
+  const collapseBottomDockButton = container.querySelector<HTMLButtonElement>('[data-action="collapse-bottom-dock"]');
+  const expandBottomDockButton = container.querySelector<HTMLButtonElement>('[data-action="expand-bottom-dock"]');
   const playbackSpeedReadout = container.querySelector<HTMLElement>(".playerSpeedReadout");
   const toggleCountInButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-count-in"]');
   const toggleMetronomeButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-metronome"]');
@@ -518,6 +536,8 @@ export function renderProjectScreen(
   playbackSpeedReadout?.addEventListener("dblclick", actions.onResetPlaybackSpeed);
   zoomOutButton?.addEventListener("click", actions.onZoomOut);
   zoomInButton?.addEventListener("click", actions.onZoomIn);
+  collapseBottomDockButton?.addEventListener("click", actions.onCollapseBottomDock);
+  expandBottomDockButton?.addEventListener("click", actions.onExpandBottomDock);
   toggleCountInButton?.addEventListener("click", actions.onToggleCountIn);
   toggleMetronomeButton?.addEventListener("click", actions.onToggleMetronome);
   backHomeButton?.addEventListener("click", actions.onBackToHome);

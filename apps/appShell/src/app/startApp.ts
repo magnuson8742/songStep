@@ -53,6 +53,7 @@ const MAX_PLAYBACK_SPEED_PERCENT = 175;
 const DEFAULT_PLAYBACK_SPEED_PERCENT = 100;
 const PLAYBACK_SPEED_BUTTON_STEP_PERCENT = 5;
 const COLLAPSED_DOCK_THRESHOLD_PX = 74;
+const COLLAPSED_BOTTOM_DOCK_HEIGHT_PX = 44;
 
 interface AppState {
   currentView: AppView;
@@ -133,6 +134,7 @@ interface AppState {
   } | null;
   nextPlaybackRequestId: number;
   bottomDockHeightPx: number;
+  isBottomDockCollapsed: boolean;
   tabZoomPercent: number;
   latestAnchorStrategyDebug: Record<string, unknown>[];
   latestPercussionAnchorDebug: Record<string, unknown> | null;
@@ -1648,10 +1650,16 @@ function setupBottomDockResize(rootElement: HTMLElement, state: AppState): void 
   };
 
   const applyDockHeight = (): void => {
+    if (state.isBottomDockCollapsed) {
+      layoutShell.style.setProperty("--player-dock-height", `${COLLAPSED_BOTTOM_DOCK_HEIGHT_PX}px`);
+      layoutShell.classList.add("isDockCollapsed");
+      return;
+    }
+
     const dynamicMaxHeight = resolveDynamicDockMaxHeight();
     state.bottomDockHeightPx = Math.min(Math.max(state.bottomDockHeightPx, MIN_BOTTOM_DOCK_HEIGHT_PX), dynamicMaxHeight);
     layoutShell.style.setProperty("--player-dock-height", `${state.bottomDockHeightPx}px`);
-    layoutShell.classList.toggle("isDockCollapsed", state.bottomDockHeightPx <= COLLAPSED_DOCK_THRESHOLD_PX);
+    layoutShell.classList.remove("isDockCollapsed");
   };
   applyDockHeight();
 
@@ -1671,6 +1679,9 @@ function setupBottomDockResize(rootElement: HTMLElement, state: AppState): void 
 
   resizeHandle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) {
+      return;
+    }
+    if (state.isBottomDockCollapsed) {
       return;
     }
     activePointerId = event.pointerId;
@@ -2442,6 +2453,7 @@ export function startApp(rootElement: HTMLElement): void {
     pendingPlaybackStart: null,
     nextPlaybackRequestId: 0,
     bottomDockHeightPx: DEFAULT_BOTTOM_DOCK_HEIGHT_PX,
+    isBottomDockCollapsed: false,
     tabZoomPercent: resolveInitialTabZoomPercent(),
     latestAnchorStrategyDebug: [],
     latestPercussionAnchorDebug: null,
@@ -2780,6 +2792,7 @@ export function startApp(rootElement: HTMLElement): void {
         canZoomOut: isMobileViewport()
           ? getMobileZoomStepIndex(state.tabZoomPercent) < MOBILE_ZOOM_PRESETS.length - 1
           : state.tabZoomPercent > MIN_TAB_ZOOM_PERCENT,
+        isBottomDockCollapsed: state.isBottomDockCollapsed,
         onTrackSelectionChange: (trackIndex: number) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "track-select-requested",
@@ -2939,6 +2952,17 @@ export function startApp(rootElement: HTMLElement): void {
           }
           state.tabZoomPercent = nextZoomPercent;
           state.gpRenderer?.setZoom(nextZoomPercent);
+          render();
+        },
+        onCollapseBottomDock: () => {
+          state.isBottomDockCollapsed = true;
+          render();
+        },
+        onExpandBottomDock: () => {
+          state.isBottomDockCollapsed = false;
+          if (state.bottomDockHeightPx <= COLLAPSED_DOCK_THRESHOLD_PX) {
+            state.bottomDockHeightPx = DEFAULT_BOTTOM_DOCK_HEIGHT_PX;
+          }
           render();
         },
         onPlay: () => {
