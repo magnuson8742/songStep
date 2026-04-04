@@ -836,6 +836,21 @@ export async function createGpRenderer(
   hooks: GpRendererHooks,
   initialZoomPercent = 100,
 ): Promise<GpRendererController> {
+  const traceRenderer = (eventName: string, payload: Record<string, unknown>): void => {
+    console.info("[songstep-renderer]", { eventName, timestamp: new Date().toISOString(), ...payload });
+  };
+  const traceSeek = (eventName: string, payload: Record<string, unknown>): void => {
+    console.info("[songstep-seek]", { eventName, timestamp: new Date().toISOString(), ...payload });
+  };
+  const tracePlayer = (eventName: string, payload: Record<string, unknown>): void => {
+    console.info("[songstep-player]", { eventName, timestamp: new Date().toISOString(), ...payload });
+  };
+
+  traceRenderer("createGpRenderer-start", {
+    selectedTrackIndex,
+    initialZoomPercent,
+  });
+
   const sourceBytes = base64ToBytes(sourceFile.contentBase64);
 
   let activeApi: AlphaTabApi | null = null;
@@ -901,6 +916,8 @@ export async function createGpRenderer(
   let masterVolume = 80;
   let masterBalance = 0;
   let hasLoggedMixerApplySuccess = false;
+  let lastLoggedPlayerTick: number | null = null;
+  let lastLoggedPlayerBar: number | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -964,6 +981,18 @@ export async function createGpRenderer(
 
   const setPlaybackCapabilityMessage = (message: string | null): void => {
     playbackCapabilityMessage = message;
+  };
+
+  const emitRuntimeNotice = (message: string): void => {
+    traceRenderer("runtime-notice", {
+      message,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+      rendererBusy,
+      zoomRerenderInFlight,
+    });
+    hooks.onRuntimeNotice(message);
   };
 
   const summarizeError = (error: unknown): Record<string, unknown> => {
@@ -2815,7 +2844,20 @@ export async function createGpRenderer(
   };
 
   const seekToTick = (tick: number): boolean => {
+    traceSeek("seekToTick-called", {
+      tick,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+      rendererBusy,
+      zoomRerenderInFlight,
+      hasActiveApi: activeApi !== null,
+    });
     if (!activeApi || !Number.isFinite(tick)) {
+      traceSeek("seekToTick-ignored", {
+        reason: !activeApi ? "no-active-api" : "invalid-tick",
+        tick,
+      });
       return false;
     }
     const api = activeApi;
@@ -2855,6 +2897,10 @@ export async function createGpRenderer(
       didApplyTick = true;
     }
     if (!didApplyTick) {
+      traceSeek("seekToTick-ignored", {
+        reason: "no-seek-api",
+        tick,
+      });
       return false;
     }
     pendingProgrammaticSeek = {
@@ -2863,6 +2909,13 @@ export async function createGpRenderer(
       sessionToken: activeSessionToken,
       retryCount: 0,
     };
+    traceSeek("pendingProgrammaticSeek-set", {
+      tick,
+      trackIndex: confirmedActiveTrackIndex,
+      sessionToken: activeSessionToken,
+      retryCount: 0,
+      requestedTrackIndex,
+    });
 
     const currentBarFromTick = resolveCurrentBarFromTick(tick);
     playbackRuntimeInfo = {
@@ -2946,6 +2999,14 @@ export async function createGpRenderer(
       if (sessionToken !== activeSessionToken || !rendererBusy) {
         return;
       }
+      traceRenderer("render-timeout", {
+        sessionToken,
+        activeSessionToken,
+        timedOutTrackIndex,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        rendererBusy,
+      });
 
       renderTimeoutHit = true;
       lastRendererErrorStage = "renderFinished-timeout";
@@ -2991,6 +3052,14 @@ export async function createGpRenderer(
   };
 
   const switchTrackByReload = async (nextTrackIndex: number, options?: ReloadOptions): Promise<void> => {
+    traceRenderer("switchTrackByReload-start", {
+      nextTrackIndex,
+      targetTick: options?.targetTick ?? null,
+      activeSessionToken,
+      rendererBusy,
+      pendingRequestedTrackIndex,
+      zoomRerenderInFlight,
+    });
     inPlaceZoomPlaybackContext = null;
     pendingZoomPercent = null;
     pendingProgrammaticSeek = null;
@@ -3031,6 +3100,10 @@ export async function createGpRenderer(
 
     if (rendererBusy) {
       pendingRequestedTrackIndex = nextTrackIndex;
+      traceRenderer("switchTrackByReload-queued", {
+        nextTrackIndex,
+        activeSessionToken,
+      });
       emitDebugInfo();
       return;
     }
@@ -3073,6 +3146,13 @@ export async function createGpRenderer(
     activeApi = api;
     applyMixerStateToApi(api, "renderer-created");
     const playbackAvailable = isPlaybackApiAvailable(api);
+    traceRenderer("switchTrackByReload-api-created", {
+      sessionToken,
+      nextTrackIndex,
+      playbackAvailable,
+      renderMode: renderPlan.mode,
+      isPercussion: renderPlan.isPercussion,
+    });
     if (!playbackAvailable) {
       setPlaybackCapabilityMessage("Playback is unavailable in this runtime.");
     } else {
@@ -3091,6 +3171,13 @@ export async function createGpRenderer(
         }
 
         const normalizedState = normalizePlaybackState(statePayload);
+        tracePlayer("playerStateChanged", {
+          sessionToken,
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+          normalizedState,
+        });
         const playerStatePayloadShape = describePayloadShape(statePayload);
         if (normalizedState === "playing") {
           playbackScrollLockSnapshot = captureRenderViewportScroll();
@@ -3131,9 +3218,29 @@ export async function createGpRenderer(
             playbackRuntimeInfo.isPlaying === true || normalizePlaybackState(api.playerState) === "playing";
           const tickDelta = Math.abs(currentTick - pendingProgrammaticSeek.tick);
           if (tickDelta <= 1) {
+            traceSeek("pendingProgrammaticSeek-confirmed", {
+              sessionToken,
+              activeSessionToken,
+              requestedTrackIndex,
+              confirmedActiveTrackIndex,
+              tick: pendingProgrammaticSeek.tick,
+              currentTick,
+              tickDelta,
+              retryCount: pendingProgrammaticSeek.retryCount,
+            });
             hooks.onProgrammaticSeekConfirmed(confirmedActiveTrackIndex, pendingProgrammaticSeek.tick);
             pendingProgrammaticSeek = null;
           } else if (pendingProgrammaticSeek.retryCount < 2 && api.isReadyForPlayback !== false) {
+            traceSeek("pendingProgrammaticSeek-retry", {
+              sessionToken,
+              activeSessionToken,
+              requestedTrackIndex,
+              confirmedActiveTrackIndex,
+              targetTick: pendingProgrammaticSeek.tick,
+              currentTick,
+              tickDelta,
+              nextRetryCount: pendingProgrammaticSeek.retryCount + 1,
+            });
             pendingProgrammaticSeek.retryCount += 1;
             const retryTick = pendingProgrammaticSeek.tick;
             const retryCountSnapshot = pendingProgrammaticSeek.retryCount;
@@ -3172,10 +3279,42 @@ export async function createGpRenderer(
           currentBarSourcePath: currentBarFromTick.sourcePath,
           playerPositionPayloadShape,
         };
+        const shouldTracePosition =
+          currentTick !== lastLoggedPlayerTick ||
+          currentBarFromTick.currentBar !== lastLoggedPlayerBar ||
+          pendingProgrammaticSeek !== null;
+        if (shouldTracePosition) {
+          tracePlayer("playerPositionChanged", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+            currentTick,
+            currentBar: currentBarFromTick.currentBar,
+            pendingProgrammaticSeek:
+              pendingProgrammaticSeek === null
+                ? null
+                : {
+                    tick: pendingProgrammaticSeek.tick,
+                    retryCount: pendingProgrammaticSeek.retryCount,
+                    trackIndex: pendingProgrammaticSeek.trackIndex,
+                    sessionToken: pendingProgrammaticSeek.sessionToken,
+                  },
+          });
+          lastLoggedPlayerTick = currentTick;
+          lastLoggedPlayerBar = currentBarFromTick.currentBar;
+        }
         emitPlaybackRuntimeInfo();
       });
 
       api.playerReady?.on(() => {
+        traceRenderer("playerReady", {
+          sessionToken,
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+          hasPendingProgrammaticSeek: pendingProgrammaticSeek !== null,
+        });
         if (
           !pendingProgrammaticSeek ||
           pendingProgrammaticSeek.sessionToken !== sessionToken ||
@@ -3188,6 +3327,14 @@ export async function createGpRenderer(
     }
 
     api.scoreLoaded.on((score) => {
+      traceRenderer("scoreLoaded", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        scoreTrackCount: score.tracks?.length ?? 0,
+        masterBarCount: score.masterBars?.length ?? 0,
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3215,6 +3362,13 @@ export async function createGpRenderer(
     });
 
     api.renderStarted?.on(() => {
+      traceRenderer("renderStarted", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        renderCycleCounter,
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3231,6 +3385,13 @@ export async function createGpRenderer(
     });
 
     api.renderFinished?.on(() => {
+      traceRenderer("renderFinished", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        renderCycleCounter,
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3269,6 +3430,14 @@ export async function createGpRenderer(
     });
 
     api.postRenderFinished?.on(() => {
+      traceRenderer("postRenderFinished", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        sessionTargetTick,
+        sessionTargetTickApplied,
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3305,11 +3474,18 @@ export async function createGpRenderer(
 
       const started = api.play?.() === true;
       if (!started) {
-        hooks.onRuntimeNotice("Playback could not resume after zoom rerender.");
+        emitRuntimeNotice("Playback could not resume after zoom rerender.");
       }
     });
 
     api.error?.on((error) => {
+      traceRenderer("error-handler", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        error: summarizeError(error),
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3354,6 +3530,11 @@ export async function createGpRenderer(
     });
 
     lastRendererErrorStage = "load-start";
+    traceRenderer("api-load-start", {
+      sessionToken,
+      nextTrackIndex,
+      sourceBytesLength: sourceBytes.length,
+    });
     const loadWasStarted = api.load(sourceBytes, [nextTrackIndex]);
     if (!loadWasStarted) {
       clearRenderTimeout();
@@ -3390,6 +3571,11 @@ export async function createGpRenderer(
     }
 
     scheduleRenderTimeout(sessionToken, nextTrackIndex);
+    traceRenderer("switchTrackByReload-finish", {
+      nextTrackIndex,
+      sessionToken,
+      rendererBusy,
+    });
     emitDebugInfo();
   };
 
@@ -3553,8 +3739,23 @@ export async function createGpRenderer(
       return applyMixerStateToApi(activeApi, "applyMixerState");
     },
     play: () => {
+      tracePlayer("play-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        rendererBusy,
+        zoomRerenderInFlight,
+        pendingProgrammaticSeek: pendingProgrammaticSeek
+          ? {
+              tick: pendingProgrammaticSeek.tick,
+              retryCount: pendingProgrammaticSeek.retryCount,
+              sessionToken: pendingProgrammaticSeek.sessionToken,
+              trackIndex: pendingProgrammaticSeek.trackIndex,
+            }
+          : null,
+      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
 
@@ -3563,8 +3764,13 @@ export async function createGpRenderer(
       playbackApi.play();
     },
     pause: () => {
+      tracePlayer("pause-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
 
@@ -3573,8 +3779,14 @@ export async function createGpRenderer(
       playbackApi.pause();
     },
     stop: () => {
+      tracePlayer("stop-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        hadPendingProgrammaticSeek: pendingProgrammaticSeek !== null,
+      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
 
@@ -3584,6 +3796,13 @@ export async function createGpRenderer(
       playbackApi.stop();
     },
     destroy: () => {
+      traceRenderer("destroy-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        rendererBusy,
+        zoomRerenderInFlight,
+      });
       activeSessionToken += 1;
       clearRenderTimeout();
       rendererBusy = false;
