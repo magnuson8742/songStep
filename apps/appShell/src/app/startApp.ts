@@ -46,12 +46,13 @@ const MOBILE_LAYOUT_BREAKPOINT_PX = 900;
 const MIN_TAB_ZOOM_PERCENT = 60;
 const MAX_TAB_ZOOM_PERCENT = 160;
 const TAB_ZOOM_STEP_PERCENT = 10;
-const MOBILE_ZOOM_PRESETS = [100, 78, 65] as const;
+const MOBILE_ZOOM_PRESETS = [110, 100, 90, 80, 72, 65, 60] as const;
 const SECTION_LABEL_VERTICAL_NUDGE_PX = 10;
 const MIN_PLAYBACK_SPEED_PERCENT = 15;
 const MAX_PLAYBACK_SPEED_PERCENT = 175;
 const DEFAULT_PLAYBACK_SPEED_PERCENT = 100;
 const PLAYBACK_SPEED_BUTTON_STEP_PERCENT = 5;
+const COLLAPSED_DOCK_THRESHOLD_PX = 74;
 
 interface AppState {
   currentView: AppView;
@@ -344,30 +345,6 @@ function isMobileViewport(): boolean {
   }
   const viewportWidth = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0);
   return viewportWidth > 0 && viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX;
-}
-
-function deriveCompactTrackLabel(rawTrackName: string | null | undefined, fallbackLabel: string): string {
-  const normalizedName = rawTrackName?.trim() ?? "";
-  if (normalizedName.length === 0) {
-    return fallbackLabel;
-  }
-  if (normalizedName.includes("|")) {
-    const pipeSegments = normalizedName.split("|").map((segment) => segment.trim()).filter((segment) => segment.length > 0);
-    if (pipeSegments.length > 1) {
-      return pipeSegments[pipeSegments.length - 1] as string;
-    }
-  }
-  const separators = ["—", "-", ":"];
-  for (const separator of separators) {
-    const segments = normalizedName
-      .split(separator)
-      .map((segment) => segment.trim())
-      .filter((segment) => segment.length > 0);
-    if (segments.length > 1) {
-      return segments[segments.length - 1] as string;
-    }
-  }
-  return normalizedName;
 }
 
 function formatEffectiveTempoBpm(tempoBpm: number | null, playbackSpeedPercent: number): string {
@@ -1607,13 +1584,8 @@ function updateLoopControlsVisual(rootElement: HTMLElement, state: AppState): vo
     loopEndLabel.textContent = `B: ${state.loopEndBar === null ? "-" : String(state.loopEndBar)}`;
   }
 
-  const maxBar = state.totalBars ?? state.scoreOverview?.totalBars ?? 0;
-  const startBar = state.loopStartBar;
-  const endBar = state.loopEndBar;
-  const canMoveLoopStartLeft = startBar !== null && endBar !== null && startBar > 1 && startBar - 1 <= endBar;
-  const canMoveLoopStartRight = startBar !== null && endBar !== null && startBar + 1 <= endBar && startBar < maxBar;
-  const canMoveLoopEndLeft = startBar !== null && endBar !== null && endBar - 1 >= startBar && endBar > 1;
-  const canMoveLoopEndRight = startBar !== null && endBar !== null && endBar < maxBar && endBar + 1 >= startBar;
+  const { canMoveLoopStartLeft, canMoveLoopStartRight, canMoveLoopEndLeft, canMoveLoopEndRight } =
+    resolveLoopMoveAvailability(state);
 
   const setButtonDisabled = (selector: string, disabled: boolean): void => {
     const button = rootElement.querySelector<HTMLButtonElement>(selector);
@@ -1679,6 +1651,7 @@ function setupBottomDockResize(rootElement: HTMLElement, state: AppState): void 
     const dynamicMaxHeight = resolveDynamicDockMaxHeight();
     state.bottomDockHeightPx = Math.min(Math.max(state.bottomDockHeightPx, MIN_BOTTOM_DOCK_HEIGHT_PX), dynamicMaxHeight);
     layoutShell.style.setProperty("--player-dock-height", `${state.bottomDockHeightPx}px`);
+    layoutShell.classList.toggle("isDockCollapsed", state.bottomDockHeightPx <= COLLAPSED_DOCK_THRESHOLD_PX);
   };
   applyDockHeight();
 
@@ -1846,6 +1819,47 @@ function clearLoopState(state: AppState): void {
   state.loopDragHandle = null;
 }
 
+function resolveActiveTrackAllowedBarRange(state: AppState): { firstAllowedBar: number; lastAllowedBar: number } | null {
+  const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+  const activeTrackRow = state.scoreOverview?.trackRows.find((row) => row.trackIndex === activeTrackIndex) ?? null;
+  const lastAllowedFromOverview = activeTrackRow?.barActivity.length ?? 0;
+  const fallbackLastAllowed = state.totalBars ?? state.scoreOverview?.totalBars ?? 0;
+  const lastAllowedBar = Math.max(lastAllowedFromOverview, fallbackLastAllowed);
+  if (!Number.isFinite(lastAllowedBar) || lastAllowedBar <= 0) {
+    return null;
+  }
+  return {
+    firstAllowedBar: 1,
+    lastAllowedBar,
+  };
+}
+
+function resolveLoopMoveAvailability(state: AppState): {
+  canMoveLoopStartLeft: boolean;
+  canMoveLoopStartRight: boolean;
+  canMoveLoopEndLeft: boolean;
+  canMoveLoopEndRight: boolean;
+} {
+  const allowedRange = resolveActiveTrackAllowedBarRange(state);
+  const startBar = state.loopStartBar;
+  const endBar = state.loopEndBar;
+  if (!allowedRange || startBar === null || endBar === null) {
+    return {
+      canMoveLoopStartLeft: false,
+      canMoveLoopStartRight: false,
+      canMoveLoopEndLeft: false,
+      canMoveLoopEndRight: false,
+    };
+  }
+
+  return {
+    canMoveLoopStartLeft: startBar > allowedRange.firstAllowedBar && startBar - 1 <= endBar,
+    canMoveLoopStartRight: startBar < allowedRange.lastAllowedBar && startBar + 1 <= endBar,
+    canMoveLoopEndLeft: endBar > allowedRange.firstAllowedBar && endBar - 1 >= startBar,
+    canMoveLoopEndRight: endBar < allowedRange.lastAllowedBar && endBar + 1 >= startBar,
+  };
+}
+
 function moveLoopBoundaryByBars(
   state: AppState,
   rootElement: HTMLElement,
@@ -1856,13 +1870,16 @@ function moveLoopBoundaryByBars(
     return false;
   }
 
-  const maxBar = state.totalBars ?? state.scoreOverview?.totalBars ?? 0;
-  if (maxBar <= 0) {
+  const allowedRange = resolveActiveTrackAllowedBarRange(state);
+  if (!allowedRange) {
     return false;
   }
 
   if (boundary === "start") {
-    const nextStart = Math.min(Math.max(state.loopStartBar + delta, 1), maxBar);
+    const nextStart = Math.min(
+      Math.max(state.loopStartBar + delta, allowedRange.firstAllowedBar),
+      allowedRange.lastAllowedBar,
+    );
     if (nextStart > state.loopEndBar) {
       return false;
     }
@@ -1873,7 +1890,10 @@ function moveLoopBoundaryByBars(
     state.loopStartBar = nextStart;
     state.loopStartTick = nextRange.startTick;
   } else {
-    const nextEnd = Math.min(Math.max(state.loopEndBar + delta, 1), maxBar);
+    const nextEnd = Math.min(
+      Math.max(state.loopEndBar + delta, allowedRange.firstAllowedBar),
+      allowedRange.lastAllowedBar,
+    );
     if (nextEnd < state.loopStartBar) {
       return false;
     }
@@ -2099,7 +2119,17 @@ function setupLoopHandleDrag(rootElement: HTMLElement, state: AppState): void {
     }
 
     if (state.loopDragHandle === "start") {
-      if (state.loopEndBar !== null && nearestAnchor.barNumber >= state.loopEndBar) {
+      const allowedRange = resolveActiveTrackAllowedBarRange(state);
+      if (!allowedRange) {
+        return;
+      }
+      if (
+        nearestAnchor.barNumber < allowedRange.firstAllowedBar ||
+        nearestAnchor.barNumber > allowedRange.lastAllowedBar
+      ) {
+        return;
+      }
+      if (state.loopEndBar !== null && nearestAnchor.barNumber > state.loopEndBar) {
         return;
       }
       const range = state.gpRenderer.getBarTickRange(nearestAnchor.barNumber);
@@ -2109,7 +2139,17 @@ function setupLoopHandleDrag(rootElement: HTMLElement, state: AppState): void {
       state.loopStartBar = nearestAnchor.barNumber;
       state.loopStartTick = range.startTick;
     } else {
-      if (state.loopStartBar !== null && nearestAnchor.barNumber <= state.loopStartBar) {
+      const allowedRange = resolveActiveTrackAllowedBarRange(state);
+      if (!allowedRange) {
+        return;
+      }
+      if (
+        nearestAnchor.barNumber < allowedRange.firstAllowedBar ||
+        nearestAnchor.barNumber > allowedRange.lastAllowedBar
+      ) {
+        return;
+      }
+      if (state.loopStartBar !== null && nearestAnchor.barNumber < state.loopStartBar) {
         return;
       }
       const range = state.gpRenderer.getBarTickRange(nearestAnchor.barNumber);
@@ -2212,7 +2252,12 @@ function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): 
 
     const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
     if (state.loopEnabled && (state.loopStartTick === null || state.loopEndTick === null)) {
-      const loopRange = state.gpRenderer.getBarTickRange(clickedAnchor.barNumber);
+      const allowedRange = resolveActiveTrackAllowedBarRange(state);
+      const clickedBarInRange =
+        allowedRange !== null &&
+        clickedAnchor.barNumber >= allowedRange.firstAllowedBar &&
+        clickedAnchor.barNumber <= allowedRange.lastAllowedBar;
+      const loopRange = clickedBarInRange ? state.gpRenderer.getBarTickRange(clickedAnchor.barNumber) : null;
       if (loopRange) {
         state.loopStartBar = clickedAnchor.barNumber;
         state.loopStartTick = loopRange.startTick;
@@ -2282,7 +2327,12 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
 
     const targetBarNumber = clickedBarIndex + 1;
     if (state.loopEnabled && (state.loopStartTick === null || state.loopEndTick === null)) {
-      const loopRange = state.gpRenderer.getBarTickRange(targetBarNumber);
+      const allowedRange = resolveActiveTrackAllowedBarRange(state);
+      const clickedBarInRange =
+        allowedRange !== null &&
+        targetBarNumber >= allowedRange.firstAllowedBar &&
+        targetBarNumber <= allowedRange.lastAllowedBar;
+      const loopRange = clickedBarInRange ? state.gpRenderer.getBarTickRange(targetBarNumber) : null;
       if (loopRange) {
         state.loopStartBar = targetBarNumber;
         state.loopStartTick = loopRange.startTick;
@@ -2720,26 +2770,10 @@ export function startApp(rootElement: HTMLElement): void {
         masterVolume: state.masterVolume,
         mutedTrackIndexes: state.mutedTrackIndexes,
         soloTrackIndexes: state.soloTrackIndexes,
-        canMoveLoopStartLeft:
-          state.loopStartBar !== null &&
-          state.loopEndBar !== null &&
-          state.loopStartBar > 1 &&
-          state.loopStartBar - 1 <= state.loopEndBar,
-        canMoveLoopStartRight:
-          state.loopStartBar !== null &&
-          state.loopEndBar !== null &&
-          state.loopStartBar + 1 <= state.loopEndBar &&
-          state.loopStartBar < (state.totalBars ?? state.scoreOverview?.totalBars ?? 0),
-        canMoveLoopEndLeft:
-          state.loopStartBar !== null &&
-          state.loopEndBar !== null &&
-          state.loopEndBar - 1 >= state.loopStartBar &&
-          state.loopEndBar > 1,
-        canMoveLoopEndRight:
-          state.loopStartBar !== null &&
-          state.loopEndBar !== null &&
-          state.loopEndBar < (state.totalBars ?? state.scoreOverview?.totalBars ?? 0) &&
-          state.loopEndBar + 1 >= state.loopStartBar,
+        canMoveLoopStartLeft: resolveLoopMoveAvailability(state).canMoveLoopStartLeft,
+        canMoveLoopStartRight: resolveLoopMoveAvailability(state).canMoveLoopStartRight,
+        canMoveLoopEndLeft: resolveLoopMoveAvailability(state).canMoveLoopEndLeft,
+        canMoveLoopEndRight: resolveLoopMoveAvailability(state).canMoveLoopEndRight,
         canZoomIn: isMobileViewport()
           ? getMobileZoomStepIndex(state.tabZoomPercent) > 0
           : state.tabZoomPercent < MAX_TAB_ZOOM_PERCENT,
@@ -3207,8 +3241,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.gpRenderDebugInfo = debugInfo;
           const matchedTrack = state.gpTracks.find((track) => track.index === debugInfo.confirmedActiveTrackIndex);
           state.activeTrackName = matchedTrack
-            ? deriveCompactTrackLabel(matchedTrack.name, matchedTrack.displayLabel || matchedTrack.name)
-            : deriveCompactTrackLabel(debugInfo.confirmedActiveTrackName, debugInfo.confirmedActiveTrackName ?? "-");
+            ? matchedTrack.name
+            : (debugInfo.confirmedActiveTrackName ?? null);
           updateProjectDebugInfoPanel(rootElement, debugInfo);
           updatePlayerRuntimeFields(state, rootElement);
           updateDebugField(rootElement, "requested-track-index", String(state.requestedTrackIndex ?? "-"));
@@ -3504,7 +3538,7 @@ export function startApp(rootElement: HTMLElement): void {
           }
           const matchedTrack = state.gpTracks.find((track) => track.index === trackIndex);
           state.activeTrackName = matchedTrack
-            ? deriveCompactTrackLabel(matchedTrack.name, matchedTrack.displayLabel || matchedTrack.name)
+            ? matchedTrack.name
             : state.activeTrackName;
 
           updateTrackStripActive(rootElement, trackIndex);

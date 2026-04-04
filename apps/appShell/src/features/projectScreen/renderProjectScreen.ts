@@ -295,7 +295,7 @@ export function renderProjectScreen(
           <dt>Active track</dt>
           <dd data-player-field="active-track-name">${renderDebugValue(actions.confirmedActiveTrackIndex === null ? null : (() => {
             const activeTrack = actions.tracks.find((track) => track.index === actions.confirmedActiveTrackIndex);
-            return activeTrack ? getCompactTrackDisplayLabel(activeTrack) : null;
+            return activeTrack ? activeTrack.name : null;
           })())}</dd>
           <dt>Bar</dt>
           <dd data-player-field="current-bar">${renderDebugValue(actions.currentBar)} / <span data-player-field="total-bars">${renderDebugValue(actions.totalBars)}</span></dd>

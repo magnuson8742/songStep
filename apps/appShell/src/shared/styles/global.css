@@ -818,6 +818,17 @@ select {
   background: rgba(112, 148, 197, 0.26);
 }
 
+.playerLayoutShell.isDockCollapsed .playerBottomDock {
+  grid-template-rows: 8px 0 0 0 0;
+}
+
+.playerLayoutShell.isDockCollapsed .playerDockHeaders,
+.playerLayoutShell.isDockCollapsed .playerDockTopBand,
+.playerLayoutShell.isDockCollapsed .playerDockMiddleScroll,
+.playerLayoutShell.isDockCollapsed .playerDockBottomBand {
+  display: none;
+}
+
 .playerDockHeaders {
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
