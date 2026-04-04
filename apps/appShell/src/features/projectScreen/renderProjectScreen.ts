@@ -41,18 +41,29 @@ export interface ProjectScreenActions {
   renderHostElementCounts: string | null;
   scoreOverview: GpScoreOverviewRuntimeInfo | null;
   trackVolumeByIndex: Record<number, number>;
-  trackBalanceByIndex: Record<number, number>;
   masterVolume: number;
-  masterBalance: number;
   mutedTrackIndexes: number[];
   soloTrackIndexes: number[];
+  canMoveLoopStartLeft: boolean;
+  canMoveLoopStartRight: boolean;
+  canMoveLoopEndLeft: boolean;
+  canMoveLoopEndRight: boolean;
+  canZoomIn: boolean;
+  canZoomOut: boolean;
+  isBottomDockCollapsed: boolean;
   onTrackSelectionChange: (trackIndex: number) => void;
   onToggleTrackMute: (trackIndex: number) => void;
   onToggleTrackSolo: (trackIndex: number) => void;
   onTrackVolumeChange: (trackIndex: number, volume: number) => void;
-  onTrackBalanceChange: (trackIndex: number, balance: number) => void;
   onMasterVolumeChange: (volume: number) => void;
-  onMasterBalanceChange: (balance: number) => void;
+  onMoveLoopStartLeft: () => void;
+  onMoveLoopStartRight: () => void;
+  onMoveLoopEndLeft: () => void;
+  onMoveLoopEndRight: () => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onCollapseBottomDock: () => void;
+  onExpandBottomDock: () => void;
   onBackToHome: () => void;
   onSaveProject: () => Promise<void>;
   onSaveProjectAs: () => Promise<void>;
@@ -70,7 +81,30 @@ export interface ProjectScreenActions {
 }
 
 const DEFAULT_TRACK_VOLUME = 80;
-const DEFAULT_TRACK_BALANCE = 0;
+
+function getCompactTrackDisplayLabel(track: GpTrackInfo): string {
+  if (track.displayLabel && track.displayLabel.trim().length > 0) {
+    return track.displayLabel.trim();
+  }
+
+  const rawName = track.name?.trim() || `Track ${track.index + 1}`;
+  if (rawName.includes("|")) {
+    const pipeSegments = rawName.split("|").map((segment) => segment.trim()).filter((segment) => segment.length > 0);
+    if (pipeSegments.length > 1) {
+      return pipeSegments[pipeSegments.length - 1] as string;
+    }
+  }
+
+  const separators = ["—", "-", ":"];
+  for (const separator of separators) {
+    const segments = rawName.split(separator).map((segment) => segment.trim()).filter((segment) => segment.length > 0);
+    if (segments.length > 1) {
+      return segments[segments.length - 1] as string;
+    }
+  }
+
+  return rawName;
+}
 
 function renderDebugValue(value: string | number | null): string {
   if (value === null || value === "") {
@@ -99,7 +133,6 @@ function renderTrackStrip(
   mutedTrackIndexes: number[],
   soloTrackIndexes: number[],
   trackVolumeByIndex: Record<number, number>,
-  trackBalanceByIndex: Record<number, number>,
 ): string {
   if (tracks.length === 0) {
     return '<p class="helperText">Loading tracks...</p>';
@@ -110,19 +143,16 @@ function renderTrackStrip(
       const isActive = confirmedActiveTrackIndex === track.index;
       const activeClass = isActive ? "trackStripItem isActiveTrack" : "trackStripItem";
 
+      const compactLabel = getCompactTrackDisplayLabel(track);
       return `
         <article class="${activeClass}" data-track-item-index="${track.index}" role="button" tabindex="0" aria-label="Select track ${track.name}">
           <div class="trackControlRow trackControlRowCompact" aria-label="Track controls for ${track.name}">
-            <span class="trackNameCompact" title="${track.name}">${track.name}</span>
+            <span class="trackNameCompact" title="${track.name}">${compactLabel}</span>
             <button class="secondaryButton trackControlButton ${soloTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-solo" data-track-index="${track.index}">S</button>
             <button class="secondaryButton trackControlButton ${mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}">M</button>
             <label class="trackControlLabel trackControlLabelCompact">
               <input class="trackControlRange" type="range" min="0" max="100" value="${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}" data-stop-track-select="true" data-track-action="set-volume" data-track-volume-index="${track.index}" />
               <span class="trackControlValue" data-track-volume-value="${track.index}">${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}</span>
-            </label>
-            <label class="trackControlLabel trackControlLabelCompact">
-              <input class="trackControlRange" type="range" min="-50" max="50" value="${trackBalanceByIndex[track.index] ?? DEFAULT_TRACK_BALANCE}" data-stop-track-select="true" data-track-action="set-balance" data-track-balance-index="${track.index}" />
-              <span class="trackControlValue" data-track-balance-value="${track.index}">${trackBalanceByIndex[track.index] ?? DEFAULT_TRACK_BALANCE}</span>
             </label>
           </div>
         </article>
@@ -183,7 +213,7 @@ export function renderProjectScreen(
     : "";
 
   container.innerHTML = `
-    <main class="playerLayoutShell">
+    <main class="playerLayoutShell ${actions.isBottomDockCollapsed ? "isDockCollapsed" : ""}">
       <header class="playerMenuBar">
         <div class="playerMenuGroup">
           <details class="playerMenuDetails">
@@ -232,7 +262,11 @@ export function renderProjectScreen(
           </div>
           <div class="playerLoopControls">
             <button class="${actions.loopEnabled ? "primaryButton" : "secondaryButton"}" type="button" data-action="toggle-loop" data-loop-toggle-button="true">Loop</button>
+            <button class="secondaryButton playerLoopAdjustButton" type="button" data-action="move-loop-start-left" ${actions.canMoveLoopStartLeft ? "" : "disabled"}>A−</button>
+            <button class="secondaryButton playerLoopAdjustButton" type="button" data-action="move-loop-start-right" ${actions.canMoveLoopStartRight ? "" : "disabled"}>A+</button>
             <span class="playerLoopLabel" data-loop-start-label="true">A: ${renderDebugValue(actions.loopStartBar)}</span>
+            <button class="secondaryButton playerLoopAdjustButton" type="button" data-action="move-loop-end-left" ${actions.canMoveLoopEndLeft ? "" : "disabled"}>B−</button>
+            <button class="secondaryButton playerLoopAdjustButton" type="button" data-action="move-loop-end-right" ${actions.canMoveLoopEndRight ? "" : "disabled"}>B+</button>
             <span class="playerLoopLabel" data-loop-end-label="true">B: ${renderDebugValue(actions.loopEndBar)}</span>
           </div>
           <div class="playerSpeedControls" aria-label="Playback speed controls">
@@ -253,12 +287,19 @@ export function renderProjectScreen(
               <span class="playerSpeedBpm" data-playback-speed-bpm="true">${actions.effectiveTempoBpm === null ? "-" : `${actions.effectiveTempoBpm} BPM`}</span>
             </div>
           </div>
+          <div class="playerZoomControls" aria-label="Zoom controls">
+            <button class="secondaryButton playerZoomButton" type="button" data-action="zoom-out" ${actions.canZoomOut ? "" : "disabled"}>−</button>
+            <button class="secondaryButton playerZoomButton" type="button" data-action="zoom-in" ${actions.canZoomIn ? "" : "disabled"}>+</button>
+          </div>
         </div>
         <dl class="playerTopInfo">
           <dt>Song</dt>
           <dd data-player-field="score-title">${renderDebugValue(actions.scoreTitle)}</dd>
           <dt>Active track</dt>
-          <dd data-player-field="active-track-name">${renderDebugValue(actions.confirmedActiveTrackIndex === null ? null : actions.tracks.find((track) => track.index === actions.confirmedActiveTrackIndex)?.name ?? null)}</dd>
+          <dd data-player-field="active-track-name">${renderDebugValue(actions.confirmedActiveTrackIndex === null ? null : (() => {
+            const activeTrack = actions.tracks.find((track) => track.index === actions.confirmedActiveTrackIndex);
+            return activeTrack ? activeTrack.name : null;
+          })())}</dd>
           <dt>Bar</dt>
           <dd data-player-field="current-bar">${renderDebugValue(actions.currentBar)} / <span data-player-field="total-bars">${renderDebugValue(actions.totalBars)}</span></dd>
           <dt>Time</dt>
@@ -280,14 +321,16 @@ export function renderProjectScreen(
       <section class="playerBottomDock">
         <div class="playerDockResizeHandle" data-dock-resize-handle="true" role="separator" aria-label="Resize bottom dock" aria-orientation="horizontal"></div>
         <div class="playerDockHeaders">
-          <div class="playerDockLeftHeader">Tracks / Controls</div>
+          <div class="playerDockLeftHeader">
+            <span>Tracks / Controls</span>
+            ${actions.isBottomDockCollapsed ? "" : '<button class="secondaryButton playerDockToggleButton" type="button" data-action="collapse-bottom-dock">Hide</button>'}
+          </div>
           <div class="playerDockRightHeader">Timeline</div>
         </div>
         <div class="playerDockTopBand">
           <div class="playerDockLeftTopHeader">
             <span class="playerDockLeftHeaderName">Name</span>
             <span class="playerDockLeftHeaderVolume">Volume</span>
-            <span class="playerDockLeftHeaderBalance">Balance</span>
           </div>
           <div class="playerDockRightTopHeader" data-dock-horizontal-sync="true">
             <div class="arrangementOverview arrangementOverviewDock" data-arrangement-overview="true">
@@ -304,7 +347,6 @@ export function renderProjectScreen(
                 actions.mutedTrackIndexes,
                 actions.soloTrackIndexes,
                 actions.trackVolumeByIndex,
-                actions.trackBalanceByIndex,
               )}
             </div>
           </div>
@@ -324,10 +366,6 @@ export function renderProjectScreen(
                   <input class="trackControlRange" type="range" min="0" max="100" value="${actions.masterVolume}" data-stop-track-select="true" data-master-action="set-volume" />
                   <span class="trackControlValue" data-master-volume-value="true">${actions.masterVolume}</span>
                 </label>
-                <label class="trackControlLabel trackControlLabelCompact">
-                  <input class="trackControlRange" type="range" min="-50" max="50" value="${actions.masterBalance}" data-stop-track-select="true" data-master-action="set-balance" />
-                  <span class="trackControlValue" data-master-balance-value="true">${actions.masterBalance}</span>
-                </label>
               </div>
             </article>
           </div>
@@ -335,6 +373,16 @@ export function renderProjectScreen(
             <div class="arrangementOverview arrangementOverviewDock" data-arrangement-overview="true">
               <div class="arrangementMarkers" data-arrangement-markers></div>
             </div>
+          </div>
+        </div>
+        <div class="playerDockCollapsedStrip" data-action="left-controls">
+          <div class="playerDockCollapsedMaster">
+            <span class="trackNameCompact">Master</span>
+            <label class="trackControlLabel trackControlLabelCompact">
+              <input class="trackControlRange" type="range" min="0" max="100" value="${actions.masterVolume}" data-stop-track-select="true" data-master-action="set-volume" />
+              <span class="trackControlValue" data-master-volume-value="true">${actions.masterVolume}</span>
+            </label>
+            <button class="secondaryButton playerDockToggleButton" type="button" data-action="expand-bottom-dock">Expand</button>
           </div>
         </div>
       </section>
@@ -346,9 +394,17 @@ export function renderProjectScreen(
   const pauseButton = container.querySelector<HTMLButtonElement>('[data-action="pause"]');
   const stopButton = container.querySelector<HTMLButtonElement>('[data-action="stop"]');
   const toggleLoopButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-loop"]');
+  const moveLoopStartLeftButton = container.querySelector<HTMLButtonElement>('[data-action="move-loop-start-left"]');
+  const moveLoopStartRightButton = container.querySelector<HTMLButtonElement>('[data-action="move-loop-start-right"]');
+  const moveLoopEndLeftButton = container.querySelector<HTMLButtonElement>('[data-action="move-loop-end-left"]');
+  const moveLoopEndRightButton = container.querySelector<HTMLButtonElement>('[data-action="move-loop-end-right"]');
   const decreasePlaybackSpeedButton = container.querySelector<HTMLButtonElement>('[data-action="decrease-playback-speed"]');
   const increasePlaybackSpeedButton = container.querySelector<HTMLButtonElement>('[data-action="increase-playback-speed"]');
   const playbackSpeedSlider = container.querySelector<HTMLInputElement>('[data-action="set-playback-speed"]');
+  const zoomOutButton = container.querySelector<HTMLButtonElement>('[data-action="zoom-out"]');
+  const zoomInButton = container.querySelector<HTMLButtonElement>('[data-action="zoom-in"]');
+  const collapseBottomDockButton = container.querySelector<HTMLButtonElement>('[data-action="collapse-bottom-dock"]');
+  const expandBottomDockButton = container.querySelector<HTMLButtonElement>('[data-action="expand-bottom-dock"]');
   const playbackSpeedReadout = container.querySelector<HTMLElement>(".playerSpeedReadout");
   const toggleCountInButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-count-in"]');
   const toggleMetronomeButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-metronome"]');
@@ -401,10 +457,6 @@ export function renderProjectScreen(
         return;
       }
 
-      if (trackActionButton.dataset.trackAction === "set-balance") {
-        const knob = trackActionButton as HTMLInputElement;
-        actions.onTrackBalanceChange(trackIndex, Number(knob.value));
-      }
     }
 
     handleTrackSelection(event.target);
@@ -426,23 +478,8 @@ export function renderProjectScreen(
       return;
     }
 
-    if (targetElement.dataset.trackAction === "set-balance") {
-      const trackIndex = Number(targetElement.dataset.trackBalanceIndex);
-      if (Number.isNaN(trackIndex)) {
-        return;
-      }
-
-      actions.onTrackBalanceChange(trackIndex, Number(targetElement.value));
-      return;
-    }
-
     if (targetElement.dataset.masterAction === "set-volume") {
       actions.onMasterVolumeChange(Number(targetElement.value));
-      return;
-    }
-
-    if (targetElement.dataset.masterAction === "set-balance") {
-      actions.onMasterBalanceChange(Number(targetElement.value));
     }
   }));
 
@@ -476,23 +513,8 @@ export function renderProjectScreen(
       return;
     }
 
-    if (targetElement.dataset.trackAction === "set-balance") {
-      const trackIndex = Number(targetElement.dataset.trackBalanceIndex);
-      if (Number.isNaN(trackIndex)) {
-        return;
-      }
-
-      actions.onTrackBalanceChange(trackIndex, DEFAULT_TRACK_BALANCE);
-      return;
-    }
-
     if (targetElement.dataset.masterAction === "set-volume") {
       actions.onMasterVolumeChange(DEFAULT_TRACK_VOLUME);
-      return;
-    }
-
-    if (targetElement.dataset.masterAction === "set-balance") {
-      actions.onMasterBalanceChange(DEFAULT_TRACK_BALANCE);
     }
   }));
 
@@ -501,6 +523,10 @@ export function renderProjectScreen(
   pauseButton?.addEventListener("click", actions.onPause);
   stopButton?.addEventListener("click", actions.onStop);
   toggleLoopButton?.addEventListener("click", actions.onToggleLoop);
+  moveLoopStartLeftButton?.addEventListener("click", actions.onMoveLoopStartLeft);
+  moveLoopStartRightButton?.addEventListener("click", actions.onMoveLoopStartRight);
+  moveLoopEndLeftButton?.addEventListener("click", actions.onMoveLoopEndLeft);
+  moveLoopEndRightButton?.addEventListener("click", actions.onMoveLoopEndRight);
   decreasePlaybackSpeedButton?.addEventListener("click", actions.onDecreasePlaybackSpeed);
   increasePlaybackSpeedButton?.addEventListener("click", actions.onIncreasePlaybackSpeed);
   playbackSpeedSlider?.addEventListener("input", () => {
@@ -508,6 +534,10 @@ export function renderProjectScreen(
   });
   playbackSpeedSlider?.addEventListener("dblclick", actions.onResetPlaybackSpeed);
   playbackSpeedReadout?.addEventListener("dblclick", actions.onResetPlaybackSpeed);
+  zoomOutButton?.addEventListener("click", actions.onZoomOut);
+  zoomInButton?.addEventListener("click", actions.onZoomIn);
+  collapseBottomDockButton?.addEventListener("click", actions.onCollapseBottomDock);
+  expandBottomDockButton?.addEventListener("click", actions.onExpandBottomDock);
   toggleCountInButton?.addEventListener("click", actions.onToggleCountIn);
   toggleMetronomeButton?.addEventListener("click", actions.onToggleMetronome);
   backHomeButton?.addEventListener("click", actions.onBackToHome);
