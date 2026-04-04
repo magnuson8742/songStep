@@ -66,6 +66,9 @@ interface AlphaTabScore {
 interface AlphaTabTrack {
   index: number;
   name: string;
+  shortName?: string;
+  displayName?: string;
+  instrumentName?: string;
   isPercussion?: boolean;
   staves?: AlphaTabStaff[];
 }
@@ -151,6 +154,7 @@ interface TrackContentSignature {
 export interface GpTrackInfo {
   index: number;
   name: string;
+  displayLabel: string;
   runtimeTrackPosition: number;
   isPercussion: boolean;
   totalBars: number;
@@ -506,6 +510,7 @@ function toTrackInfoList(tracks: AlphaTabTrack[]): GpTrackInfo[] {
     return {
       index: track.index,
       name: track.name || `Track ${track.index + 1}`,
+      displayLabel: deriveCompactTrackDisplayLabel(track),
       runtimeTrackPosition,
       isPercussion: track.isPercussion === true || track.staves?.some((staff) => staff.isPercussion === true) === true,
       totalBars: signature.totalBars,
@@ -522,6 +527,26 @@ function countNotesInBar(bar: AlphaTabBar | undefined): number {
     const beatNoteCount = beats.reduce((sum, beat) => sum + (beat.notes?.length ?? 0), 0);
     return voiceNoteCount + beatNoteCount;
   }, 0);
+}
+
+function deriveCompactTrackDisplayLabel(track: AlphaTabTrack): string {
+  const unsafeTrack = track as AlphaTabTrack & { playbackInfo?: { programName?: string } };
+  const metadataCandidates = [track.displayName, track.instrumentName, track.shortName, unsafeTrack.playbackInfo?.programName];
+  for (const candidate of metadataCandidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+
+  const fallbackName = track.name?.trim() || `Track ${track.index + 1}`;
+  const separators = ["|", "—", "-", ":"];
+  for (const separator of separators) {
+    const segments = fallbackName.split(separator).map((segment) => segment.trim()).filter((segment) => segment.length > 0);
+    if (segments.length > 1) {
+      return segments[segments.length - 1] as string;
+    }
+  }
+  return fallbackName;
 }
 
 function computeTrackContentSignature(track: AlphaTabTrack, fallbackBarCount: number): TrackContentSignature {
@@ -3528,8 +3553,12 @@ export async function createGpRenderer(
         pendingProgrammaticSeek.sessionToken === activeSessionToken &&
         pendingProgrammaticSeek.trackIndex === confirmedActiveTrackIndex
       ) {
-        pendingPlayAfterProgrammaticSeek = false;
-        seekToTick(pendingProgrammaticSeek.tick);
+        pendingPlayAfterProgrammaticSeek = true;
+        console.debug("[alphaTabGpRenderer] queued play after pending seek", {
+          tick: pendingProgrammaticSeek.tick,
+          trackIndex: pendingProgrammaticSeek.trackIndex,
+        });
+        return;
       }
 
       playbackScrollLockSnapshot = captureRenderViewportScroll();
