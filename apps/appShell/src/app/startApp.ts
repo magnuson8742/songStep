@@ -297,6 +297,52 @@ function updateTrackRowVisualState(state: AppState, rootElement: HTMLElement): v
   });
 }
 
+function refreshTrackStripUi(state: AppState, rootElement: HTMLElement): boolean {
+  const trackStrip = rootElement.querySelector<HTMLElement>("[data-action='track-strip']");
+  if (!trackStrip) {
+    traceTrackSwitch("tracks-ui-refresh-skipped", { reason: "track-strip-not-found" });
+    return false;
+  }
+  traceTrackSwitch("tracks-ui-refresh-start", {
+    trackCount: state.gpTracks.length,
+    selectedTrackIndex: state.selectedTrackIndex,
+    confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+  });
+  if (state.gpTracks.length === 0) {
+    trackStrip.innerHTML = '<p class="helperText">Loading tracks...</p>';
+    traceTrackSwitch("tracks-ui-refresh-finish", { mode: "loading-placeholder" });
+    return true;
+  }
+  trackStrip.innerHTML = state.gpTracks
+    .map((track) => {
+      const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null;
+      const isActive = activeTrackIndex === track.index;
+      const activeClass = isActive ? "trackStripItem isActiveTrack" : "trackStripItem";
+      const compactLabel = track.displayLabel?.trim() || track.name || `Track ${track.index + 1}`;
+      const volume = state.trackVolumeByIndex[track.index] ?? 80;
+      const muteOn = state.mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : "";
+      const soloOn = state.soloTrackIndexes.includes(track.index) ? "isTrackToggleOn" : "";
+      return `
+        <article class="${activeClass}" data-track-item-index="${track.index}" role="button" tabindex="0" aria-label="Select track ${track.name}">
+          <div class="trackControlRow trackControlRowCompact" aria-label="Track controls for ${track.name}">
+            <span class="trackNameCompact" title="${track.name}">${compactLabel}</span>
+            <button class="secondaryButton trackControlButton ${soloOn}" type="button" data-stop-track-select="true" data-track-action="toggle-solo" data-track-index="${track.index}">S</button>
+            <button class="secondaryButton trackControlButton ${muteOn}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}">M</button>
+            <label class="trackControlLabel trackControlLabelCompact">
+              <input class="trackControlRange" type="range" min="0" max="100" value="${volume}" data-stop-track-select="true" data-track-action="set-volume" data-track-volume-index="${track.index}" />
+              <span class="trackControlValue" data-track-volume-value="${track.index}">${volume}</span>
+            </label>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+  updateTrackRowVisualState(state, rootElement);
+  updateTrackControlVisualState(state, rootElement);
+  traceTrackSwitch("tracks-ui-refresh-finish", { mode: "tracks-rendered", trackCount: state.gpTracks.length });
+  return true;
+}
+
 function applyMixerStateToRenderer(state: AppState): void {
   if (!state.gpRenderer) {
     return;
@@ -3515,6 +3561,7 @@ export function startApp(rootElement: HTMLElement): void {
           }
 
           state.projectStatusMessage = `Loaded ${tracks.length} track${tracks.length === 1 ? "" : "s"}.`;
+          refreshTrackStripUi(state, rootElement);
           traceRendererLifecycle("project-init-deduped", {
             reason: "skip-render-on-tracks-loaded",
             trackCount: tracks.length,

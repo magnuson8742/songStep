@@ -493,6 +493,8 @@ interface ReloadOptions {
   targetTick?: number | null;
 }
 
+type PlayerPhase = "idle" | "starting" | "playing" | "paused" | "stopped" | "invalid" | "recreating";
+
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -926,6 +928,7 @@ export async function createGpRenderer(
   let lastLoggedPlayerBar: number | null = null;
   let lastLoggedPlayerBeatInBar: number | null = null;
   let lastLoggedPlayerState: "playing" | "paused" | "stopped" | null = null;
+  let playerPhase: PlayerPhase = "idle";
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1001,6 +1004,22 @@ export async function createGpRenderer(
       zoomRerenderInFlight,
     });
     hooks.onRuntimeNotice(message);
+  };
+
+  const setPlayerPhase = (nextPhase: PlayerPhase, reason: string): void => {
+    if (playerPhase === nextPhase) {
+      return;
+    }
+    const previousPhase = playerPhase;
+    playerPhase = nextPhase;
+    tracePlayer("player-phase-change", {
+      previousPhase,
+      nextPhase,
+      reason,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
   };
 
   const summarizeError = (error: unknown): Record<string, unknown> => {
@@ -3060,6 +3079,7 @@ export async function createGpRenderer(
   };
 
   const switchTrackByReload = async (nextTrackIndex: number, options?: ReloadOptions): Promise<void> => {
+    setPlayerPhase("recreating", "switchTrackByReload-start");
     traceRenderer("switchTrackByReload-start", {
       nextTrackIndex,
       targetTick: options?.targetTick ?? null,
@@ -3230,6 +3250,13 @@ export async function createGpRenderer(
             normalizedState,
           });
           lastLoggedPlayerState = normalizedState;
+        }
+        if (normalizedState === "playing") {
+          setPlayerPhase("playing", "player-state-changed");
+        } else if (normalizedState === "paused") {
+          setPlayerPhase("paused", "player-state-changed");
+        } else if (normalizedState === "stopped") {
+          setPlayerPhase("stopped", "player-state-changed");
         }
         const playerStatePayloadShape = describePayloadShape(statePayload);
         if (normalizedState === "playing") {
@@ -3663,6 +3690,9 @@ export async function createGpRenderer(
       sessionToken,
       rendererBusy,
     });
+    if (playerPhase === "recreating") {
+      setPlayerPhase("idle", "switchTrackByReload-finish");
+    }
     emitDebugInfo();
   };
 
@@ -3845,10 +3875,40 @@ export async function createGpRenderer(
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
+      if (playerPhase === "starting" || playerPhase === "playing") {
+        tracePlayer("play-suppressed-invalid-state", {
+          reason: "already-starting-or-playing",
+          playerPhase,
+        });
+        return;
+      }
+      if (playerPhase === "invalid") {
+        tracePlayer("runtime-reset-before-replay", {
+          reason: "phase-invalid-before-play",
+          confirmedActiveTrackIndex,
+        });
+        void switchTrackByReload(confirmedActiveTrackIndex).catch(() => undefined);
+        return;
+      }
 
       playbackScrollLockSnapshot = captureRenderViewportScroll();
       const playbackApi = activeApi as AlphaTabApi & { play: () => boolean };
-      playbackApi.play();
+      try {
+        setPlayerPhase("starting", "play-called");
+        playbackApi.play();
+      } catch (error) {
+        setPlayerPhase("invalid", "play-throw");
+        tracePlayer("play-suppressed-invalid-state", {
+          reason: "play-throw",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        tracePlayer("runtime-reset-before-replay", {
+          reason: "play-throw",
+          confirmedActiveTrackIndex,
+        });
+        void switchTrackByReload(confirmedActiveTrackIndex).catch(() => undefined);
+        return;
+      }
       tracePlayer("play-actually-dispatched-to-runtime", {
         activeSessionToken,
         requestedTrackIndex,
@@ -3865,10 +3925,25 @@ export async function createGpRenderer(
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
+      if (playerPhase === "idle" || playerPhase === "stopped") {
+        tracePlayer("play-suppressed-invalid-state", {
+          reason: "pause-while-not-playing",
+          playerPhase,
+        });
+        return;
+      }
 
       playbackScrollLockSnapshot = null;
       const playbackApi = activeApi as AlphaTabApi & { pause: () => void };
-      playbackApi.pause();
+      try {
+        playbackApi.pause();
+      } catch (error) {
+        setPlayerPhase("invalid", "pause-throw");
+        tracePlayer("play-suppressed-invalid-state", {
+          reason: "pause-throw",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
     stop: () => {
       tracePlayer("stop-called", {
@@ -3881,11 +3956,27 @@ export async function createGpRenderer(
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
+      if (playerPhase === "idle" || playerPhase === "stopped") {
+        tracePlayer("stop-suppressed-invalid-state", {
+          reason: "stop-while-not-started",
+          playerPhase,
+        });
+        return;
+      }
 
       playbackScrollLockSnapshot = null;
       pendingProgrammaticSeek = null;
       const playbackApi = activeApi as AlphaTabApi & { stop: () => void };
-      playbackApi.stop();
+      try {
+        playbackApi.stop();
+        setPlayerPhase("stopped", "stop-called");
+      } catch (error) {
+        setPlayerPhase("invalid", "stop-throw");
+        tracePlayer("stop-suppressed-invalid-state", {
+          reason: "stop-throw",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
     destroy: () => {
       traceRenderer("destroy-called", {
