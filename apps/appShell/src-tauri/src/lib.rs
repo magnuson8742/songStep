@@ -8,6 +8,12 @@ struct SessionDebugState {
     file_path: PathBuf,
 }
 
+enum SessionDebugMode {
+    File(SessionDebugState),
+    ConsoleOnly,
+    Unavailable(String),
+}
+
 fn build_session_debug_file_path(debug_directory: &PathBuf) -> PathBuf {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -64,48 +70,72 @@ fn initialize_session_debug_state(app_handle: &tauri::AppHandle) -> Result<Sessi
     Ok(SessionDebugState { file_path })
 }
 
+fn initialize_session_debug_mode(app_handle: &tauri::AppHandle) -> SessionDebugMode {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        println!("[songstep-session-debug] {{\"type\":\"session-start\",\"mode\":\"mobile-console\"}}");
+        println!("[songstep-session-debug] {{\"type\":\"backend-ready\",\"mode\":\"mobile-console\"}}");
+        let _ = app_handle;
+        SessionDebugMode::ConsoleOnly
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        match initialize_session_debug_state(app_handle) {
+            Ok(state) => SessionDebugMode::File(state),
+            Err(error) => {
+                eprintln!("session debug logger unavailable: {error}");
+                SessionDebugMode::Unavailable(error)
+            }
+        }
+    }
+}
+
 #[tauri::command]
 fn get_session_debug_log_path(
-    state: tauri::State<'_, Mutex<Option<SessionDebugState>>>,
+    state: tauri::State<'_, Mutex<SessionDebugMode>>,
 ) -> Result<String, String> {
     let guard = state
         .lock()
         .map_err(|error| format!("session debug state lock failed: {error}"))?;
-    let session_state = guard
-        .as_ref()
-        .ok_or_else(|| "session debug logging unavailable".to_string())?;
-    Ok(session_state.file_path.to_string_lossy().to_string())
+    match &*guard {
+        SessionDebugMode::File(session_state) => Ok(session_state.file_path.to_string_lossy().to_string()),
+        SessionDebugMode::ConsoleOnly => Ok("mobile-console-logging".to_string()),
+        SessionDebugMode::Unavailable(reason) => Err(format!("session debug logging unavailable: {reason}")),
+    }
 }
 
 #[tauri::command]
 fn append_session_debug_event(
     event_json: String,
-    state: tauri::State<'_, Mutex<Option<SessionDebugState>>>,
+    state: tauri::State<'_, Mutex<SessionDebugMode>>,
 ) -> Result<(), String> {
     let guard = state
         .lock()
         .map_err(|error| format!("session debug state lock failed: {error}"))?;
-    let session_state = guard
-        .as_ref()
-        .ok_or_else(|| "session debug logging unavailable".to_string())?;
-    append_jsonl_line(&session_state.file_path, event_json.trim_end_matches('\n')).map_err(|error| {
-        eprintln!("append_session_debug_event failed: {error}");
-        error
-    })
+    let trimmed_event_json = event_json.trim_end_matches('\n');
+    match &*guard {
+        SessionDebugMode::File(session_state) => {
+            append_jsonl_line(&session_state.file_path, trimmed_event_json).map_err(|error| {
+                eprintln!("append_session_debug_event failed: {error}");
+                error
+            })
+        }
+        SessionDebugMode::ConsoleOnly => {
+            println!("[songstep-session-debug] {trimmed_event_json}");
+            Ok(())
+        }
+        SessionDebugMode::Unavailable(reason) => {
+            Err(format!("session debug logging unavailable: {reason}"))
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let session_debug_state = match initialize_session_debug_state(&app.handle().clone()) {
-                Ok(state) => Some(state),
-                Err(error) => {
-                    eprintln!("session debug logger unavailable: {error}");
-                    None
-                }
-            };
-            app.manage(Mutex::new(session_debug_state));
+            let session_debug_mode = initialize_session_debug_mode(&app.handle().clone());
+            app.manage(Mutex::new(session_debug_mode));
             Ok(())
         })
         .plugin(tauri_plugin_fs::init())
