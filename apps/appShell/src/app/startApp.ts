@@ -513,6 +513,23 @@ function cancelCountIn(state: AppState, rootElement: HTMLElement): void {
   }
 }
 
+function resetPlaybackVisualState(state: AppState, rootElement: HTMLElement): void {
+  state.playbackFollowTargetFound = false;
+  state.playbackFollowSource = null;
+  state.lastPlaybackFollowRowIndex = null;
+  state.playbackPlayheadVisible = false;
+  state.playbackBarAnchorCount = 0;
+  state.playbackBarAnchorSource = null;
+  state.playbackAnchorStrategyAttempts = null;
+  invalidatePlaybackBarAnchorRebuild(state);
+  updatePlaybackFollowDiagnostics(rootElement, false, null);
+  updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+  updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+  updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
+  updateArrangementPlaybackHighlight(state, rootElement);
+  hidePlaybackPlayhead(rootElement, state);
+}
+
 function updatePlayerRuntimeFields(state: AppState, rootElement: HTMLElement): void {
   const setPlayerField = (fieldName: string, value: string): void => {
     const field = rootElement.querySelector<HTMLElement>(`[data-player-field="${fieldName}"]`);
@@ -2463,15 +2480,46 @@ export function startApp(rootElement: HTMLElement): void {
     sessionDebugBannerShown: false,
   };
 
-  const cleanupRenderer = (): void => {
-    clearCountInTimer(state);
+  const hardCancelPlaybackPipeline = (
+    reason: "pause" | "stop" | "track-switch" | "renderer-cleanup",
+    options?: { stopRenderer?: boolean; resetPosition?: boolean },
+  ): void => {
+    logPlaybackPipeline("play-cancelled", {
+      reason,
+      hadPendingPlaybackStart: state.pendingPlaybackStart !== null,
+      playbackTransportActive: state.playbackTransportActive,
+      countInInProgress: state.countInInProgress,
+      playbackIsPlaying: state.playbackIsPlaying,
+    });
+    cancelCountIn(state, rootElement);
+    if (state.pendingPlaybackStart) {
+      logPlaybackPipeline("play-cancelled", {
+        reason,
+        requestId: state.pendingPlaybackStart.requestId,
+      });
+    }
+    state.pendingPlaybackStart = null;
+    state.playbackTransportActive = false;
     state.countInInProgress = false;
     stopPlaybackMetronome(state);
-    invalidatePlaybackBarAnchorRebuild(state);
+    state.manualNavigationVisualOverrideActive = false;
+    resetPlaybackVisualState(state, rootElement);
+    if (options?.resetPosition) {
+      state.playbackCurrentBar = null;
+      state.playbackCurrentTick = null;
+      state.playbackCurrentBarStartTick = null;
+      state.playbackCurrentBarEndTickExclusive = null;
+    }
+    if (options?.stopRenderer && state.gpRenderer) {
+      state.gpRenderer.stop();
+    }
+  };
+
+  const cleanupRenderer = (): void => {
+    hardCancelPlaybackPipeline("renderer-cleanup");
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
     state.pendingOverviewNavigationTick = null;
-    state.manualNavigationVisualOverrideActive = false;
     state.desiredTrackSwitchTick = null;
     state.desiredTrackSwitchBar = null;
     state.desiredTrackSwitchSourceTrackIndex = null;
@@ -2479,6 +2527,9 @@ export function startApp(rootElement: HTMLElement): void {
       return;
     }
 
+    logPlaybackPipeline("renderer-destroy", {
+      selectedTrackIndex: state.selectedTrackIndex,
+    });
     state.gpRenderer.destroy();
     state.gpRenderer = null;
   };
@@ -2794,6 +2845,13 @@ export function startApp(rootElement: HTMLElement): void {
           : state.tabZoomPercent > MIN_TAB_ZOOM_PERCENT,
         isBottomDockCollapsed: state.isBottomDockCollapsed,
         onTrackSelectionChange: (trackIndex: number) => {
+          logPlaybackPipeline("track-switch-start", {
+            fromTrackIndex: state.selectedTrackIndex,
+            requestedTrackIndex: trackIndex,
+            playbackTransportActive: state.playbackTransportActive,
+            countInInProgress: state.countInInProgress,
+            pendingPlaybackStart: state.pendingPlaybackStart !== null,
+          });
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "track-select-requested",
             timestamp: new Date().toISOString(),
@@ -2818,6 +2876,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.clickCounter += 1;
           state.lastClickTimestampIso = new Date().toISOString();
           state.selectionFired = true;
+          hardCancelPlaybackPipeline("track-switch", { stopRenderer: true, resetPosition: true });
+          logPlaybackPipeline("track-switch-after-hard-cancel", {
+            requestedTrackIndex: trackIndex,
+          });
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;
@@ -3021,7 +3083,7 @@ export function startApp(rootElement: HTMLElement): void {
               return;
             }
             const seekApplied = state.gpRenderer.seekToTick(targetTick);
-            logPlaybackPipeline("play-seek-dispatched", { requestId, targetTick, seekApplied });
+            logPlaybackPipeline("seek-dispatched", { requestId, targetTick, seekApplied });
             if (!seekApplied) {
               state.projectStatusMessage = "Could not seek to playback start.";
               updateProjectStatusBanner(rootElement, state.projectStatusMessage);
@@ -3074,13 +3136,10 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
 
-          cancelCountIn(state, rootElement);
-          if (state.pendingPlaybackStart) {
-            logPlaybackPipeline("play-cancelled", { reason: "pause", requestId: state.pendingPlaybackStart.requestId });
-          }
-          state.pendingPlaybackStart = null;
-          state.playbackTransportActive = false;
-          stopPlaybackMetronome(state);
+          logPlaybackPipeline("pause-dispatch", {
+            selectedTrackIndex: state.selectedTrackIndex,
+          });
+          hardCancelPlaybackPipeline("pause");
           state.gpRenderer.pause();
         },
         onStop: () => {
@@ -3090,32 +3149,10 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
 
-          state.playbackCurrentBar = null;
-          state.playbackCurrentTick = null;
-          state.playbackCurrentBarStartTick = null;
-          state.playbackCurrentBarEndTickExclusive = null;
-          cancelCountIn(state, rootElement);
-          if (state.pendingPlaybackStart) {
-            logPlaybackPipeline("play-cancelled", { reason: "stop", requestId: state.pendingPlaybackStart.requestId });
-          }
-          state.pendingPlaybackStart = null;
-          stopPlaybackMetronome(state);
-          state.playbackTransportActive = false;
-          state.playbackFollowTargetFound = false;
-          state.playbackFollowSource = null;
-          state.lastPlaybackFollowRowIndex = null;
-          state.playbackPlayheadVisible = false;
-          state.playbackBarAnchorCount = 0;
-          state.playbackBarAnchorSource = null;
-          state.playbackAnchorStrategyAttempts = null;
-          state.manualNavigationVisualOverrideActive = false;
-          invalidatePlaybackBarAnchorRebuild(state);
-          updatePlaybackFollowDiagnostics(rootElement, false, null);
-          updateDebugField(rootElement, "playback-bar-anchor-count", "0");
-          updateDebugField(rootElement, "playback-bar-anchor-source", "-");
-          updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
-          updateArrangementPlaybackHighlight(state, rootElement);
-          hidePlaybackPlayhead(rootElement, state);
+          logPlaybackPipeline("stop-dispatch", {
+            selectedTrackIndex: state.selectedTrackIndex,
+          });
+          hardCancelPlaybackPipeline("stop", { resetPosition: true });
           state.gpRenderer.stop();
         },
         onToggleLoop: () => {
@@ -3303,7 +3340,7 @@ export function startApp(rootElement: HTMLElement): void {
           ) {
             const pendingStart = state.pendingPlaybackStart;
             state.pendingPlaybackStart = null;
-            logPlaybackPipeline("play-seek-confirmed", {
+            logPlaybackPipeline("seek-confirmed", {
               requestId: pendingStart.requestId,
               targetTick: pendingStart.targetTick,
               confirmedTick: tick,
@@ -3632,6 +3669,9 @@ export function startApp(rootElement: HTMLElement): void {
       }, state.tabZoomPercent)
         .then((renderer) => {
           state.gpRenderer = renderer;
+          logPlaybackPipeline("renderer-created", {
+            selectedTrackIndex: state.selectedTrackIndex,
+          });
           state.gpRenderer.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           applyMixerStateToRenderer(state);
         })

@@ -891,7 +891,6 @@ export async function createGpRenderer(
   let inPlaceZoomPlaybackContext: InPlaceZoomPlaybackContext | null = null;
   let inPlaceZoomTokenCounter = 0;
   let pendingProgrammaticSeek: PendingProgrammaticSeek | null = null;
-  let pendingPlayAfterProgrammaticSeek = false;
   let renderAttemptCounter = 0;
   let activeRenderAttemptId: string | null = null;
   let lastBarBoundsExtractionDiagnostics: BarBoundsExtractionDiagnostics | null = null;
@@ -2995,7 +2994,6 @@ export async function createGpRenderer(
     inPlaceZoomPlaybackContext = null;
     pendingZoomPercent = null;
     pendingProgrammaticSeek = null;
-    pendingPlayAfterProgrammaticSeek = false;
     requestedTrackIndex = nextTrackIndex;
     const renderPlan = buildRenderPlan(nextTrackIndex);
     currentRenderMode = renderPlan.mode;
@@ -3135,10 +3133,6 @@ export async function createGpRenderer(
           if (tickDelta <= 1) {
             hooks.onProgrammaticSeekConfirmed(confirmedActiveTrackIndex, pendingProgrammaticSeek.tick);
             pendingProgrammaticSeek = null;
-            if (pendingPlayAfterProgrammaticSeek && isPlaybackApiAvailable(api)) {
-              pendingPlayAfterProgrammaticSeek = false;
-              api.play?.();
-            }
           } else if (pendingProgrammaticSeek.retryCount < 2 && api.isReadyForPlayback !== false) {
             pendingProgrammaticSeek.retryCount += 1;
             const retryTick = pendingProgrammaticSeek.tick;
@@ -3564,19 +3558,6 @@ export async function createGpRenderer(
         return;
       }
 
-      if (
-        pendingProgrammaticSeek &&
-        pendingProgrammaticSeek.sessionToken === activeSessionToken &&
-        pendingProgrammaticSeek.trackIndex === confirmedActiveTrackIndex
-      ) {
-        pendingPlayAfterProgrammaticSeek = true;
-        console.debug("[alphaTabGpRenderer] queued play after pending seek", {
-          tick: pendingProgrammaticSeek.tick,
-          trackIndex: pendingProgrammaticSeek.trackIndex,
-        });
-        return;
-      }
-
       playbackScrollLockSnapshot = captureRenderViewportScroll();
       const playbackApi = activeApi as AlphaTabApi & { play: () => boolean };
       playbackApi.play();
@@ -3588,7 +3569,6 @@ export async function createGpRenderer(
       }
 
       playbackScrollLockSnapshot = null;
-      pendingPlayAfterProgrammaticSeek = false;
       const playbackApi = activeApi as AlphaTabApi & { pause: () => void };
       playbackApi.pause();
     },
@@ -3600,7 +3580,6 @@ export async function createGpRenderer(
 
       playbackScrollLockSnapshot = null;
       pendingProgrammaticSeek = null;
-      pendingPlayAfterProgrammaticSeek = false;
       const playbackApi = activeApi as AlphaTabApi & { stop: () => void };
       playbackApi.stop();
     },
@@ -3613,7 +3592,6 @@ export async function createGpRenderer(
       pendingZoomPercent = null;
       inPlaceZoomPlaybackContext = null;
       pendingProgrammaticSeek = null;
-      pendingPlayAfterProgrammaticSeek = false;
       playbackScrollLockSnapshot = null;
       destroyActiveRenderer();
       clearRenderHost(container);
