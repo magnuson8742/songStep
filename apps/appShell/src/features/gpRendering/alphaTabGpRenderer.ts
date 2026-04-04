@@ -836,14 +836,16 @@ export async function createGpRenderer(
   hooks: GpRendererHooks,
   initialZoomPercent = 100,
 ): Promise<GpRendererController> {
+  const toTraceLine = (prefix: string, eventName: string, payload: Record<string, unknown>): string =>
+    `${prefix} ${eventName} ${JSON.stringify(payload)}`;
   const traceRenderer = (eventName: string, payload: Record<string, unknown>): void => {
-    console.info("[songstep-renderer]", { eventName, timestamp: new Date().toISOString(), ...payload });
+    console.info(toTraceLine("[songstep-renderer]", eventName, payload));
   };
   const traceSeek = (eventName: string, payload: Record<string, unknown>): void => {
-    console.info("[songstep-seek]", { eventName, timestamp: new Date().toISOString(), ...payload });
+    console.info(toTraceLine("[songstep-seek]", eventName, payload));
   };
   const tracePlayer = (eventName: string, payload: Record<string, unknown>): void => {
-    console.info("[songstep-player]", { eventName, timestamp: new Date().toISOString(), ...payload });
+    console.info(toTraceLine("[songstep-player]", eventName, payload));
   };
 
   traceRenderer("createGpRenderer-start", {
@@ -916,8 +918,9 @@ export async function createGpRenderer(
   let masterVolume = 80;
   let masterBalance = 0;
   let hasLoggedMixerApplySuccess = false;
-  let lastLoggedPlayerTick: number | null = null;
   let lastLoggedPlayerBar: number | null = null;
+  let lastLoggedPlayerBeatInBar: number | null = null;
+  let lastLoggedPlayerState: "playing" | "paused" | "stopped" | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -3126,6 +3129,12 @@ export async function createGpRenderer(
 
     const sessionToken = activeSessionToken + 1;
     activeSessionToken = sessionToken;
+    if (renderCycleCounter === 1) {
+      traceRenderer("initial-track-load-start", {
+        sessionToken,
+        nextTrackIndex,
+      });
+    }
     const sessionTargetTick = options?.targetTick ?? null;
     let sessionTargetTickApplied = false;
     pendingScrollSnapshot = captureRenderViewportScroll();
@@ -3146,7 +3155,7 @@ export async function createGpRenderer(
     activeApi = api;
     applyMixerStateToApi(api, "renderer-created");
     const playbackAvailable = isPlaybackApiAvailable(api);
-    traceRenderer("switchTrackByReload-api-created", {
+    traceRenderer("api-created", {
       sessionToken,
       nextTrackIndex,
       playbackAvailable,
@@ -3171,13 +3180,16 @@ export async function createGpRenderer(
         }
 
         const normalizedState = normalizePlaybackState(statePayload);
-        tracePlayer("playerStateChanged", {
-          sessionToken,
-          activeSessionToken,
-          requestedTrackIndex,
-          confirmedActiveTrackIndex,
-          normalizedState,
-        });
+        if (normalizedState !== lastLoggedPlayerState) {
+          tracePlayer("player-state-changed", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+            normalizedState,
+          });
+          lastLoggedPlayerState = normalizedState;
+        }
         const playerStatePayloadShape = describePayloadShape(statePayload);
         if (normalizedState === "playing") {
           playbackScrollLockSnapshot = captureRenderViewportScroll();
@@ -3279,18 +3291,36 @@ export async function createGpRenderer(
           currentBarSourcePath: currentBarFromTick.sourcePath,
           playerPositionPayloadShape,
         };
+        const beatInBar =
+          currentTick === null ||
+          currentBarFromTick.currentBarStartTick === null ||
+          currentBarFromTick.currentBarEndTickExclusive === null ||
+          currentBarFromTick.currentBarEndTickExclusive <= currentBarFromTick.currentBarStartTick
+            ? null
+            : Math.max(
+                0,
+                Math.min(
+                  3,
+                  Math.floor(
+                    ((currentTick - currentBarFromTick.currentBarStartTick) /
+                      (currentBarFromTick.currentBarEndTickExclusive - currentBarFromTick.currentBarStartTick)) *
+                      4,
+                  ),
+                ),
+              );
         const shouldTracePosition =
-          currentTick !== lastLoggedPlayerTick ||
           currentBarFromTick.currentBar !== lastLoggedPlayerBar ||
+          beatInBar !== lastLoggedPlayerBeatInBar ||
           pendingProgrammaticSeek !== null;
         if (shouldTracePosition) {
-          tracePlayer("playerPositionChanged", {
+          tracePlayer("player-position-changed", {
             sessionToken,
             activeSessionToken,
             requestedTrackIndex,
             confirmedActiveTrackIndex,
             currentTick,
             currentBar: currentBarFromTick.currentBar,
+            beatInBar,
             pendingProgrammaticSeek:
               pendingProgrammaticSeek === null
                 ? null
@@ -3301,20 +3331,21 @@ export async function createGpRenderer(
                     sessionToken: pendingProgrammaticSeek.sessionToken,
                   },
           });
-          lastLoggedPlayerTick = currentTick;
           lastLoggedPlayerBar = currentBarFromTick.currentBar;
+          lastLoggedPlayerBeatInBar = beatInBar;
         }
         emitPlaybackRuntimeInfo();
       });
 
       api.playerReady?.on(() => {
-        traceRenderer("playerReady", {
+        traceRenderer("player-ready", {
           sessionToken,
           activeSessionToken,
           requestedTrackIndex,
           confirmedActiveTrackIndex,
           hasPendingProgrammaticSeek: pendingProgrammaticSeek !== null,
         });
+        emitRenderLifecycle("player-ready", { sessionToken });
         if (
           !pendingProgrammaticSeek ||
           pendingProgrammaticSeek.sessionToken !== sessionToken ||
@@ -3327,7 +3358,7 @@ export async function createGpRenderer(
     }
 
     api.scoreLoaded.on((score) => {
-      traceRenderer("scoreLoaded", {
+      traceRenderer("score-loaded", {
         sessionToken,
         activeSessionToken,
         requestedTrackIndex,
@@ -3335,6 +3366,7 @@ export async function createGpRenderer(
         scoreTrackCount: score.tracks?.length ?? 0,
         masterBarCount: score.masterBars?.length ?? 0,
       });
+      emitRenderLifecycle("score-loaded", { sessionToken });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3377,6 +3409,14 @@ export async function createGpRenderer(
       if (renderedTrack) {
         confirmedActiveTrackIndex = renderedTrack.index;
         lastSuccessfulConfirmedTrackIndex = renderedTrack.index;
+        traceRenderer("active-track-confirmed", {
+          sessionToken,
+          trackIndex: renderedTrack.index,
+        });
+        emitRenderLifecycle("active-track-confirmed", {
+          sessionToken,
+          trackIndex: renderedTrack.index,
+        });
         hooks.onActiveTrackConfirmed(renderedTrack.index);
       }
 
@@ -3414,6 +3454,12 @@ export async function createGpRenderer(
         lastRenderFinishedAtIso,
         barBoundsExtraction: lastBarBoundsExtractionDiagnostics,
       });
+      if (renderCycleCounter === 1) {
+        traceRenderer("initial-track-load-finished", {
+          sessionToken,
+          confirmedActiveTrackIndex,
+        });
+      }
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
       pendingRequestedTrackIndex = null;
@@ -3530,7 +3576,7 @@ export async function createGpRenderer(
     });
 
     lastRendererErrorStage = "load-start";
-    traceRenderer("api-load-start", {
+    traceRenderer("score-load-start", {
       sessionToken,
       nextTrackIndex,
       sourceBytesLength: sourceBytes.length,
@@ -3762,6 +3808,11 @@ export async function createGpRenderer(
       playbackScrollLockSnapshot = captureRenderViewportScroll();
       const playbackApi = activeApi as AlphaTabApi & { play: () => boolean };
       playbackApi.play();
+      tracePlayer("play-actually-dispatched-to-runtime", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
     },
     pause: () => {
       tracePlayer("pause-called", {

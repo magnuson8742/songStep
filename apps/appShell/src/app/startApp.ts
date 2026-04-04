@@ -142,6 +142,10 @@ interface AppState {
   sessionDebugLogger: SessionDebugLogger | null;
   sessionDebugLogPath: string | null;
   sessionDebugBannerShown: boolean;
+  rendererScoreLoaded: boolean;
+  rendererRenderFinished: boolean;
+  rendererPlayerReady: boolean;
+  trackSwitchInProgress: boolean;
 }
 
 function triggerJsonDownload(fileName: string, payload: unknown): void {
@@ -316,15 +320,15 @@ function logPlaybackPipeline(eventType: string, payload: Record<string, unknown>
 }
 
 function tracePlayback(eventName: string, payload: Record<string, unknown>): void {
-  console.info("[songstep-playback]", { eventName, timestamp: new Date().toISOString(), ...payload });
+  console.info(`[songstep-playback] ${eventName} ${JSON.stringify(payload)}`);
 }
 
 function traceTrackSwitch(eventName: string, payload: Record<string, unknown>): void {
-  console.info("[songstep-track]", { eventName, timestamp: new Date().toISOString(), ...payload });
+  console.info(`[songstep-track] ${eventName} ${JSON.stringify(payload)}`);
 }
 
 function traceRendererLifecycle(eventName: string, payload: Record<string, unknown>): void {
-  console.info("[songstep-renderer]", { eventName, timestamp: new Date().toISOString(), ...payload });
+  console.info(`[songstep-renderer] ${eventName} ${JSON.stringify(payload)}`);
 }
 
 function renderPlayerFieldValue(value: string | number | null): string {
@@ -2500,6 +2504,10 @@ export function startApp(rootElement: HTMLElement): void {
     sessionDebugLogger: null,
     sessionDebugLogPath: null,
     sessionDebugBannerShown: false,
+    rendererScoreLoaded: false,
+    rendererRenderFinished: false,
+    rendererPlayerReady: false,
+    trackSwitchInProgress: false,
   };
 
   const hardCancelPlaybackPipeline = (
@@ -2571,6 +2579,10 @@ export function startApp(rootElement: HTMLElement): void {
     state.desiredTrackSwitchTick = null;
     state.desiredTrackSwitchBar = null;
     state.desiredTrackSwitchSourceTrackIndex = null;
+    state.trackSwitchInProgress = false;
+    state.rendererScoreLoaded = false;
+    state.rendererRenderFinished = false;
+    state.rendererPlayerReady = false;
     if (!state.gpRenderer) {
       traceRendererLifecycle("cleanupRenderer-exit-noop", {
         reason: "no-renderer",
@@ -2911,7 +2923,7 @@ export function startApp(rootElement: HTMLElement): void {
           : state.tabZoomPercent > MIN_TAB_ZOOM_PERCENT,
         isBottomDockCollapsed: state.isBottomDockCollapsed,
         onTrackSelectionChange: (trackIndex: number) => {
-          traceTrackSwitch("selection-change-enter", {
+          traceTrackSwitch("onTrackSelectionChange-enter", {
             previousTrackIndex: state.selectedTrackIndex,
             nextTrackIndex: trackIndex,
             selectedNavigationTick: state.selectedNavigationTick,
@@ -2951,8 +2963,11 @@ export function startApp(rootElement: HTMLElement): void {
           state.clickCounter += 1;
           state.lastClickTimestampIso = new Date().toISOString();
           state.selectionFired = true;
+          state.trackSwitchInProgress = true;
+          state.rendererRenderFinished = false;
+          state.rendererPlayerReady = false;
           hardCancelPlaybackPipeline("track-switch", { resetPosition: true });
-          traceTrackSwitch("selection-change-after-hard-cancel", {
+          traceTrackSwitch("onTrackSelectionChange-after-hard-cancel", {
             nextTrackIndex: trackIndex,
             playbackTransportActive: state.playbackTransportActive,
             pendingPlaybackStart: state.pendingPlaybackStart !== null,
@@ -2982,7 +2997,7 @@ export function startApp(rootElement: HTMLElement): void {
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
-          traceTrackSwitch("selection-change-select-track", {
+          traceTrackSwitch("onTrackSelectionChange-selectTrack", {
             nextTrackIndex: trackIndex,
             preservedTick,
             preservedBar: state.desiredTrackSwitchBar,
@@ -3147,6 +3162,40 @@ export function startApp(rootElement: HTMLElement): void {
               : getActiveManualNavigationTarget(state)?.targetBar ?? null;
           const requestId = state.nextPlaybackRequestId + 1;
           state.nextPlaybackRequestId = requestId;
+          const readiness = {
+            hasRenderer: state.gpRenderer !== null,
+            rendererScoreLoaded: state.rendererScoreLoaded,
+            rendererRenderFinished: state.rendererRenderFinished,
+            rendererPlayerReady: state.rendererPlayerReady,
+            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+            trackSwitchInProgress: state.trackSwitchInProgress,
+            requestedTrackIndex: state.requestedTrackIndex,
+          };
+          const playbackReady =
+            readiness.hasRenderer &&
+            readiness.rendererScoreLoaded &&
+            readiness.rendererRenderFinished &&
+            readiness.rendererPlayerReady &&
+            readiness.confirmedTrackIndex !== null &&
+            !readiness.trackSwitchInProgress &&
+            readiness.requestedTrackIndex === null;
+
+          if (!playbackReady) {
+            if (readiness.trackSwitchInProgress || readiness.requestedTrackIndex !== null) {
+              tracePlayback("play-blocked-track-switch-in-progress", {
+                requestId,
+                selectedTrackIndex: state.selectedTrackIndex,
+                ...readiness,
+              });
+            } else {
+              tracePlayback("play-blocked-not-ready", {
+                requestId,
+                selectedTrackIndex: state.selectedTrackIndex,
+                ...readiness,
+              });
+            }
+            return;
+          }
           const startPlaybackNow = (): void => {
             if (!state.gpRenderer) {
               return;
@@ -3160,6 +3209,7 @@ export function startApp(rootElement: HTMLElement): void {
               targetBar,
             });
             logPlaybackPipeline("play-dispatch", { requestId, targetTick, targetBar });
+            tracePlayback("play-dispatch-now", { requestId, targetTick, targetBar });
             state.playbackTransportActive = true;
             clearNavigationSelectionState(state, rootElement);
             state.manualNavigationVisualOverrideActive = false;
@@ -3190,6 +3240,9 @@ export function startApp(rootElement: HTMLElement): void {
             loopEndBar: state.loopEndBar,
           });
           logPlaybackPipeline("play-request", { requestId, targetTick, targetBar, requiresSeek });
+          if (requiresSeek) {
+            tracePlayback("play-seek-required", { requestId, targetTick, targetBar });
+          }
 
           const schedulePlaybackStart = (): void => {
             if (!state.gpRenderer) {
@@ -3215,6 +3268,11 @@ export function startApp(rootElement: HTMLElement): void {
             tracePlayback("pendingPlaybackStart-created", {
               requestId,
               targetTrackIndex: state.pendingPlaybackStart.targetTrackIndex,
+              targetTick,
+              targetBar,
+            });
+            tracePlayback("play-dispatch-after-seek", {
+              requestId,
               targetTick,
               targetBar,
             });
@@ -3454,6 +3512,18 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onRenderLifecycle: (event) => {
+          const eventType = typeof event.type === "string" ? event.type : "unknown";
+          if (eventType === "score-loaded") {
+            state.rendererScoreLoaded = true;
+          } else if (eventType === "render-start") {
+            state.rendererRenderFinished = false;
+          } else if (eventType === "render-finish") {
+            state.rendererRenderFinished = true;
+          } else if (eventType === "player-ready") {
+            state.rendererPlayerReady = true;
+          } else if (eventType === "active-track-confirmed") {
+            state.trackSwitchInProgress = false;
+          }
           appendSessionDebugEvent(state.sessionDebugLogger, {
             ...event,
           });
@@ -3468,8 +3538,18 @@ export function startApp(rootElement: HTMLElement): void {
           applyMixerStateToRenderer(state);
           nudgeRenderedSectionLabels(rootElement, state);
           updateLoopHandlesVisual(state, rootElement);
+          state.trackSwitchInProgress = false;
+          state.rendererRenderFinished = true;
+          traceTrackSwitch("track-switch-finished", {
+            trackIndex,
+            selectedTrackIndex: state.selectedTrackIndex,
+          });
         },
         onProgrammaticSeekConfirmed: (trackIndex, tick) => {
+          tracePlayback("onProgrammaticSeekConfirmed", {
+            trackIndex,
+            tick,
+          });
           tracePlayback("onProgrammaticSeekConfirmed-enter", {
             trackIndex,
             tick,
@@ -3688,6 +3768,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;
           state.manualNavigationVisualOverrideActive = false;
+          state.trackSwitchInProgress = false;
           invalidatePlaybackBarAnchorRebuild(state);
           updateProjectStatusBanner(rootElement, message);
           updateDebugField(rootElement, "current-tick", "-");
@@ -3700,6 +3781,10 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
         },
         onActiveTrackConfirmed: (trackIndex) => {
+          traceRendererLifecycle("active-track-confirmed", {
+            trackIndex,
+            selectedTrackIndex: state.selectedTrackIndex,
+          });
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "active-track-confirmed",
             timestamp: new Date().toISOString(),
