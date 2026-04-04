@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Manager;
 
 struct SessionDebugState {
     file_path: PathBuf,
@@ -134,7 +135,7 @@ fn append_session_debug_event(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let session_debug_mode = initialize_session_debug_mode(&app.handle().clone());
+            let session_debug_mode = initialize_session_debug_mode(&app.handle());
             app.manage(Mutex::new(session_debug_mode));
             Ok(())
         })
