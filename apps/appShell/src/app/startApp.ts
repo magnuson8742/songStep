@@ -36,16 +36,17 @@ interface PlaybackBarAnchor {
 
 const ENABLE_CUSTOM_PLAYHEAD = true;
 const DEFAULT_BOTTOM_DOCK_HEIGHT_PX = 280;
-const MIN_BOTTOM_DOCK_HEIGHT_PX = 180;
+const MIN_BOTTOM_DOCK_HEIGHT_PX = 28;
 const MAX_BOTTOM_DOCK_HEIGHT_PX = 520;
 const ARRANGEMENT_BAR_WIDTH_PX = 24;
 const ARRANGEMENT_BAR_GAP_PX = 4;
 const DEFAULT_TAB_ZOOM_PERCENT = 100;
-const MOBILE_DEFAULT_TAB_ZOOM_PERCENT = 65;
+const MOBILE_DEFAULT_TAB_ZOOM_PERCENT = 100;
 const MOBILE_LAYOUT_BREAKPOINT_PX = 900;
 const MIN_TAB_ZOOM_PERCENT = 60;
 const MAX_TAB_ZOOM_PERCENT = 160;
 const TAB_ZOOM_STEP_PERCENT = 10;
+const MOBILE_ZOOM_PRESETS = [100, 78, 65] as const;
 const SECTION_LABEL_VERTICAL_NUDGE_PX = 10;
 const MIN_PLAYBACK_SPEED_PERCENT = 15;
 const MAX_PLAYBACK_SPEED_PERCENT = 175;
@@ -335,6 +336,38 @@ function resolveInitialTabZoomPercent(): number {
     return MOBILE_DEFAULT_TAB_ZOOM_PERCENT;
   }
   return DEFAULT_TAB_ZOOM_PERCENT;
+}
+
+function isMobileViewport(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const viewportWidth = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0);
+  return viewportWidth > 0 && viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX;
+}
+
+function deriveCompactTrackLabel(rawTrackName: string | null | undefined, fallbackLabel: string): string {
+  const normalizedName = rawTrackName?.trim() ?? "";
+  if (normalizedName.length === 0) {
+    return fallbackLabel;
+  }
+  if (normalizedName.includes("|")) {
+    const pipeSegments = normalizedName.split("|").map((segment) => segment.trim()).filter((segment) => segment.length > 0);
+    if (pipeSegments.length > 1) {
+      return pipeSegments[pipeSegments.length - 1] as string;
+    }
+  }
+  const separators = ["—", "-", ":"];
+  for (const separator of separators) {
+    const segments = normalizedName
+      .split(separator)
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+    if (segments.length > 1) {
+      return segments[segments.length - 1] as string;
+    }
+  }
+  return normalizedName;
 }
 
 function formatEffectiveTempoBpm(tempoBpm: number | null, playbackSpeedPercent: number): string {
@@ -1577,10 +1610,10 @@ function updateLoopControlsVisual(rootElement: HTMLElement, state: AppState): vo
   const maxBar = state.totalBars ?? state.scoreOverview?.totalBars ?? 0;
   const startBar = state.loopStartBar;
   const endBar = state.loopEndBar;
-  const canMoveLoopStartLeft = startBar !== null && endBar !== null && startBar > 1 && startBar - 1 < endBar;
-  const canMoveLoopStartRight = startBar !== null && endBar !== null && startBar + 1 < endBar && startBar < maxBar;
-  const canMoveLoopEndLeft = startBar !== null && endBar !== null && endBar - 1 > startBar && endBar > 1;
-  const canMoveLoopEndRight = startBar !== null && endBar !== null && endBar < maxBar && endBar + 1 > startBar;
+  const canMoveLoopStartLeft = startBar !== null && endBar !== null && startBar > 1 && startBar - 1 <= endBar;
+  const canMoveLoopStartRight = startBar !== null && endBar !== null && startBar + 1 <= endBar && startBar < maxBar;
+  const canMoveLoopEndLeft = startBar !== null && endBar !== null && endBar - 1 >= startBar && endBar > 1;
+  const canMoveLoopEndRight = startBar !== null && endBar !== null && endBar < maxBar && endBar + 1 >= startBar;
 
   const setButtonDisabled = (selector: string, disabled: boolean): void => {
     const button = rootElement.querySelector<HTMLButtonElement>(selector);
@@ -1636,7 +1669,7 @@ function setupBottomDockResize(rootElement: HTMLElement, state: AppState): void 
   }
 
   const resolveDynamicDockMaxHeight = (): number => {
-    const middleContentHeight = Math.max(middleScroll.scrollHeight, middleScroll.clientHeight, MIN_BOTTOM_DOCK_HEIGHT_PX);
+    const middleContentHeight = Math.max(middleScroll.scrollHeight, middleScroll.clientHeight, 0);
     const measuredContentHeight =
       resizeHandle.offsetHeight + headers.offsetHeight + topBand.offsetHeight + middleContentHeight + bottomBand.offsetHeight;
     return Math.min(MAX_BOTTOM_DOCK_HEIGHT_PX, Math.max(MIN_BOTTOM_DOCK_HEIGHT_PX, measuredContentHeight));
@@ -1830,7 +1863,7 @@ function moveLoopBoundaryByBars(
 
   if (boundary === "start") {
     const nextStart = Math.min(Math.max(state.loopStartBar + delta, 1), maxBar);
-    if (nextStart >= state.loopEndBar) {
+    if (nextStart > state.loopEndBar) {
       return false;
     }
     const nextRange = state.gpRenderer.getBarTickRange(nextStart);
@@ -1841,7 +1874,7 @@ function moveLoopBoundaryByBars(
     state.loopStartTick = nextRange.startTick;
   } else {
     const nextEnd = Math.min(Math.max(state.loopEndBar + delta, 1), maxBar);
-    if (nextEnd <= state.loopStartBar) {
+    if (nextEnd < state.loopStartBar) {
       return false;
     }
     const nextRange = state.gpRenderer.getBarTickRange(nextEnd);
@@ -1855,6 +1888,19 @@ function moveLoopBoundaryByBars(
   updateLoopHandlesVisual(state, rootElement);
   updateLoopControlsVisual(rootElement, state);
   return true;
+}
+
+function getMobileZoomStepIndex(currentZoomPercent: number): number {
+  const presetDistances = MOBILE_ZOOM_PRESETS.map((preset) => Math.abs(currentZoomPercent - preset));
+  let bestIndex = 0;
+  let bestDistance = presetDistances[0] ?? Number.POSITIVE_INFINITY;
+  presetDistances.forEach((distance, index) => {
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  return bestIndex;
 }
 
 function updateLoopHandlesVisual(state: AppState, rootElement: HTMLElement): void {
@@ -2678,22 +2724,28 @@ export function startApp(rootElement: HTMLElement): void {
           state.loopStartBar !== null &&
           state.loopEndBar !== null &&
           state.loopStartBar > 1 &&
-          state.loopStartBar - 1 < state.loopEndBar,
+          state.loopStartBar - 1 <= state.loopEndBar,
         canMoveLoopStartRight:
           state.loopStartBar !== null &&
           state.loopEndBar !== null &&
-          state.loopStartBar + 1 < state.loopEndBar &&
+          state.loopStartBar + 1 <= state.loopEndBar &&
           state.loopStartBar < (state.totalBars ?? state.scoreOverview?.totalBars ?? 0),
         canMoveLoopEndLeft:
           state.loopStartBar !== null &&
           state.loopEndBar !== null &&
-          state.loopEndBar - 1 > state.loopStartBar &&
+          state.loopEndBar - 1 >= state.loopStartBar &&
           state.loopEndBar > 1,
         canMoveLoopEndRight:
           state.loopStartBar !== null &&
           state.loopEndBar !== null &&
           state.loopEndBar < (state.totalBars ?? state.scoreOverview?.totalBars ?? 0) &&
-          state.loopEndBar + 1 > state.loopStartBar,
+          state.loopEndBar + 1 >= state.loopStartBar,
+        canZoomIn: isMobileViewport()
+          ? getMobileZoomStepIndex(state.tabZoomPercent) > 0
+          : state.tabZoomPercent < MAX_TAB_ZOOM_PERCENT,
+        canZoomOut: isMobileViewport()
+          ? getMobileZoomStepIndex(state.tabZoomPercent) < MOBILE_ZOOM_PRESETS.length - 1
+          : state.tabZoomPercent > MIN_TAB_ZOOM_PERCENT,
         onTrackSelectionChange: (trackIndex: number) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "track-select-requested",
@@ -2830,6 +2882,30 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onMoveLoopEndRight: () => {
           moveLoopBoundaryByBars(state, rootElement, "end", 1);
+        },
+        onZoomIn: () => {
+          const isMobile = isMobileViewport();
+          const nextZoomPercent = isMobile
+            ? MOBILE_ZOOM_PRESETS[Math.max(0, getMobileZoomStepIndex(state.tabZoomPercent) - 1)]
+            : Math.min(MAX_TAB_ZOOM_PERCENT, state.tabZoomPercent + TAB_ZOOM_STEP_PERCENT);
+          if (!nextZoomPercent || nextZoomPercent === state.tabZoomPercent) {
+            return;
+          }
+          state.tabZoomPercent = nextZoomPercent;
+          state.gpRenderer?.setZoom(nextZoomPercent);
+          render();
+        },
+        onZoomOut: () => {
+          const isMobile = isMobileViewport();
+          const nextZoomPercent = isMobile
+            ? MOBILE_ZOOM_PRESETS[Math.min(MOBILE_ZOOM_PRESETS.length - 1, getMobileZoomStepIndex(state.tabZoomPercent) + 1)]
+            : Math.max(MIN_TAB_ZOOM_PERCENT, state.tabZoomPercent - TAB_ZOOM_STEP_PERCENT);
+          if (!nextZoomPercent || nextZoomPercent === state.tabZoomPercent) {
+            return;
+          }
+          state.tabZoomPercent = nextZoomPercent;
+          state.gpRenderer?.setZoom(nextZoomPercent);
+          render();
         },
         onPlay: () => {
           if (!state.gpRenderer) {
@@ -3129,7 +3205,10 @@ export function startApp(rootElement: HTMLElement): void {
             effectiveStaveProfile: debugInfo.effectiveStaveProfile,
           });
           state.gpRenderDebugInfo = debugInfo;
-          state.activeTrackName = debugInfo.confirmedActiveTrackName ?? null;
+          const matchedTrack = state.gpTracks.find((track) => track.index === debugInfo.confirmedActiveTrackIndex);
+          state.activeTrackName = matchedTrack
+            ? deriveCompactTrackLabel(matchedTrack.name, matchedTrack.displayLabel || matchedTrack.name)
+            : deriveCompactTrackLabel(debugInfo.confirmedActiveTrackName, debugInfo.confirmedActiveTrackName ?? "-");
           updateProjectDebugInfoPanel(rootElement, debugInfo);
           updatePlayerRuntimeFields(state, rootElement);
           updateDebugField(rootElement, "requested-track-index", String(state.requestedTrackIndex ?? "-"));
@@ -3423,7 +3502,10 @@ export function startApp(rootElement: HTMLElement): void {
           if (state.currentProject) {
             state.currentProject.viewState.selectedTrackIndex = trackIndex;
           }
-          state.activeTrackName = state.gpTracks.find((track) => track.index === trackIndex)?.name ?? state.activeTrackName;
+          const matchedTrack = state.gpTracks.find((track) => track.index === trackIndex);
+          state.activeTrackName = matchedTrack
+            ? deriveCompactTrackLabel(matchedTrack.name, matchedTrack.displayLabel || matchedTrack.name)
+            : state.activeTrackName;
 
           updateTrackStripActive(rootElement, trackIndex);
           updateDebugField(rootElement, "selected-track-index", String(trackIndex));

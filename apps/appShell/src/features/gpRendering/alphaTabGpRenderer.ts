@@ -530,6 +530,30 @@ function countNotesInBar(bar: AlphaTabBar | undefined): number {
 }
 
 function deriveCompactTrackDisplayLabel(track: AlphaTabTrack): string {
+  const rawTrackName = track.name?.trim();
+  if (rawTrackName && rawTrackName.length > 0) {
+    if (rawTrackName.includes("|")) {
+      const pipeSegments = rawTrackName
+        .split("|")
+        .map((segment) => segment.trim())
+        .filter((segment) => segment.length > 0);
+      if (pipeSegments.length > 1) {
+        return pipeSegments[pipeSegments.length - 1] as string;
+      }
+    }
+
+    const separators = ["—", "-", ":"];
+    for (const separator of separators) {
+      const segments = rawTrackName
+        .split(separator)
+        .map((segment) => segment.trim())
+        .filter((segment) => segment.length > 0);
+      if (segments.length > 1) {
+        return segments[segments.length - 1] as string;
+      }
+    }
+  }
+
   const unsafeTrack = track as AlphaTabTrack & { playbackInfo?: { programName?: string } };
   const metadataCandidates = [track.displayName, track.instrumentName, track.shortName, unsafeTrack.playbackInfo?.programName];
   for (const candidate of metadataCandidates) {
@@ -538,15 +562,7 @@ function deriveCompactTrackDisplayLabel(track: AlphaTabTrack): string {
     }
   }
 
-  const fallbackName = track.name?.trim() || `Track ${track.index + 1}`;
-  const separators = ["|", "—", "-", ":"];
-  for (const separator of separators) {
-    const segments = fallbackName.split(separator).map((segment) => segment.trim()).filter((segment) => segment.length > 0);
-    if (segments.length > 1) {
-      return segments[segments.length - 1] as string;
-    }
-  }
-  return fallbackName;
+  return rawTrackName || `Track ${track.index + 1}`;
 }
 
 function computeTrackContentSignature(track: AlphaTabTrack, fallbackBarCount: number): TrackContentSignature {

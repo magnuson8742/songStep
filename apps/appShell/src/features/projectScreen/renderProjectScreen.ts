@@ -48,6 +48,8 @@ export interface ProjectScreenActions {
   canMoveLoopStartRight: boolean;
   canMoveLoopEndLeft: boolean;
   canMoveLoopEndRight: boolean;
+  canZoomIn: boolean;
+  canZoomOut: boolean;
   onTrackSelectionChange: (trackIndex: number) => void;
   onToggleTrackMute: (trackIndex: number) => void;
   onToggleTrackSolo: (trackIndex: number) => void;
@@ -57,6 +59,8 @@ export interface ProjectScreenActions {
   onMoveLoopStartRight: () => void;
   onMoveLoopEndLeft: () => void;
   onMoveLoopEndRight: () => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
   onBackToHome: () => void;
   onSaveProject: () => Promise<void>;
   onSaveProjectAs: () => Promise<void>;
@@ -80,8 +84,15 @@ function getCompactTrackDisplayLabel(track: GpTrackInfo): string {
     return track.displayLabel.trim();
   }
 
-  const separators = ["|", "—", "-", ":"];
   const rawName = track.name?.trim() || `Track ${track.index + 1}`;
+  if (rawName.includes("|")) {
+    const pipeSegments = rawName.split("|").map((segment) => segment.trim()).filter((segment) => segment.length > 0);
+    if (pipeSegments.length > 1) {
+      return pipeSegments[pipeSegments.length - 1] as string;
+    }
+  }
+
+  const separators = ["—", "-", ":"];
   for (const separator of separators) {
     const segments = rawName.split(separator).map((segment) => segment.trim()).filter((segment) => segment.length > 0);
     if (segments.length > 1) {
@@ -273,12 +284,19 @@ export function renderProjectScreen(
               <span class="playerSpeedBpm" data-playback-speed-bpm="true">${actions.effectiveTempoBpm === null ? "-" : `${actions.effectiveTempoBpm} BPM`}</span>
             </div>
           </div>
+          <div class="playerZoomControls" aria-label="Zoom controls">
+            <button class="secondaryButton playerZoomButton" type="button" data-action="zoom-out" ${actions.canZoomOut ? "" : "disabled"}>−</button>
+            <button class="secondaryButton playerZoomButton" type="button" data-action="zoom-in" ${actions.canZoomIn ? "" : "disabled"}>+</button>
+          </div>
         </div>
         <dl class="playerTopInfo">
           <dt>Song</dt>
           <dd data-player-field="score-title">${renderDebugValue(actions.scoreTitle)}</dd>
           <dt>Active track</dt>
-          <dd data-player-field="active-track-name">${renderDebugValue(actions.confirmedActiveTrackIndex === null ? null : actions.tracks.find((track) => track.index === actions.confirmedActiveTrackIndex)?.name ?? null)}</dd>
+          <dd data-player-field="active-track-name">${renderDebugValue(actions.confirmedActiveTrackIndex === null ? null : (() => {
+            const activeTrack = actions.tracks.find((track) => track.index === actions.confirmedActiveTrackIndex);
+            return activeTrack ? getCompactTrackDisplayLabel(activeTrack) : null;
+          })())}</dd>
           <dt>Bar</dt>
           <dd data-player-field="current-bar">${renderDebugValue(actions.currentBar)} / <span data-player-field="total-bars">${renderDebugValue(actions.totalBars)}</span></dd>
           <dt>Time</dt>
@@ -367,6 +385,8 @@ export function renderProjectScreen(
   const decreasePlaybackSpeedButton = container.querySelector<HTMLButtonElement>('[data-action="decrease-playback-speed"]');
   const increasePlaybackSpeedButton = container.querySelector<HTMLButtonElement>('[data-action="increase-playback-speed"]');
   const playbackSpeedSlider = container.querySelector<HTMLInputElement>('[data-action="set-playback-speed"]');
+  const zoomOutButton = container.querySelector<HTMLButtonElement>('[data-action="zoom-out"]');
+  const zoomInButton = container.querySelector<HTMLButtonElement>('[data-action="zoom-in"]');
   const playbackSpeedReadout = container.querySelector<HTMLElement>(".playerSpeedReadout");
   const toggleCountInButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-count-in"]');
   const toggleMetronomeButton = container.querySelector<HTMLButtonElement>('[data-action="toggle-metronome"]');
@@ -496,6 +516,8 @@ export function renderProjectScreen(
   });
   playbackSpeedSlider?.addEventListener("dblclick", actions.onResetPlaybackSpeed);
   playbackSpeedReadout?.addEventListener("dblclick", actions.onResetPlaybackSpeed);
+  zoomOutButton?.addEventListener("click", actions.onZoomOut);
+  zoomInButton?.addEventListener("click", actions.onZoomIn);
   toggleCountInButton?.addEventListener("click", actions.onToggleCountIn);
   toggleMetronomeButton?.addEventListener("click", actions.onToggleMetronome);
   backHomeButton?.addEventListener("click", actions.onBackToHome);
