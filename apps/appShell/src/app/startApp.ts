@@ -2806,6 +2806,46 @@ export function startApp(rootElement: HTMLElement): void {
     }
   };
 
+  const syncStartupConfirmedState = (reason: string): void => {
+    const hadPendingPlaybackStart = state.pendingPlaybackStart !== null;
+    state.pendingPlaybackStart = null;
+    state.gpRenderer?.setStartupTransactionId(null);
+    state.playbackTransportActive = true;
+    state.countInInProgress = false;
+    cancelCountIn(state, rootElement);
+    if (state.playbackIsPlaying !== true) {
+      state.playbackIsPlaying = true;
+    }
+    tracePlayback("startup-confirmed-app-sync", {
+      reason,
+      hadPendingPlaybackStart,
+      playbackCurrentTick: state.playbackCurrentTick,
+      playbackCurrentBar: state.playbackCurrentBar,
+    });
+    if (hadPendingPlaybackStart) {
+      tracePlayback("pending-start-cleared-on-success", {
+        reason,
+      });
+    }
+    updateTransportControls(rootElement, state, `startup-confirmed:${reason}`);
+    const promotedUi = resolveTransportUiState(state);
+    if (promotedUi.uiState === "playing-confirmed") {
+      tracePlayback("transport-promoted-to-playing-confirmed", {
+        reason,
+      });
+    }
+    if (promotedUi.canPause) {
+      tracePlayback("pause-enabled-after-confirmation", {
+        reason,
+      });
+    }
+    if (!state.startupInteractionLocked) {
+      tracePlayback("startup-lock-released-on-success", {
+        reason,
+      });
+    }
+  };
+
   const cleanupRenderer = (): void => {
     traceRendererLifecycle("cleanupRenderer-enter", {
       currentView: state.currentView,
@@ -3687,7 +3727,7 @@ export function startApp(rootElement: HTMLElement): void {
           const pendingStartup =
             state.countInInProgress ||
             state.pendingPlaybackStart !== null ||
-            (state.playbackTransportActive && state.playbackIsPlaying !== true);
+            (state.playbackTransportActive && state.playbackIsPlaying !== true && state.playbackCurrentTick === null);
           if (state.startupInteractionLocked && pendingStartup) {
             tracePlayback("stop-allowed-during-pending-start", {
               selectedTrackIndex: state.selectedTrackIndex,
@@ -3714,6 +3754,9 @@ export function startApp(rootElement: HTMLElement): void {
             hardCancelPlaybackPipeline("stop", { resetPosition: true });
             resetNavigationSelectionToFirstBar(state, rootElement, "stop-pending-start-soft-cancel");
             updateTransportControls(rootElement, state, "stop-pending-start-soft-cancel");
+            tracePlayback("stop-routed-to-startup-abort", {
+              source: "onStop",
+            });
             tracePlayback("startup-abort-complete", {
               source: "onStop",
               pendingPlaybackStart: state.pendingPlaybackStart !== null,
@@ -3722,6 +3765,11 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
           hardCancelPlaybackPipeline("stop", { resetPosition: true });
+          tracePlayback("stop-routed-to-runtime-stop", {
+            source: "onStop",
+            playbackCurrentTick: state.playbackCurrentTick,
+            playbackIsPlaying: state.playbackIsPlaying,
+          });
           state.gpRenderer.stop();
           resetNavigationSelectionToFirstBar(state, rootElement, "stop");
           updateTransportControls(rootElement, state, "stop");
@@ -3932,6 +3980,8 @@ export function startApp(rootElement: HTMLElement): void {
             state.rendererRenderFinished = true;
           } else if (eventType === "player-ready") {
             state.rendererPlayerReady = true;
+          } else if (eventType === "startup-confirmed") {
+            syncStartupConfirmedState("render-lifecycle-startup-confirmed");
           } else if (eventType === "playback-runtime-ready-fallback") {
             state.rendererFallbackReady = true;
           } else if (eventType === "active-track-confirmed") {
@@ -4077,9 +4127,7 @@ export function startApp(rootElement: HTMLElement): void {
           const previousPlaybackIsPlaying = state.playbackIsPlaying;
           state.playbackIsPlaying = info.isPlaying;
           if (info.isPlaying === true) {
-            state.playbackTransportActive = true;
-            state.pendingPlaybackStart = null;
-            state.gpRenderer?.setStartupTransactionId(null);
+            syncStartupConfirmedState("runtime-is-playing");
           }
           if (info.isPlaying === false) {
             const startupWasPending =

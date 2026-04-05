@@ -1066,6 +1066,13 @@ export async function createGpRenderer(
       requestedTrackIndex,
       confirmedActiveTrackIndex,
     });
+    emitRenderLifecycle("startup-confirmed", {
+      reason,
+      currentTick,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
   };
 
   const recoverFromFailedStartup = (reason: string, options?: { reload?: boolean; escalate?: boolean }): void => {
