@@ -2846,6 +2846,11 @@ export function startApp(rootElement: HTMLElement): void {
         reason,
       });
     }
+    if (promotedUi.canStop) {
+      tracePlayback("stop-enabled-after-confirmation", {
+        reason,
+      });
+    }
     if (!state.startupInteractionLocked) {
       tracePlayback("startup-lock-released-on-success", {
         reason,
