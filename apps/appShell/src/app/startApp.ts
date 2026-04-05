@@ -397,8 +397,7 @@ function resolveTransportUiState(state: AppState): {
     confirmedTrackIndex !== null &&
     !state.trackSwitchInProgress &&
     state.requestedTrackIndex === null;
-  const playbackRuntimeReady = state.rendererPlayerReady || state.rendererFallbackReady;
-  const ready = readyBase && playbackRuntimeReady;
+  const ready = readyBase && state.rendererPlayerReady;
   if (!ready) {
     return {
       uiState: "not-ready",
@@ -3533,8 +3532,7 @@ export function startApp(rootElement: HTMLElement): void {
             readiness.confirmedTrackIndex !== null &&
             !readiness.trackSwitchInProgress &&
             readiness.requestedTrackIndex === null;
-          const playbackRuntimeReady = readiness.rendererPlayerReady || readiness.rendererFallbackReady;
-          const playbackReadyPrimary = playbackReadyBase && playbackRuntimeReady;
+          const playbackReadyPrimary = playbackReadyBase && readiness.rendererPlayerReady;
 
           if (!playbackReadyPrimary) {
             if (readiness.trackSwitchInProgress || readiness.requestedTrackIndex !== null) {
@@ -3543,7 +3541,7 @@ export function startApp(rootElement: HTMLElement): void {
                 selectedTrackIndex: state.selectedTrackIndex,
                 ...readiness,
               });
-            } else if (playbackReadyBase && !playbackRuntimeReady) {
+            } else if (playbackReadyBase && !readiness.rendererPlayerReady) {
               tracePlayback("play-blocked-awaiting-player-ready", {
                 requestId,
                 selectedTrackIndex: state.selectedTrackIndex,

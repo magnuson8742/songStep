@@ -3523,12 +3523,13 @@ export async function createGpRenderer(
           currentBarFromTick.currentBar !== lastLoggedPlayerBar ||
           beatInBar !== lastLoggedPlayerBeatInBar ||
           pendingProgrammaticSeek !== null;
-        const playbackStateLooksPlaying = normalizePlaybackState(api.playerState) === "playing";
+        const normalizedPlayerState = normalizePlaybackState(api.playerState);
+        const playbackStateLooksPlaying = normalizedPlayerState === "playing";
+        const playbackProgressLooksPlaying =
+          currentTick !== null && (startIntentBaseTick === null || Math.abs(currentTick - startIntentBaseTick) >= 1);
         if (
           hasStartIntent &&
-          playbackStateLooksPlaying &&
-          currentTick !== null &&
-          (startIntentBaseTick === null || Math.abs(currentTick - startIntentBaseTick) >= 1)
+          (playbackStateLooksPlaying || playbackProgressLooksPlaying)
         ) {
           confirmRuntimeStart("player-position-changed-progress", currentTick);
           tracePlayer("startup-confirmed-by-progress", {
@@ -3538,6 +3539,8 @@ export async function createGpRenderer(
             confirmedActiveTrackIndex,
             currentTick,
             startIntentBaseTick,
+            normalizedPlayerState,
+            playbackProgressLooksPlaying,
           });
         }
         if (shouldTracePosition) {
