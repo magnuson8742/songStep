@@ -4132,23 +4132,8 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onPlaybackRuntimeInfo: (info) => {
           const previousPlaybackIsPlaying = state.playbackIsPlaying;
-          const previousPlaybackTick = state.playbackCurrentTick;
           if (typeof info.isPlaying === "boolean") {
             state.playbackIsPlaying = info.isPlaying;
-          }
-          const startupAwaitingConfirmation = state.pendingPlaybackStart !== null || state.startupInteractionLocked;
-          const progressedFromStartupTarget =
-            startupAwaitingConfirmation &&
-            state.pendingPlaybackStart !== null &&
-            info.currentTick !== null &&
-            Math.abs(info.currentTick - state.pendingPlaybackStart.targetTick) >= 1;
-          const progressedFromPreviousTick =
-            startupAwaitingConfirmation &&
-            info.currentTick !== null &&
-            previousPlaybackTick !== null &&
-            Math.abs(info.currentTick - previousPlaybackTick) >= 1;
-          if (progressedFromStartupTarget || progressedFromPreviousTick) {
-            syncStartupConfirmedState("runtime-progress-confirmed");
           }
           if (info.isPlaying === true) {
             syncStartupConfirmedState("runtime-is-playing");
