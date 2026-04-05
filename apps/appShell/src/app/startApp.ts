@@ -2858,6 +2858,47 @@ export function startApp(rootElement: HTMLElement): void {
     }
   };
 
+  const finalizeStoppedTransportState = (
+    reason: string,
+    options?: { resetPosition?: boolean; resetNavigationToFirstBar?: boolean },
+  ): void => {
+    const before = {
+      pendingPlaybackStart: state.pendingPlaybackStart !== null,
+      playbackTransportActive: state.playbackTransportActive,
+      countInInProgress: state.countInInProgress,
+      playbackIsPlaying: state.playbackIsPlaying,
+      playbackCurrentTick: state.playbackCurrentTick,
+    };
+    state.pendingPlaybackStart = null;
+    state.gpRenderer?.setStartupTransactionId(null);
+    state.playbackTransportActive = false;
+    state.countInInProgress = false;
+    state.playbackIsPlaying = false;
+    cancelCountIn(state, rootElement);
+    stopPlaybackMetronome(state);
+    if (options?.resetPosition) {
+      state.playbackCurrentBar = null;
+      state.playbackCurrentTick = null;
+      state.playbackCurrentBarStartTick = null;
+      state.playbackCurrentBarEndTickExclusive = null;
+    }
+    if (options?.resetNavigationToFirstBar) {
+      resetNavigationSelectionToFirstBar(state, rootElement, `stop-finalized:${reason}`);
+    }
+    updateTransportControls(rootElement, state, `stop-finalized:${reason}`);
+    tracePlayback("stop-finalized", {
+      reason,
+      before,
+      after: {
+        pendingPlaybackStart: state.pendingPlaybackStart !== null,
+        playbackTransportActive: state.playbackTransportActive,
+        countInInProgress: state.countInInProgress,
+        playbackIsPlaying: state.playbackIsPlaying,
+        playbackCurrentTick: state.playbackCurrentTick,
+      },
+    });
+  };
+
   const cleanupRenderer = (): void => {
     const hasActivePlaybackPipeline =
       state.pendingPlaybackStart !== null ||
@@ -3746,6 +3787,10 @@ export function startApp(rootElement: HTMLElement): void {
           logPlaybackPipeline("stop-dispatch", {
             selectedTrackIndex: state.selectedTrackIndex,
           });
+          tracePlayback("stop-dispatch", {
+            selectedTrackIndex: state.selectedTrackIndex,
+            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+          });
           tracePlayback("onStop", {
             selectedTrackIndex: state.selectedTrackIndex,
             confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
@@ -3770,8 +3815,10 @@ export function startApp(rootElement: HTMLElement): void {
               playbackIsPlaying: state.playbackIsPlaying,
             });
             hardCancelPlaybackPipeline("stop", { resetPosition: true });
-            resetNavigationSelectionToFirstBar(state, rootElement, "stop-pending-start-soft-cancel");
-            updateTransportControls(rootElement, state, "stop-pending-start-soft-cancel");
+            finalizeStoppedTransportState("stop-pending-start-soft-cancel", {
+              resetPosition: true,
+              resetNavigationToFirstBar: true,
+            });
             tracePlayback("stop-routed-to-startup-abort", {
               source: "onStop",
             });
@@ -3789,8 +3836,10 @@ export function startApp(rootElement: HTMLElement): void {
             playbackIsPlaying: state.playbackIsPlaying,
           });
           state.gpRenderer.stop();
-          resetNavigationSelectionToFirstBar(state, rootElement, "stop");
-          updateTransportControls(rootElement, state, "stop");
+          finalizeStoppedTransportState("stop-runtime-dispatch", {
+            resetPosition: true,
+            resetNavigationToFirstBar: true,
+          });
         },
         onToggleLoop: () => {
           if (blockStartupInteraction("toggle-loop")) {
@@ -4000,6 +4049,8 @@ export function startApp(rootElement: HTMLElement): void {
             state.rendererPlayerReady = true;
           } else if (eventType === "startup-confirmed") {
             syncStartupConfirmedState("render-lifecycle-startup-confirmed");
+          } else if (eventType === "stop-confirmed") {
+            finalizeStoppedTransportState("render-lifecycle-stop-confirmed");
           } else if (eventType === "playback-runtime-ready-fallback") {
             state.rendererFallbackReady = true;
           } else if (eventType === "active-track-confirmed") {

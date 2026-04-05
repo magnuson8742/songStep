@@ -4179,31 +4179,27 @@ export async function createGpRenderer(
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
-      const runtimeState = normalizePlaybackState(activeApi.playerState);
-      const runtimeThinksPlaying = runtimeState === "playing" || playbackRuntimeInfo.isPlaying === true;
-      const shouldAttemptStop =
-        hasStartIntent ||
-        playerPhase === "starting" ||
-        playerPhase === "playing" ||
-        playerPhase === "paused" ||
-        runtimeThinksPlaying;
-      if (!shouldAttemptStop) {
-        tracePlayer("stop-suppressed-invalid-state", {
-          reason: "stop-while-not-started",
-          playerPhase,
-          runtimeState,
-          runtimeThinksPlaying,
-        });
-        return;
-      }
 
       playbackScrollLockSnapshot = null;
       pendingProgrammaticSeek = null;
       const playbackApi = activeApi as AlphaTabApi & { stop: () => void };
       try {
+        tracePlayer("stop-dispatch", {
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+          playerPhase,
+          runtimeState: normalizePlaybackState(activeApi.playerState),
+          runtimeIsPlaying: playbackRuntimeInfo.isPlaying,
+        });
         playbackApi.stop();
         clearStartIntent("stop-called");
         setPlayerPhase("stopped", "stop-called");
+        emitRenderLifecycle("stop-confirmed", {
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+        });
       } catch (error) {
         recoverFromFailedStartup("stop-throw", { escalate: true });
         setPlayerPhase("invalid", "stop-throw");
