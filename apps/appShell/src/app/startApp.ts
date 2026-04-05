@@ -2854,12 +2854,27 @@ export function startApp(rootElement: HTMLElement): void {
   };
 
   const cleanupRenderer = (): void => {
+    const hasActivePlaybackPipeline =
+      state.pendingPlaybackStart !== null ||
+      state.playbackTransportActive ||
+      state.countInInProgress ||
+      state.playbackIsPlaying === true;
+    if (
+      !state.gpRenderer &&
+      !hasActivePlaybackPipeline &&
+      !state.trackSwitchInProgress &&
+      !state.projectRendererCreateInFlight
+    ) {
+      return;
+    }
     traceRendererLifecycle("cleanupRenderer-enter", {
       currentView: state.currentView,
       hasRenderer: state.gpRenderer !== null,
       selectedTrackIndex: state.selectedTrackIndex,
     });
-    hardCancelPlaybackPipeline("renderer-cleanup");
+    if (hasActivePlaybackPipeline) {
+      hardCancelPlaybackPipeline("renderer-cleanup");
+    }
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
     state.pendingOverviewNavigationTick = null;
@@ -3162,10 +3177,9 @@ export function startApp(rootElement: HTMLElement): void {
         return;
       }
       traceRendererLifecycle("project-render-path", {
-        action: "cleanup-before-project-screen",
+        action: "render-project-screen",
         selectedTrackIndex: state.selectedTrackIndex,
       });
-      cleanupRenderer();
       if (state.sessionDebugLogPath && !state.sessionDebugBannerShown) {
         state.projectStatusMessage = `Debug logging active: ${state.sessionDebugLogPath}`;
         state.sessionDebugBannerShown = true;
