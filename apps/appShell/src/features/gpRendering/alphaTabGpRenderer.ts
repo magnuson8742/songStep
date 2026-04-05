@@ -494,6 +494,7 @@ interface ReloadOptions {
 }
 
 type PlayerPhase = "idle" | "starting" | "playing" | "paused" | "stopped" | "invalid" | "recreating";
+const START_CONFIRMATION_TIMEOUT_MS = 1200;
 
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -929,6 +930,9 @@ export async function createGpRenderer(
   let lastLoggedPlayerBeatInBar: number | null = null;
   let lastLoggedPlayerState: "playing" | "paused" | "stopped" | null = null;
   let playerPhase: PlayerPhase = "idle";
+  let hasStartIntent = false;
+  let startIntentBaseTick: number | null = null;
+  let startConfirmationTimeoutId: number | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1022,6 +1026,89 @@ export async function createGpRenderer(
     });
   };
 
+  const clearStartConfirmationTimeout = (): void => {
+    if (startConfirmationTimeoutId !== null) {
+      window.clearTimeout(startConfirmationTimeoutId);
+      startConfirmationTimeoutId = null;
+    }
+  };
+
+  const clearStartIntent = (reason: string): void => {
+    const hadStartIntent = hasStartIntent;
+    clearStartConfirmationTimeout();
+    hasStartIntent = false;
+    startIntentBaseTick = null;
+    if (hadStartIntent) {
+      tracePlayer("start-intent-cleared", {
+        reason,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+    }
+  };
+
+  const confirmRuntimeStart = (reason: string, currentTick: number | null = null): void => {
+    if (!hasStartIntent && playerPhase !== "starting") {
+      return;
+    }
+    clearStartIntent("runtime-start-confirmed");
+    setPlayerPhase("playing", reason);
+    tracePlayer("start-confirmed", {
+      reason,
+      currentTick,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
+  };
+
+  const beginStartIntent = (): void => {
+    const sessionTokenSnapshot = activeSessionToken;
+    const trackIndexSnapshot = confirmedActiveTrackIndex;
+    const baseTickSnapshot = playbackRuntimeInfo.currentTick;
+    clearStartConfirmationTimeout();
+    hasStartIntent = true;
+    startIntentBaseTick = baseTickSnapshot;
+    startConfirmationTimeoutId = window.setTimeout(() => {
+      if (sessionTokenSnapshot !== activeSessionToken) {
+        return;
+      }
+      if (!hasStartIntent) {
+        return;
+      }
+      tracePlayer("start-confirm-timeout", {
+        timeoutMs: START_CONFIRMATION_TIMEOUT_MS,
+        sessionTokenSnapshot,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        trackIndexSnapshot,
+        baseTickSnapshot,
+        currentTick: playbackRuntimeInfo.currentTick,
+        playerPhase,
+      });
+      clearStartIntent("start-confirm-timeout");
+      if (playerPhase === "starting") {
+        setPlayerPhase("idle", "phase-reset-after-timeout");
+      }
+      tracePlayer("runtime-recovery-after-unconfirmed-start", {
+        reason: "start-confirm-timeout",
+        confirmedActiveTrackIndex,
+      });
+      void switchTrackByReload(confirmedActiveTrackIndex).catch(() => undefined);
+    }, START_CONFIRMATION_TIMEOUT_MS);
+    tracePlayer("start-intent-began", {
+      sessionTokenSnapshot,
+      trackIndexSnapshot,
+      baseTickSnapshot,
+      timeoutMs: START_CONFIRMATION_TIMEOUT_MS,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
+  };
+
   const summarizeError = (error: unknown): Record<string, unknown> => {
     if (error instanceof Error) {
       return {
@@ -1072,6 +1159,7 @@ export async function createGpRenderer(
     tickBarRanges = [];
     tickLookupSourcePath = null;
     playbackScrollLockSnapshot = null;
+    clearStartIntent("reset-playback-runtime-info");
     emitPlaybackRuntimeInfo();
   };
 
@@ -3091,6 +3179,7 @@ export async function createGpRenderer(
     inPlaceZoomPlaybackContext = null;
     pendingZoomPercent = null;
     pendingProgrammaticSeek = null;
+    clearStartIntent("switchTrackByReload-start");
     requestedTrackIndex = nextTrackIndex;
     const renderPlan = buildRenderPlan(nextTrackIndex);
     currentRenderMode = renderPlan.mode;
@@ -3252,10 +3341,12 @@ export async function createGpRenderer(
           lastLoggedPlayerState = normalizedState;
         }
         if (normalizedState === "playing") {
-          setPlayerPhase("playing", "player-state-changed");
+          confirmRuntimeStart("player-state-changed", playbackRuntimeInfo.currentTick);
         } else if (normalizedState === "paused") {
+          clearStartIntent("player-state-changed-paused");
           setPlayerPhase("paused", "player-state-changed");
         } else if (normalizedState === "stopped") {
+          clearStartIntent("player-state-changed-stopped");
           setPlayerPhase("stopped", "player-state-changed");
         }
         const playerStatePayloadShape = describePayloadShape(statePayload);
@@ -3380,6 +3471,13 @@ export async function createGpRenderer(
           currentBarFromTick.currentBar !== lastLoggedPlayerBar ||
           beatInBar !== lastLoggedPlayerBeatInBar ||
           pendingProgrammaticSeek !== null;
+        if (
+          hasStartIntent &&
+          currentTick !== null &&
+          (startIntentBaseTick === null || Math.abs(currentTick - startIntentBaseTick) >= 1)
+        ) {
+          confirmRuntimeStart("player-position-changed-progress", currentTick);
+        }
         if (shouldTracePosition) {
           tracePlayer("player-position-changed", {
             sessionToken,
@@ -3875,12 +3973,22 @@ export async function createGpRenderer(
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
-      if (playerPhase === "starting" || playerPhase === "playing") {
+      if (playerPhase === "playing") {
         tracePlayer("play-suppressed-invalid-state", {
-          reason: "already-starting-or-playing",
+          reason: "already-playing",
           playerPhase,
         });
         return;
+      }
+      if (playerPhase === "starting") {
+        if (hasStartIntent) {
+          tracePlayer("play-suppressed-invalid-state", {
+            reason: "start-intent-in-flight",
+            playerPhase,
+          });
+          return;
+        }
+        setPlayerPhase("idle", "stale-starting-reset-before-play");
       }
       if (playerPhase === "invalid") {
         tracePlayer("runtime-reset-before-replay", {
@@ -3895,8 +4003,10 @@ export async function createGpRenderer(
       const playbackApi = activeApi as AlphaTabApi & { play: () => boolean };
       try {
         setPlayerPhase("starting", "play-called");
+        beginStartIntent();
         playbackApi.play();
       } catch (error) {
+        clearStartIntent("play-throw");
         setPlayerPhase("invalid", "play-throw");
         tracePlayer("play-suppressed-invalid-state", {
           reason: "play-throw",
@@ -3925,6 +4035,18 @@ export async function createGpRenderer(
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
+      if (hasStartIntent || playerPhase === "starting") {
+        tracePlayer("pause-skipped-no-confirmed-start", {
+          playerPhase,
+          hasStartIntent,
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+        });
+        clearStartIntent("pause-no-confirmed-start");
+        setPlayerPhase("idle", "pause-no-confirmed-start");
+        return;
+      }
       if (playerPhase === "idle" || playerPhase === "stopped") {
         tracePlayer("play-suppressed-invalid-state", {
           reason: "pause-while-not-playing",
@@ -3937,6 +4059,7 @@ export async function createGpRenderer(
       const playbackApi = activeApi as AlphaTabApi & { pause: () => void };
       try {
         playbackApi.pause();
+        clearStartIntent("pause-called");
       } catch (error) {
         setPlayerPhase("invalid", "pause-throw");
         tracePlayer("play-suppressed-invalid-state", {
@@ -3956,6 +4079,18 @@ export async function createGpRenderer(
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
+      if (hasStartIntent || playerPhase === "starting") {
+        tracePlayer("stop-skipped-no-confirmed-start", {
+          playerPhase,
+          hasStartIntent,
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+        });
+        clearStartIntent("stop-no-confirmed-start");
+        setPlayerPhase("idle", "stop-no-confirmed-start");
+        return;
+      }
       if (playerPhase === "idle" || playerPhase === "stopped") {
         tracePlayer("stop-suppressed-invalid-state", {
           reason: "stop-while-not-started",
@@ -3969,6 +4104,7 @@ export async function createGpRenderer(
       const playbackApi = activeApi as AlphaTabApi & { stop: () => void };
       try {
         playbackApi.stop();
+        clearStartIntent("stop-called");
         setPlayerPhase("stopped", "stop-called");
       } catch (error) {
         setPlayerPhase("invalid", "stop-throw");
@@ -3995,6 +4131,7 @@ export async function createGpRenderer(
       inPlaceZoomPlaybackContext = null;
       pendingProgrammaticSeek = null;
       playbackScrollLockSnapshot = null;
+      clearStartIntent("destroy");
       destroyActiveRenderer();
       clearRenderHost(container);
     },
