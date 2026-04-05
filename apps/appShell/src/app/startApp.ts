@@ -151,8 +151,11 @@ interface AppState {
   rendererRenderFinished: boolean;
   rendererPlayerReady: boolean;
   rendererFallbackReady: boolean;
+  rendererRuntimeWarm: boolean;
   latestRendererSessionToken: number | null;
   trackSwitchInProgress: boolean;
+  trackSwitchStartedAtMs: number | null;
+  coldBootStartedAtMs: number | null;
   projectRendererCreateInFlight: boolean;
   projectRendererCreateKey: string | null;
   lastTransportUiState: "not-ready" | "idle-ready" | "pending-start" | "playing-confirmed" | "paused-confirmed" | null;
@@ -404,7 +407,8 @@ function resolveTransportUiState(state: AppState): {
     confirmedTrackIndex !== null &&
     !state.trackSwitchInProgress &&
     state.requestedTrackIndex === null;
-  const ready = readyBase && state.rendererPlayerReady;
+  const runtimeReady = state.rendererPlayerReady || state.rendererFallbackReady || state.rendererRuntimeWarm;
+  const ready = readyBase && runtimeReady;
   if (!ready) {
     return {
       uiState: "not-ready",
@@ -2744,8 +2748,11 @@ export function startApp(rootElement: HTMLElement): void {
     rendererRenderFinished: false,
     rendererPlayerReady: false,
     rendererFallbackReady: false,
+    rendererRuntimeWarm: false,
     latestRendererSessionToken: null,
     trackSwitchInProgress: false,
+    trackSwitchStartedAtMs: null,
+    coldBootStartedAtMs: null,
     projectRendererCreateInFlight: false,
     projectRendererCreateKey: null,
     lastTransportUiState: null,
@@ -3041,6 +3048,9 @@ export function startApp(rootElement: HTMLElement): void {
     state.rendererRenderFinished = false;
     state.rendererPlayerReady = false;
     state.rendererFallbackReady = false;
+    state.rendererRuntimeWarm = false;
+    state.trackSwitchStartedAtMs = null;
+    state.coldBootStartedAtMs = null;
     state.projectRendererCreateInFlight = false;
     state.projectRendererCreateKey = null;
     if (!state.gpRenderer) {
@@ -3435,6 +3445,24 @@ export function startApp(rootElement: HTMLElement): void {
             playbackTransportActive: state.playbackTransportActive,
             pendingPlaybackStart: state.pendingPlaybackStart !== null,
           });
+          const hotTrackSwitchCandidate =
+            state.gpRenderer !== null &&
+            state.rendererScoreLoaded &&
+            state.rendererRenderFinished &&
+            (state.rendererPlayerReady || state.rendererFallbackReady || state.rendererRuntimeWarm);
+          const trackSwitchPath = hotTrackSwitchCandidate ? "hot" : "cold";
+          if (trackSwitchPath === "hot") {
+            traceTrackSwitch("hot-track-switch-path-enter", {
+              previousTrackIndex: state.selectedTrackIndex,
+              nextTrackIndex: trackIndex,
+            });
+          } else {
+            traceTrackSwitch("cold-boot-path-enter", {
+              previousTrackIndex: state.selectedTrackIndex,
+              nextTrackIndex: trackIndex,
+              reason: "renderer-not-warm",
+            });
+          }
           logPlaybackPipeline("track-switch-start", {
             fromTrackIndex: state.selectedTrackIndex,
             requestedTrackIndex: trackIndex,
@@ -3472,9 +3500,13 @@ export function startApp(rootElement: HTMLElement): void {
           state.lastClickTimestampIso = new Date().toISOString();
           state.selectionFired = true;
           state.trackSwitchInProgress = true;
+          state.trackSwitchStartedAtMs = Date.now();
           state.rendererRenderFinished = false;
-          state.rendererPlayerReady = false;
-          state.rendererFallbackReady = false;
+          if (trackSwitchPath === "cold") {
+            state.rendererPlayerReady = false;
+            state.rendererFallbackReady = false;
+            state.rendererRuntimeWarm = false;
+          }
           hardCancelPlaybackPipeline("track-switch", { resetPosition: true });
           traceTrackSwitch("onTrackSelectionChange-after-hard-cancel", {
             nextTrackIndex: trackIndex,
@@ -3781,7 +3813,9 @@ export function startApp(rootElement: HTMLElement): void {
             readiness.confirmedTrackIndex !== null &&
             !readiness.trackSwitchInProgress &&
             readiness.requestedTrackIndex === null;
-          const playbackReadyPrimary = playbackReadyBase && readiness.rendererPlayerReady;
+          const playbackReadyPrimary =
+            playbackReadyBase &&
+            (readiness.rendererPlayerReady || readiness.rendererFallbackReady || state.rendererRuntimeWarm);
 
           if (!playbackReadyPrimary) {
             if (readiness.trackSwitchInProgress || readiness.requestedTrackIndex !== null) {
@@ -4157,6 +4191,11 @@ export function startApp(rootElement: HTMLElement): void {
         projectCreateKey,
         selectedTrackIndex: state.selectedTrackIndex,
       });
+      state.coldBootStartedAtMs = Date.now();
+      traceRendererLifecycle("cold-boot-path-enter", {
+        selectedTrackIndex: state.selectedTrackIndex,
+        projectCreateKey,
+      });
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
         onTracksLoaded: (tracks) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
@@ -4240,6 +4279,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.rendererRenderFinished = true;
           } else if (eventType === "player-ready") {
             state.rendererPlayerReady = true;
+            state.rendererRuntimeWarm = true;
           } else if (eventType === "startup-confirmed") {
             syncStartupConfirmedState("render-lifecycle-startup-confirmed");
           } else if (eventType === "pause-confirmed") {
@@ -4270,6 +4310,7 @@ export function startApp(rootElement: HTMLElement): void {
             finalizeStoppedTransportState("render-lifecycle-stop-confirmed");
           } else if (eventType === "playback-runtime-ready-fallback") {
             state.rendererFallbackReady = true;
+            state.rendererRuntimeWarm = true;
           } else if (eventType === "active-track-confirmed") {
             state.trackSwitchInProgress = false;
           }
@@ -4293,6 +4334,27 @@ export function startApp(rootElement: HTMLElement): void {
           updateLoopHandlesVisual(state, rootElement);
           state.trackSwitchInProgress = false;
           state.rendererRenderFinished = true;
+          const trackSwitchDurationMs =
+            state.trackSwitchStartedAtMs === null ? null : Math.max(0, Date.now() - state.trackSwitchStartedAtMs);
+          if (trackSwitchDurationMs !== null) {
+            traceTrackSwitch("hot-track-switch-duration-ms", {
+              trackIndex,
+              durationMs: trackSwitchDurationMs,
+            });
+            traceTrackSwitch("hot-track-switch-ready", {
+              trackIndex,
+              durationMs: trackSwitchDurationMs,
+            });
+            state.trackSwitchStartedAtMs = null;
+          }
+          if (state.coldBootStartedAtMs !== null) {
+            const coldBootDurationMs = Math.max(0, Date.now() - state.coldBootStartedAtMs);
+            traceRendererLifecycle("cold-boot-duration-ms", {
+              trackIndex,
+              durationMs: coldBootDurationMs,
+            });
+            state.coldBootStartedAtMs = null;
+          }
           traceTrackSwitch("track-switch-finished", {
             trackIndex,
             selectedTrackIndex: state.selectedTrackIndex,

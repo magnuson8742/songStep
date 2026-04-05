@@ -3226,6 +3226,33 @@ export async function createGpRenderer(
   };
 
   const switchTrackByReload = async (nextTrackIndex: number, options?: ReloadOptions): Promise<void> => {
+    const hasWarmRuntime = activeApi !== null;
+    const isHotTrackSwitch = hasWarmRuntime && renderCycleCounter > 0 && nextTrackIndex !== confirmedActiveTrackIndex;
+    if (isHotTrackSwitch) {
+      traceRenderer("hot-track-switch-path-enter", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+      emitRenderLifecycle("hot-track-switch-full-reload-required", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+        reason: "renderer-recreate-required-by-current-switchTrackByReload-flow",
+      });
+      traceRenderer("hot-track-switch-full-reload-required", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+    } else if (hasWarmRuntime) {
+      emitRenderLifecycle("hot-track-switch-runtime-reused", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+        reason: "same-track-or-non-switch-update",
+      });
+      traceRenderer("hot-track-switch-runtime-reused", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+    }
     setPlayerPhase("recreating", "switchTrackByReload-start");
     traceRenderer("switchTrackByReload-start", {
       nextTrackIndex,
