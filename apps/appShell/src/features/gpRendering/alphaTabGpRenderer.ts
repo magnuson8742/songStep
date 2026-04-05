@@ -495,7 +495,7 @@ interface ReloadOptions {
 }
 
 type PlayerPhase = "idle" | "starting" | "playing" | "paused" | "stopped" | "invalid" | "recreating";
-const START_CONFIRMATION_TIMEOUT_MS = 1200;
+const START_CONFIRMATION_TIMEOUT_MS = 6500;
 
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -4105,6 +4105,8 @@ export async function createGpRenderer(
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
+      const runtimeState = normalizePlaybackState(activeApi.playerState);
+      const runtimeThinksPlaying = runtimeState === "playing" || playbackRuntimeInfo.isPlaying === true;
       if (hasStartIntent || playerPhase === "starting") {
         tracePlayer("pause-skipped-no-confirmed-start", {
           playerPhase,
@@ -4117,10 +4119,12 @@ export async function createGpRenderer(
         setPlayerPhase("idle", "pause-no-confirmed-start");
         return;
       }
-      if (playerPhase === "idle" || playerPhase === "stopped") {
+      if ((playerPhase === "idle" || playerPhase === "stopped") && !runtimeThinksPlaying) {
         tracePlayer("play-suppressed-invalid-state", {
           reason: "pause-while-not-playing",
           playerPhase,
+          runtimeState,
+          runtimeThinksPlaying,
         });
         return;
       }
@@ -4150,22 +4154,20 @@ export async function createGpRenderer(
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
-      if (hasStartIntent || playerPhase === "starting") {
-        tracePlayer("stop-skipped-no-confirmed-start", {
-          playerPhase,
-          hasStartIntent,
-          activeSessionToken,
-          requestedTrackIndex,
-          confirmedActiveTrackIndex,
-        });
-        clearStartIntent("stop-no-confirmed-start");
-        setPlayerPhase("idle", "stop-no-confirmed-start");
-        return;
-      }
-      if (playerPhase === "idle" || playerPhase === "stopped") {
+      const runtimeState = normalizePlaybackState(activeApi.playerState);
+      const runtimeThinksPlaying = runtimeState === "playing" || playbackRuntimeInfo.isPlaying === true;
+      const shouldAttemptStop =
+        hasStartIntent ||
+        playerPhase === "starting" ||
+        playerPhase === "playing" ||
+        playerPhase === "paused" ||
+        runtimeThinksPlaying;
+      if (!shouldAttemptStop) {
         tracePlayer("stop-suppressed-invalid-state", {
           reason: "stop-while-not-started",
           playerPhase,
+          runtimeState,
+          runtimeThinksPlaying,
         });
         return;
       }

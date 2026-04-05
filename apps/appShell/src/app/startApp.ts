@@ -150,6 +150,7 @@ interface AppState {
   projectRendererCreateInFlight: boolean;
   projectRendererCreateKey: string | null;
   lastTransportUiState: "not-ready" | "idle-ready" | "pending-start" | "playing-confirmed" | null;
+  startupInteractionLocked: boolean;
 }
 
 function triggerJsonDownload(fileName: string, payload: unknown): void {
@@ -423,7 +424,7 @@ function resolveTransportUiState(state: AppState): {
       uiState: "pending-start",
       canPlay: false,
       canPause: false,
-      canStop: true,
+      canStop: false,
       playDisabledReason: state.countInInProgress
         ? "count-in-in-progress"
         : state.pendingPlaybackStart !== null
@@ -443,6 +444,7 @@ function resolveTransportUiState(state: AppState): {
 
 function updateTransportControls(rootElement: HTMLElement, state: AppState, reason: string): void {
   const transportUi = resolveTransportUiState(state);
+  state.startupInteractionLocked = transportUi.uiState === "pending-start";
   tracePlayback("transport-ready-evaluated", {
     reason,
     uiState: transportUi.uiState,
@@ -981,6 +983,10 @@ function updateArrangementSelectionHighlight(state: AppState, rootElement: HTMLE
     cell.classList.remove("isSelectedNavigationBar");
   });
 
+  if (state.playbackIsPlaying === true) {
+    return;
+  }
+
   if (
     state.selectedNavigationBar === null ||
     state.selectedNavigationBar <= 0 ||
@@ -1103,6 +1109,11 @@ function hideNavigationSelection(rootElement: HTMLElement): void {
 }
 
 function updateNavigationSelectionVisual(state: AppState, rootElement: HTMLElement): void {
+  if (state.playbackIsPlaying === true) {
+    hideNavigationSelection(rootElement);
+    return;
+  }
+
   if (state.selectedNavigationBar === null || state.selectedNavigationBar <= 0) {
     hideNavigationSelection(rootElement);
     return;
@@ -2468,6 +2479,10 @@ function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): 
   }
 
   renderHost.addEventListener("click", (event) => {
+    if (state.startupInteractionLocked) {
+      tracePlayback("interaction-blocked", { area: "notation-bar-click", reason: "startup-pending" });
+      return;
+    }
     if (!state.gpRenderer || state.playbackBarAnchors.length === 0) {
       return;
     }
@@ -2540,6 +2555,10 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
   }
 
   rowsContainer.addEventListener("click", (event) => {
+    if (state.startupInteractionLocked) {
+      tracePlayback("interaction-blocked", { area: "arrangement-bar-click", reason: "startup-pending" });
+      return;
+    }
     if (!state.gpRenderer) {
       return;
     }
@@ -2693,6 +2712,7 @@ export function startApp(rootElement: HTMLElement): void {
     projectRendererCreateInFlight: false,
     projectRendererCreateKey: null,
     lastTransportUiState: null,
+    startupInteractionLocked: false,
   };
 
   const hardCancelPlaybackPipeline = (
@@ -3070,6 +3090,18 @@ export function startApp(rootElement: HTMLElement): void {
         state.sessionDebugBannerShown = true;
       }
       const transportUi = resolveTransportUiState(state);
+      state.startupInteractionLocked = transportUi.uiState === "pending-start";
+      const blockStartupInteraction = (action: string): boolean => {
+        if (!state.startupInteractionLocked) {
+          return false;
+        }
+        tracePlayback("interaction-blocked", {
+          action,
+          reason: "startup-pending",
+          uiState: transportUi.uiState,
+        });
+        return true;
+      };
 
       renderProjectScreen(rootElement, state.currentProject, {
         statusMessage: state.projectStatusMessage,
@@ -3096,6 +3128,7 @@ export function startApp(rootElement: HTMLElement): void {
         canPlay: transportUi.canPlay,
         canPause: transportUi.canPause,
         canStop: transportUi.canStop,
+        startupInteractionLocked: state.startupInteractionLocked,
         countInEnabled: state.countInEnabled,
         metronomeEnabled: state.metronomeEnabled,
         loopEnabled: state.loopEnabled,
@@ -3130,6 +3163,9 @@ export function startApp(rootElement: HTMLElement): void {
           : state.tabZoomPercent > MIN_TAB_ZOOM_PERCENT,
         isBottomDockCollapsed: state.isBottomDockCollapsed,
         onTrackSelectionChange: (trackIndex: number) => {
+          if (blockStartupInteraction("track-select")) {
+            return;
+          }
           traceTrackSwitch("onTrackSelectionChange-enter", {
             previousTrackIndex: state.selectedTrackIndex,
             nextTrackIndex: trackIndex,
@@ -3258,6 +3294,9 @@ export function startApp(rootElement: HTMLElement): void {
           void exportAnchorDebugSnapshot();
         },
         onToggleTrackMute: (trackIndex) => {
+          if (blockStartupInteraction("toggle-track-mute")) {
+            return;
+          }
           const isMuted = state.mutedTrackIndexes.includes(trackIndex);
           state.mutedTrackIndexes = isMuted
             ? state.mutedTrackIndexes.filter((value) => value !== trackIndex)
@@ -3268,6 +3307,9 @@ export function startApp(rootElement: HTMLElement): void {
           updateTrackControlVisualState(state, rootElement);
         },
         onToggleTrackSolo: (trackIndex) => {
+          if (blockStartupInteraction("toggle-track-solo")) {
+            return;
+          }
           const isSolo = state.soloTrackIndexes.includes(trackIndex);
           state.soloTrackIndexes = isSolo
             ? state.soloTrackIndexes.filter((value) => value !== trackIndex)
@@ -3278,30 +3320,51 @@ export function startApp(rootElement: HTMLElement): void {
           updateTrackControlVisualState(state, rootElement);
         },
         onTrackVolumeChange: (trackIndex, volume) => {
+          if (blockStartupInteraction("track-volume-change")) {
+            return;
+          }
           state.trackVolumeByIndex[trackIndex] = volume;
           state.gpRenderer?.setTrackVolume(trackIndex, volume);
           applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onMasterVolumeChange: (volume) => {
+          if (blockStartupInteraction("master-volume-change")) {
+            return;
+          }
           state.masterVolume = volume;
           state.gpRenderer?.setMasterVolume(volume);
           applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onMoveLoopStartLeft: () => {
+          if (blockStartupInteraction("move-loop-start-left")) {
+            return;
+          }
           moveLoopBoundaryByBars(state, rootElement, "start", -1);
         },
         onMoveLoopStartRight: () => {
+          if (blockStartupInteraction("move-loop-start-right")) {
+            return;
+          }
           moveLoopBoundaryByBars(state, rootElement, "start", 1);
         },
         onMoveLoopEndLeft: () => {
+          if (blockStartupInteraction("move-loop-end-left")) {
+            return;
+          }
           moveLoopBoundaryByBars(state, rootElement, "end", -1);
         },
         onMoveLoopEndRight: () => {
+          if (blockStartupInteraction("move-loop-end-right")) {
+            return;
+          }
           moveLoopBoundaryByBars(state, rootElement, "end", 1);
         },
         onZoomIn: () => {
+          if (blockStartupInteraction("zoom-in")) {
+            return;
+          }
           const isMobile = isMobileViewport();
           const nextZoomPercent = isMobile
             ? MOBILE_ZOOM_PRESETS[Math.max(0, getMobileZoomStepIndex(state.tabZoomPercent) - 1)]
@@ -3314,6 +3377,9 @@ export function startApp(rootElement: HTMLElement): void {
           render();
         },
         onZoomOut: () => {
+          if (blockStartupInteraction("zoom-out")) {
+            return;
+          }
           const isMobile = isMobileViewport();
           const nextZoomPercent = isMobile
             ? MOBILE_ZOOM_PRESETS[Math.min(MOBILE_ZOOM_PRESETS.length - 1, getMobileZoomStepIndex(state.tabZoomPercent) + 1)]
@@ -3337,6 +3403,9 @@ export function startApp(rootElement: HTMLElement): void {
           render();
         },
         onPlay: () => {
+          if (blockStartupInteraction("play")) {
+            return;
+          }
           if (!state.gpRenderer) {
             state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
@@ -3542,6 +3611,9 @@ export function startApp(rootElement: HTMLElement): void {
           runCountInBeat();
         },
         onPause: () => {
+          if (blockStartupInteraction("pause")) {
+            return;
+          }
           if (!state.gpRenderer) {
             state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
@@ -3562,6 +3634,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.gpRenderer.pause();
         },
         onStop: () => {
+          if (blockStartupInteraction("stop")) {
+            return;
+          }
           if (!state.gpRenderer) {
             state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
@@ -3602,6 +3677,9 @@ export function startApp(rootElement: HTMLElement): void {
           updateTransportControls(rootElement, state, "stop");
         },
         onToggleLoop: () => {
+          if (blockStartupInteraction("toggle-loop")) {
+            return;
+          }
           if (state.loopEnabled) {
             clearLoopState(state);
             state.projectStatusMessage = "Loop mode disabled.";
@@ -3614,10 +3692,16 @@ export function startApp(rootElement: HTMLElement): void {
           updateProjectStatusBanner(rootElement, state.projectStatusMessage);
         },
         onToggleCountIn: () => {
+          if (blockStartupInteraction("toggle-count-in")) {
+            return;
+          }
           state.countInEnabled = !state.countInEnabled;
           updateCountInToggleVisual(state, rootElement);
         },
         onToggleMetronome: () => {
+          if (blockStartupInteraction("toggle-metronome")) {
+            return;
+          }
           state.metronomeEnabled = !state.metronomeEnabled;
           if (state.metronomeEnabled && state.playbackTransportActive && !state.countInInProgress) {
             startPlaybackMetronome(state);
@@ -3628,6 +3712,9 @@ export function startApp(rootElement: HTMLElement): void {
           updateMetronomeToggleVisual(state, rootElement);
         },
         onDecreasePlaybackSpeed: () => {
+          if (blockStartupInteraction("decrease-playback-speed")) {
+            return;
+          }
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(
             state.playbackSpeedPercent - PLAYBACK_SPEED_BUTTON_STEP_PERCENT,
           );
@@ -3638,6 +3725,9 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onIncreasePlaybackSpeed: () => {
+          if (blockStartupInteraction("increase-playback-speed")) {
+            return;
+          }
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(
             state.playbackSpeedPercent + PLAYBACK_SPEED_BUTTON_STEP_PERCENT,
           );
@@ -3648,6 +3738,9 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onSetPlaybackSpeedPercent: (speedPercent: number) => {
+          if (blockStartupInteraction("set-playback-speed")) {
+            return;
+          }
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(speedPercent);
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
@@ -3656,6 +3749,9 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onResetPlaybackSpeed: () => {
+          if (blockStartupInteraction("reset-playback-speed")) {
+            return;
+          }
           state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
