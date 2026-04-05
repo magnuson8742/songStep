@@ -84,6 +84,9 @@ interface AppState {
   playbackCurrentBarStartTick: number | null;
   playbackCurrentBarEndTickExclusive: number | null;
   playbackIsPlaying: boolean | null;
+  hasExplicitPausedState: boolean;
+  pausedResumeTick: number | null;
+  pausedResumeBar: number | null;
   playbackTransportActive: boolean;
   playerPositionPayloadShape: string | null;
   playerStatePayloadShape: string | null;
@@ -434,7 +437,8 @@ function resolveTransportUiState(state: AppState): {
     };
   }
 
-  const hasPausedPosition = state.playbackCurrentTick !== null || state.playbackCurrentBar !== null;
+  const hasPausedPosition =
+    state.hasExplicitPausedState && (state.pausedResumeTick !== null || state.pausedResumeBar !== null);
   if (hasPausedPosition) {
     return {
       uiState: "paused-confirmed",
@@ -2668,6 +2672,9 @@ export function startApp(rootElement: HTMLElement): void {
     playbackCurrentBarStartTick: null,
     playbackCurrentBarEndTickExclusive: null,
     playbackIsPlaying: null,
+    hasExplicitPausedState: false,
+    pausedResumeTick: null,
+    pausedResumeBar: null,
     playbackTransportActive: false,
     playerPositionPayloadShape: null,
     playerStatePayloadShape: null,
@@ -2779,6 +2786,9 @@ export function startApp(rootElement: HTMLElement): void {
     if (options?.stopRenderer && state.gpRenderer) {
       state.gpRenderer.stop();
     }
+    if (reason === "stop" || reason === "track-switch" || reason === "renderer-cleanup") {
+      clearPausedResumeSnapshot(`hard-cancel:${reason}`);
+    }
     tracePlayback("hard-cancel-exit", {
       reason,
       options: options ?? null,
@@ -2828,6 +2838,7 @@ export function startApp(rootElement: HTMLElement): void {
     const hadPendingPlaybackStart = state.pendingPlaybackStart !== null;
     state.pendingPlaybackStart = null;
     state.gpRenderer?.setStartupTransactionId(null);
+    clearPausedResumeSnapshot(`startup-confirmed:${reason}`);
     state.playbackTransportActive = true;
     state.countInInProgress = false;
     cancelCountIn(state, rootElement);
@@ -2882,6 +2893,7 @@ export function startApp(rootElement: HTMLElement): void {
     };
     state.pendingPlaybackStart = null;
     state.gpRenderer?.setStartupTransactionId(null);
+    clearPausedResumeSnapshot(`stop-finalized:${reason}`);
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     state.playbackIsPlaying = false;
@@ -2924,9 +2936,20 @@ export function startApp(rootElement: HTMLElement): void {
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     state.playbackIsPlaying = false;
+    const pausedTickSnapshot =
+      state.playbackCurrentTick ?? state.playbackCurrentBarStartTick ?? state.selectedNavigationTick ?? null;
+    const pausedBarSnapshot = state.playbackCurrentBar ?? state.selectedNavigationBar ?? null;
+    state.pausedResumeTick = pausedTickSnapshot;
+    state.pausedResumeBar = pausedBarSnapshot;
+    state.hasExplicitPausedState = pausedTickSnapshot !== null || pausedBarSnapshot !== null;
     cancelCountIn(state, rootElement);
     stopPlaybackMetronome(state);
     updateTransportControls(rootElement, state, `pause-finalized:${reason}`);
+    tracePlayback("pause-confirmed", {
+      reason,
+      pausedResumeTick: state.pausedResumeTick,
+      pausedResumeBar: state.pausedResumeBar,
+    });
     tracePlayback("pause-finalized", {
       reason,
       before,
@@ -2937,9 +2960,25 @@ export function startApp(rootElement: HTMLElement): void {
         playbackIsPlaying: state.playbackIsPlaying,
         playbackCurrentTick: state.playbackCurrentTick,
         playbackCurrentBar: state.playbackCurrentBar,
+        hasExplicitPausedState: state.hasExplicitPausedState,
+        pausedResumeTick: state.pausedResumeTick,
+        pausedResumeBar: state.pausedResumeBar,
       },
     });
   };
+
+  function clearPausedResumeSnapshot(reason: string): void {
+    const hadSnapshot =
+      state.hasExplicitPausedState || state.pausedResumeTick !== null || state.pausedResumeBar !== null;
+    state.hasExplicitPausedState = false;
+    state.pausedResumeTick = null;
+    state.pausedResumeBar = null;
+    if (hadSnapshot) {
+      tracePlayback("paused-snapshot-cleared", {
+        reason,
+      });
+    }
+  }
 
   const cleanupRenderer = (): void => {
     const hasActivePlaybackPipeline =
@@ -3135,6 +3174,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
           state.playbackIsPlaying = null;
+          state.hasExplicitPausedState = false;
+          state.pausedResumeTick = null;
+          state.pausedResumeBar = null;
           state.playbackTransportActive = false;
           state.playerPositionPayloadShape = null;
           state.playerStatePayloadShape = null;
@@ -3211,6 +3253,9 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackCurrentBarStartTick = null;
             state.playbackCurrentBarEndTickExclusive = null;
             state.playbackIsPlaying = null;
+            state.hasExplicitPausedState = false;
+            state.pausedResumeTick = null;
+            state.pausedResumeBar = null;
             state.playbackTransportActive = false;
             state.playerPositionPayloadShape = null;
             state.playerStatePayloadShape = null;
@@ -3613,14 +3658,35 @@ export function startApp(rootElement: HTMLElement): void {
           }
 
           cancelCountIn(state, rootElement);
-          const targetTick =
-            state.loopEnabled && state.loopStartTick !== null
+          const hasPausedSnapshot =
+            state.hasExplicitPausedState && (state.pausedResumeTick !== null || state.pausedResumeBar !== null);
+          if (hasPausedSnapshot) {
+            tracePlayback("resume-from-paused-snapshot", {
+              tick: state.pausedResumeTick,
+              bar: state.pausedResumeBar,
+              selectedTrackIndex: state.selectedTrackIndex,
+              confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+            });
+          }
+          const targetTick = hasPausedSnapshot
+            ? state.pausedResumeTick
+            : state.loopEnabled && state.loopStartTick !== null
               ? state.loopStartTick
               : getActiveManualNavigationTarget(state)?.targetTick ?? null;
-          const targetBar =
-            state.loopEnabled && state.loopStartBar !== null
+          const targetBar = hasPausedSnapshot
+            ? state.pausedResumeBar
+            : state.loopEnabled && state.loopStartBar !== null
               ? state.loopStartBar
               : getActiveManualNavigationTarget(state)?.targetBar ?? null;
+          tracePlayback("resume-target-selected", {
+            source: hasPausedSnapshot
+              ? "paused-snapshot"
+              : state.loopEnabled && state.loopStartTick !== null
+                ? "loop-start"
+                : "manual-navigation",
+            targetTick,
+            targetBar,
+          });
           const requestId = state.nextPlaybackRequestId + 1;
           state.nextPlaybackRequestId = requestId;
           state.gpRenderer.setStartupTransactionId(requestId);
