@@ -4155,13 +4155,14 @@ export function startApp(rootElement: HTMLElement): void {
               state.countInInProgress ||
               (state.playbackTransportActive && previousPlaybackIsPlaying !== true);
             if (startupWasPending) {
-              tracePlayback("timeout-cleanup-finished", {
+              tracePlayback("startup-pending", {
+                reason: "runtime-not-playing-during-startup",
                 previousPlaybackIsPlaying,
                 pendingPlaybackStart: state.pendingPlaybackStart !== null,
                 countInInProgress: state.countInInProgress,
                 playbackTransportActive: state.playbackTransportActive,
               });
-              clearPendingStartupState("runtime-not-playing-during-startup");
+              updateTransportControls(rootElement, state, "runtime-not-playing-during-startup");
             } else {
               state.playbackTransportActive = false;
               state.gpRenderer?.setStartupTransactionId(null);

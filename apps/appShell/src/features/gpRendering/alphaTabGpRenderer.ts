@@ -496,7 +496,6 @@ interface ReloadOptions {
 
 type PlayerPhase = "idle" | "starting" | "playing" | "paused" | "stopped" | "invalid" | "recreating";
 const START_CONFIRMATION_TIMEOUT_MS = 6500;
-const LATE_STARTUP_CONVERGENCE_GRACE_MS = 5000;
 
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -937,13 +936,6 @@ export async function createGpRenderer(
   let startConfirmationTimeoutId: number | null = null;
   let activeStartupTransactionId: number | null = null;
   let consecutiveStartupFailureCount = 0;
-  let recentStartupContext: {
-    sessionToken: number;
-    trackIndex: number;
-    baseTick: number | null;
-    startedAtMs: number;
-    timeoutRollbackAtMs: number | null;
-  } | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1059,18 +1051,13 @@ export async function createGpRenderer(
     }
   };
 
-  const confirmRuntimeStart = (
-    reason: string,
-    currentTick: number | null = null,
-    options?: { allowWithoutStartIntent?: boolean },
-  ): void => {
-    if (!hasStartIntent && playerPhase !== "starting" && options?.allowWithoutStartIntent !== true) {
+  const confirmRuntimeStart = (reason: string, currentTick: number | null = null): void => {
+    if (!hasStartIntent && playerPhase !== "starting") {
       return;
     }
     clearStartIntent("runtime-start-confirmed");
     activeStartupTransactionId = null;
     consecutiveStartupFailureCount = 0;
-    recentStartupContext = null;
     setPlayerPhase("playing", reason);
     tracePlayer("start-confirmed", {
       reason,
@@ -1127,13 +1114,6 @@ export async function createGpRenderer(
     clearStartConfirmationTimeout();
     hasStartIntent = true;
     startIntentBaseTick = baseTickSnapshot;
-    recentStartupContext = {
-      sessionToken: sessionTokenSnapshot,
-      trackIndex: trackIndexSnapshot,
-      baseTick: baseTickSnapshot,
-      startedAtMs: Date.now(),
-      timeoutRollbackAtMs: null,
-    };
     startConfirmationTimeoutId = window.setTimeout(() => {
       if (sessionTokenSnapshot !== activeSessionToken) {
         return;
@@ -1168,23 +1148,13 @@ export async function createGpRenderer(
         currentTick,
         playerPhase,
       });
-      recoverFromFailedStartup("start-confirm-timeout", { escalate: true });
-      if (
-        recentStartupContext &&
-        recentStartupContext.sessionToken === sessionTokenSnapshot &&
-        recentStartupContext.trackIndex === trackIndexSnapshot
-      ) {
-        recentStartupContext.timeoutRollbackAtMs = Date.now();
-      }
-      tracePlayer("startup-timeout-soft-reset", {
-        reason: "start-confirm-timeout",
-        confirmedActiveTrackIndex,
-      });
-      tracePlayer("hard-recovery-triggered", {
-        reason: "start-confirm-timeout",
-        confirmedActiveTrackIndex,
+      tracePlayer("startup-pending", {
+        reason: "start-confirm-timeout-elapsed",
+        timeoutMs: START_CONFIRMATION_TIMEOUT_MS,
+        hasStartIntent,
         activeStartupTransactionId,
-        consecutiveStartupFailureCount,
+        confirmedActiveTrackIndex,
+        currentTick,
       });
     }, START_CONFIRMATION_TIMEOUT_MS);
     tracePlayer("start-intent-began", {
@@ -3534,8 +3504,6 @@ export async function createGpRenderer(
         if (playbackScrollLockSnapshot) {
           restoreRenderViewportScroll(playbackScrollLockSnapshot);
         }
-        const previousTick = playbackRuntimeInfo.currentTick;
-
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
           positionLabel: extractPositionLabelFromPayload(positionPayload),
@@ -3585,63 +3553,6 @@ export async function createGpRenderer(
             startIntentBaseTick,
             normalizedPlayerState,
             playbackProgressLooksPlaying,
-          });
-        }
-        const recentStartupContextSnapshot = recentStartupContext;
-        const lateStartupContextMatches =
-          recentStartupContextSnapshot !== null &&
-          recentStartupContextSnapshot.sessionToken === sessionToken &&
-          recentStartupContextSnapshot.trackIndex === confirmedActiveTrackIndex &&
-          recentStartupContextSnapshot.timeoutRollbackAtMs !== null;
-        const recentStartupAttemptStillRelevant =
-          recentStartupContextSnapshot !== null && Date.now() - recentStartupContextSnapshot.startedAtMs <= 15000;
-        const withinLateStartupGraceWindow =
-          lateStartupContextMatches &&
-          recentStartupAttemptStillRelevant &&
-          Date.now() - (recentStartupContextSnapshot?.timeoutRollbackAtMs ?? 0) <= LATE_STARTUP_CONVERGENCE_GRACE_MS;
-        const forwardDeltaFromPrevious =
-          previousTick !== null && currentTick !== null ? currentTick - previousTick : null;
-        const forwardDeltaFromStartupBase =
-          recentStartupContextSnapshot !== null &&
-          recentStartupContextSnapshot.baseTick !== null &&
-          currentTick !== null
-            ? currentTick - recentStartupContextSnapshot.baseTick
-            : null;
-        const meaningfulForwardProgress =
-          currentTick !== null &&
-          ((forwardDeltaFromPrevious !== null && forwardDeltaFromPrevious >= 2) ||
-            (forwardDeltaFromStartupBase !== null && forwardDeltaFromStartupBase >= 2));
-        const lateStartCandidateState = playerPhase === "idle" || playerPhase === "stopped";
-        if (
-          !hasStartIntent &&
-          lateStartupContextMatches &&
-          withinLateStartupGraceWindow &&
-          lateStartCandidateState &&
-          meaningfulForwardProgress
-        ) {
-          tracePlayer("late-start-detected", {
-            sessionToken,
-            activeSessionToken,
-            requestedTrackIndex,
-            confirmedActiveTrackIndex,
-            playerPhase,
-            currentTick,
-            previousTick,
-            recentStartupBaseTick: recentStartupContextSnapshot?.baseTick ?? null,
-            normalizedPlayerState,
-            timeoutRollbackAgeMs: Date.now() - (recentStartupContextSnapshot?.timeoutRollbackAtMs ?? 0),
-          });
-          confirmRuntimeStart("player-position-changed-late-progress", currentTick, {
-            allowWithoutStartIntent: true,
-          });
-          tracePlayer("startup-confirmed-late-progress", {
-            sessionToken,
-            activeSessionToken,
-            requestedTrackIndex,
-            confirmedActiveTrackIndex,
-            currentTick,
-            previousTick,
-            normalizedPlayerState,
           });
         }
         if (shouldTracePosition) {
