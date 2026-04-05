@@ -1054,6 +1054,11 @@ export async function createGpRenderer(
     }
     clearStartIntent("runtime-start-confirmed");
     setPlayerPhase("playing", reason);
+    playbackRuntimeInfo = {
+      ...playbackRuntimeInfo,
+      isPlaying: true,
+    };
+    emitPlaybackRuntimeInfo();
     tracePlayer("start-confirmed", {
       reason,
       currentTick,
@@ -3485,8 +3490,11 @@ export async function createGpRenderer(
           currentBarFromTick.currentBar !== lastLoggedPlayerBar ||
           beatInBar !== lastLoggedPlayerBeatInBar ||
           pendingProgrammaticSeek !== null;
+        const playbackStateLooksPlaying =
+          playbackRuntimeInfo.isPlaying === true || normalizePlaybackState(api.playerState) === "playing";
         if (
           hasStartIntent &&
+          playbackStateLooksPlaying &&
           currentTick !== null &&
           (startIntentBaseTick === null || Math.abs(currentTick - startIntentBaseTick) >= 1)
         ) {

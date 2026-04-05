@@ -3912,6 +3912,10 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onPlaybackRuntimeInfo: (info) => {
           state.playbackIsPlaying = info.isPlaying;
+          if (info.isPlaying === true) {
+            state.playbackTransportActive = true;
+            state.pendingPlaybackStart = null;
+          }
           if (info.isPlaying === false) {
             state.playbackTransportActive = false;
             stopPlaybackMetronome(state);
