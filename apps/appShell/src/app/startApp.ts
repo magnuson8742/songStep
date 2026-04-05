@@ -396,7 +396,7 @@ function resolveTransportUiState(state: AppState): {
     confirmedTrackIndex !== null &&
     !state.trackSwitchInProgress &&
     state.requestedTrackIndex === null;
-  const ready = readyBase && (state.rendererPlayerReady || state.rendererFallbackReady);
+  const ready = readyBase && state.rendererPlayerReady;
   if (!ready) {
     return {
       uiState: "not-ready",
@@ -3388,11 +3388,16 @@ export function startApp(rootElement: HTMLElement): void {
             !readiness.trackSwitchInProgress &&
             readiness.requestedTrackIndex === null;
           const playbackReadyPrimary = playbackReadyBase && readiness.rendererPlayerReady;
-          const playbackReadyFallback = playbackReadyBase && readiness.rendererFallbackReady;
 
-          if (!playbackReadyPrimary && !playbackReadyFallback) {
+          if (!playbackReadyPrimary) {
             if (readiness.trackSwitchInProgress || readiness.requestedTrackIndex !== null) {
               tracePlayback("play-blocked-track-switch-in-progress", {
+                requestId,
+                selectedTrackIndex: state.selectedTrackIndex,
+                ...readiness,
+              });
+            } else if (playbackReadyBase && !readiness.rendererPlayerReady) {
+              tracePlayback("play-blocked-awaiting-player-ready", {
                 requestId,
                 selectedTrackIndex: state.selectedTrackIndex,
                 ...readiness,
@@ -3406,7 +3411,7 @@ export function startApp(rootElement: HTMLElement): void {
             }
             return;
           }
-          tracePlayback(playbackReadyPrimary ? "play-ready-primary" : "play-ready-fallback", {
+          tracePlayback("play-ready-primary", {
             requestId,
             selectedTrackIndex: state.selectedTrackIndex,
             confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
