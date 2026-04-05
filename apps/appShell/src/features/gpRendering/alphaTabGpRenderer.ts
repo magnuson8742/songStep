@@ -4144,21 +4144,26 @@ export async function createGpRenderer(
         setPlayerPhase("idle", "pause-no-confirmed-start");
         return;
       }
-      if ((playerPhase === "idle" || playerPhase === "stopped") && !runtimeThinksPlaying) {
-        tracePlayer("play-suppressed-invalid-state", {
-          reason: "pause-while-not-playing",
-          playerPhase,
-          runtimeState,
-          runtimeThinksPlaying,
-        });
-        return;
-      }
 
       playbackScrollLockSnapshot = null;
       const playbackApi = activeApi as AlphaTabApi & { pause: () => void };
       try {
+        tracePlayer("pause-dispatch", {
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+          playerPhase,
+          runtimeState,
+          runtimeThinksPlaying,
+        });
         playbackApi.pause();
         clearStartIntent("pause-called");
+        setPlayerPhase("paused", "pause-called");
+        emitRenderLifecycle("pause-confirmed", {
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+        });
       } catch (error) {
         recoverFromFailedStartup("pause-throw", { escalate: true });
         setPlayerPhase("invalid", "pause-throw");
