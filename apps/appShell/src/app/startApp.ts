@@ -150,6 +150,7 @@ interface AppState {
   projectRendererCreateInFlight: boolean;
   projectRendererCreateKey: string | null;
   lastTransportUiState: "not-ready" | "idle-ready" | "pending-start" | "playing-confirmed" | null;
+  lastTransportControlSnapshot: string | null;
   startupInteractionLocked: boolean;
 }
 
@@ -444,15 +445,20 @@ function resolveTransportUiState(state: AppState): {
 
 function updateTransportControls(rootElement: HTMLElement, state: AppState, reason: string): void {
   const transportUi = resolveTransportUiState(state);
+  const uiStateChanged = state.lastTransportUiState !== transportUi.uiState;
   state.startupInteractionLocked = transportUi.uiState === "pending-start";
-  tracePlayback("transport-ready-evaluated", {
-    reason,
-    uiState: transportUi.uiState,
-    canPlay: transportUi.canPlay,
-    canPause: transportUi.canPause,
-    canStop: transportUi.canStop,
-    playDisabledReason: transportUi.playDisabledReason,
-  });
+  const transportSnapshot = `${transportUi.uiState}|${transportUi.canPlay ? "1" : "0"}|${transportUi.canPause ? "1" : "0"}|${transportUi.canStop ? "1" : "0"}|${transportUi.playDisabledReason ?? "-"}`;
+  if (state.lastTransportControlSnapshot !== transportSnapshot) {
+    tracePlayback("transport-ready-evaluated", {
+      reason,
+      uiState: transportUi.uiState,
+      canPlay: transportUi.canPlay,
+      canPause: transportUi.canPause,
+      canStop: transportUi.canStop,
+      playDisabledReason: transportUi.playDisabledReason,
+    });
+    state.lastTransportControlSnapshot = transportSnapshot;
+  }
   const playButton = rootElement.querySelector<HTMLButtonElement>("[data-action='play']");
   const pauseButton = rootElement.querySelector<HTMLButtonElement>("[data-action='pause']");
   const stopButton = rootElement.querySelector<HTMLButtonElement>("[data-action='stop']");
@@ -465,7 +471,7 @@ function updateTransportControls(rootElement: HTMLElement, state: AppState, reas
   if (stopButton) {
     stopButton.disabled = !transportUi.canStop;
   }
-  if (state.lastTransportUiState !== transportUi.uiState) {
+  if (uiStateChanged) {
     tracePlayback("transport-state-change", {
       previousState: state.lastTransportUiState,
       nextState: transportUi.uiState,
@@ -476,9 +482,9 @@ function updateTransportControls(rootElement: HTMLElement, state: AppState, reas
     });
     state.lastTransportUiState = transportUi.uiState;
   }
-  if (transportUi.canPlay) {
+  if (transportUi.canPlay && uiStateChanged) {
     tracePlayback("play-button-enabled", { reason, uiState: transportUi.uiState });
-  } else if (transportUi.playDisabledReason) {
+  } else if (transportUi.playDisabledReason && uiStateChanged) {
     tracePlayback("play-button-disabled-reason", {
       reason: transportUi.playDisabledReason,
       uiState: transportUi.uiState,
@@ -2712,6 +2718,7 @@ export function startApp(rootElement: HTMLElement): void {
     projectRendererCreateInFlight: false,
     projectRendererCreateKey: null,
     lastTransportUiState: null,
+    lastTransportControlSnapshot: null,
     startupInteractionLocked: false,
   };
 
@@ -4125,7 +4132,24 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onPlaybackRuntimeInfo: (info) => {
           const previousPlaybackIsPlaying = state.playbackIsPlaying;
-          state.playbackIsPlaying = info.isPlaying;
+          const previousPlaybackTick = state.playbackCurrentTick;
+          if (typeof info.isPlaying === "boolean") {
+            state.playbackIsPlaying = info.isPlaying;
+          }
+          const startupAwaitingConfirmation = state.pendingPlaybackStart !== null || state.startupInteractionLocked;
+          const progressedFromStartupTarget =
+            startupAwaitingConfirmation &&
+            state.pendingPlaybackStart !== null &&
+            info.currentTick !== null &&
+            Math.abs(info.currentTick - state.pendingPlaybackStart.targetTick) >= 1;
+          const progressedFromPreviousTick =
+            startupAwaitingConfirmation &&
+            info.currentTick !== null &&
+            previousPlaybackTick !== null &&
+            Math.abs(info.currentTick - previousPlaybackTick) >= 1;
+          if (progressedFromStartupTarget || progressedFromPreviousTick) {
+            syncStartupConfirmedState("runtime-progress-confirmed");
+          }
           if (info.isPlaying === true) {
             syncStartupConfirmedState("runtime-is-playing");
           }

@@ -3878,6 +3878,9 @@ export async function createGpRenderer(
       });
     },
     setStartupTransactionId: (startupTransactionId: number | null) => {
+      if (activeStartupTransactionId === startupTransactionId) {
+        return;
+      }
       activeStartupTransactionId = startupTransactionId;
       tracePlayer("startup-transaction-updated", {
         activeStartupTransactionId,
