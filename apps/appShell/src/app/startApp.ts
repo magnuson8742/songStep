@@ -152,6 +152,8 @@ interface AppState {
   rendererPlayerReady: boolean;
   rendererFallbackReady: boolean;
   rendererRuntimeWarm: boolean;
+  requiresSwitchedTrackPlaybackReady: boolean;
+  switchedTrackPlaybackReady: boolean;
   latestRendererSessionToken: number | null;
   trackSwitchInProgress: boolean;
   trackSwitchStartedAtMs: number | null;
@@ -408,7 +410,9 @@ function resolveTransportUiState(state: AppState): {
     !state.trackSwitchInProgress &&
     state.requestedTrackIndex === null;
   const runtimeReady = state.rendererPlayerReady || state.rendererFallbackReady || state.rendererRuntimeWarm;
-  const ready = readyBase && runtimeReady;
+  const switchedTrackReadyGateSatisfied =
+    !state.requiresSwitchedTrackPlaybackReady || state.switchedTrackPlaybackReady;
+  const ready = readyBase && runtimeReady && switchedTrackReadyGateSatisfied;
   if (!ready) {
     return {
       uiState: "not-ready",
@@ -512,6 +516,11 @@ function updateTransportControls(rootElement: HTMLElement, state: AppState, reas
     state.lastTransportUiState = transportUi.uiState;
   }
   if (transportUi.canPlay && uiStateChanged) {
+    tracePlayback("play-unlock-source", {
+      reason,
+      source: state.requiresSwitchedTrackPlaybackReady ? "switched-track-playback-ready" : "runtime-ready",
+      switchedTrackPlaybackReady: state.switchedTrackPlaybackReady,
+    });
     tracePlayback("play-button-enabled", { reason, uiState: transportUi.uiState });
   } else if (transportUi.playDisabledReason && uiStateChanged) {
     tracePlayback("play-button-disabled-reason", {
@@ -2749,6 +2758,8 @@ export function startApp(rootElement: HTMLElement): void {
     rendererPlayerReady: false,
     rendererFallbackReady: false,
     rendererRuntimeWarm: false,
+    requiresSwitchedTrackPlaybackReady: false,
+    switchedTrackPlaybackReady: false,
     latestRendererSessionToken: null,
     trackSwitchInProgress: false,
     trackSwitchStartedAtMs: null,
@@ -3049,6 +3060,8 @@ export function startApp(rootElement: HTMLElement): void {
     state.rendererPlayerReady = false;
     state.rendererFallbackReady = false;
     state.rendererRuntimeWarm = false;
+    state.requiresSwitchedTrackPlaybackReady = false;
+    state.switchedTrackPlaybackReady = false;
     state.trackSwitchStartedAtMs = null;
     state.coldBootStartedAtMs = null;
     state.projectRendererCreateInFlight = false;
@@ -3501,21 +3514,35 @@ export function startApp(rootElement: HTMLElement): void {
           state.selectionFired = true;
           state.trackSwitchInProgress = true;
           state.trackSwitchStartedAtMs = Date.now();
+          state.requiresSwitchedTrackPlaybackReady = true;
+          state.switchedTrackPlaybackReady = false;
           state.rendererRenderFinished = false;
           if (trackSwitchPath === "cold") {
             state.rendererPlayerReady = false;
             state.rendererFallbackReady = false;
             state.rendererRuntimeWarm = false;
           }
-          hardCancelPlaybackPipeline("track-switch", { resetPosition: true });
-          traceTrackSwitch("onTrackSelectionChange-after-hard-cancel", {
-            nextTrackIndex: trackIndex,
-            playbackTransportActive: state.playbackTransportActive,
-            pendingPlaybackStart: state.pendingPlaybackStart !== null,
-          });
-          logPlaybackPipeline("track-switch-after-hard-cancel", {
-            requestedTrackIndex: trackIndex,
-          });
+          const hasActivePlaybackToCancel =
+            state.pendingPlaybackStart !== null ||
+            state.playbackTransportActive ||
+            state.countInInProgress ||
+            state.playbackIsPlaying === true;
+          if (hasActivePlaybackToCancel) {
+            hardCancelPlaybackPipeline("track-switch", { resetPosition: true });
+            traceTrackSwitch("onTrackSelectionChange-after-hard-cancel", {
+              nextTrackIndex: trackIndex,
+              playbackTransportActive: state.playbackTransportActive,
+              pendingPlaybackStart: state.pendingPlaybackStart !== null,
+            });
+            logPlaybackPipeline("track-switch-after-hard-cancel", {
+              requestedTrackIndex: trackIndex,
+            });
+          } else {
+            traceTrackSwitch("onTrackSelectionChange-minimal-cancel", {
+              nextTrackIndex: trackIndex,
+              reason: "idle-track-switch-no-active-playback",
+            });
+          }
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;
@@ -3815,10 +3842,19 @@ export function startApp(rootElement: HTMLElement): void {
             readiness.requestedTrackIndex === null;
           const playbackReadyPrimary =
             playbackReadyBase &&
-            (readiness.rendererPlayerReady || readiness.rendererFallbackReady || state.rendererRuntimeWarm);
+            (readiness.rendererPlayerReady || readiness.rendererFallbackReady || state.rendererRuntimeWarm) &&
+            (!state.requiresSwitchedTrackPlaybackReady || state.switchedTrackPlaybackReady);
 
           if (!playbackReadyPrimary) {
-            if (readiness.trackSwitchInProgress || readiness.requestedTrackIndex !== null) {
+            if (state.requiresSwitchedTrackPlaybackReady && !state.switchedTrackPlaybackReady) {
+              tracePlayback("play-blocked-waiting-for-switched-track-playback-ready", {
+                requestId,
+                selectedTrackIndex: state.selectedTrackIndex,
+                confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+                trackSwitchInProgress: readiness.trackSwitchInProgress,
+                requestedTrackIndex: readiness.requestedTrackIndex,
+              });
+            } else if (readiness.trackSwitchInProgress || readiness.requestedTrackIndex !== null) {
               tracePlayback("play-blocked-track-switch-in-progress", {
                 requestId,
                 selectedTrackIndex: state.selectedTrackIndex,
@@ -4313,6 +4349,13 @@ export function startApp(rootElement: HTMLElement): void {
             state.rendererRuntimeWarm = true;
           } else if (eventType === "active-track-confirmed") {
             state.trackSwitchInProgress = false;
+          } else if (eventType === "switched-track-playback-ready") {
+            state.switchedTrackPlaybackReady = true;
+            traceTrackSwitch("hot-track-switch-playback-ready", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              latestRendererSessionToken: state.latestRendererSessionToken,
+            });
           }
           appendSessionDebugEvent(state.sessionDebugLogger, {
             ...event,
@@ -4334,6 +4377,12 @@ export function startApp(rootElement: HTMLElement): void {
           updateLoopHandlesVisual(state, rootElement);
           state.trackSwitchInProgress = false;
           state.rendererRenderFinished = true;
+          if (state.requiresSwitchedTrackPlaybackReady && !state.switchedTrackPlaybackReady) {
+            traceTrackSwitch("hot-track-switch-visual-committed", {
+              trackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+            });
+          }
           const trackSwitchDurationMs =
             state.trackSwitchStartedAtMs === null ? null : Math.max(0, Date.now() - state.trackSwitchStartedAtMs);
           if (trackSwitchDurationMs !== null) {
@@ -4344,6 +4393,7 @@ export function startApp(rootElement: HTMLElement): void {
             traceTrackSwitch("hot-track-switch-ready", {
               trackIndex,
               durationMs: trackSwitchDurationMs,
+              switchedTrackPlaybackReady: state.switchedTrackPlaybackReady,
             });
             state.trackSwitchStartedAtMs = null;
           }
@@ -4617,6 +4667,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingOverviewNavigationTick = null;
           state.manualNavigationVisualOverrideActive = false;
           state.trackSwitchInProgress = false;
+          state.requiresSwitchedTrackPlaybackReady = false;
+          state.switchedTrackPlaybackReady = false;
           invalidatePlaybackBarAnchorRebuild(state);
           updateProjectStatusBanner(rootElement, message);
           updateDebugField(rootElement, "current-tick", "-");
@@ -4741,6 +4793,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.desiredTrackSwitchTick = null;
           state.desiredTrackSwitchBar = null;
           state.desiredTrackSwitchSourceTrackIndex = null;
+          state.requiresSwitchedTrackPlaybackReady = false;
+          state.switchedTrackPlaybackReady = false;
           invalidatePlaybackBarAnchorRebuild(state);
           hidePlaybackPlayhead(rootElement, state);
           appendSessionDebugEvent(state.sessionDebugLogger, {

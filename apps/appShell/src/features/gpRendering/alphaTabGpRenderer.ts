@@ -3337,7 +3337,42 @@ export async function createGpRenderer(
     }
     const sessionTargetTick = options?.targetTick ?? null;
     let sessionTargetTickApplied = false;
+    let sessionPostRenderFinishedCompleted = false;
+    let sessionSwitchedTrackPlaybackReadyEmitted = false;
     pendingScrollSnapshot = captureRenderViewportScroll();
+
+    const maybeEmitSwitchedTrackPlaybackReady = (stage: string): void => {
+      if (!isHotTrackSwitch || sessionSwitchedTrackPlaybackReadyEmitted) {
+        return;
+      }
+      const requestedTrackCleared =
+        requestedTrackIndex === confirmedActiveTrackIndex && pendingRequestedTrackIndex === null;
+      const pendingSeekCleared =
+        pendingProgrammaticSeek === null || pendingProgrammaticSeek.sessionToken !== sessionToken;
+      const safeForPlaybackStart =
+        sessionToken === activeSessionToken &&
+        sessionPostRenderFinishedCompleted &&
+        requestedTrackCleared &&
+        pendingSeekCleared &&
+        activeApi === api &&
+        playerPhase !== "recreating";
+      if (!safeForPlaybackStart) {
+        return;
+      }
+      sessionSwitchedTrackPlaybackReadyEmitted = true;
+      traceRenderer("hot-track-switch-playback-ready", {
+        sessionToken,
+        stage,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+      emitRenderLifecycle("switched-track-playback-ready", {
+        sessionToken,
+        stage,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+    };
 
     destroyActiveRenderer();
     clearRenderHost(container);
@@ -3493,6 +3528,7 @@ export async function createGpRenderer(
             });
             hooks.onProgrammaticSeekConfirmed(confirmedActiveTrackIndex, pendingProgrammaticSeek.tick);
             pendingProgrammaticSeek = null;
+            maybeEmitSwitchedTrackPlaybackReady("player-position-pending-seek-cleared");
           } else if (pendingProgrammaticSeek.retryCount < 2 && api.isReadyForPlayback !== false) {
             traceSeek("pendingProgrammaticSeek-retry", {
               sessionToken,
@@ -3604,6 +3640,7 @@ export async function createGpRenderer(
           lastLoggedPlayerBar = currentBarFromTick.currentBar;
           lastLoggedPlayerBeatInBar = beatInBar;
         }
+        maybeEmitSwitchedTrackPlaybackReady("player-position-changed");
         emitPlaybackRuntimeInfo();
       });
 
@@ -3761,11 +3798,13 @@ export async function createGpRenderer(
         return;
       }
       const committedTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+      sessionPostRenderFinishedCompleted = true;
       hooks.onTrackRenderCommitted(committedTrackIndex);
       if (!sessionTargetTickApplied && sessionTargetTick !== null) {
         sessionTargetTickApplied = true;
         seekToTick(sessionTargetTick);
       }
+      maybeEmitSwitchedTrackPlaybackReady("post-render-finished");
       if (!inPlaceZoomPlaybackContext) {
         return;
       }
