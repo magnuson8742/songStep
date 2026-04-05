@@ -318,6 +318,7 @@ export interface GpRendererHooks {
 
 export interface GpRendererController {
   selectTrack: (trackIndex: number, targetTick?: number | null) => void;
+  setStartupTransactionId: (startupTransactionId: number | null) => void;
   setZoom: (zoomPercent: number) => void;
   seekToTick: (tick: number) => boolean;
   seekToBarStart: (barNumber: number) => number | null;
@@ -933,6 +934,8 @@ export async function createGpRenderer(
   let hasStartIntent = false;
   let startIntentBaseTick: number | null = null;
   let startConfirmationTimeoutId: number | null = null;
+  let activeStartupTransactionId: number | null = null;
+  let consecutiveStartupFailureCount = 0;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1053,6 +1056,8 @@ export async function createGpRenderer(
       return;
     }
     clearStartIntent("runtime-start-confirmed");
+    activeStartupTransactionId = null;
+    consecutiveStartupFailureCount = 0;
     setPlayerPhase("playing", reason);
     tracePlayer("start-confirmed", {
       reason,
@@ -1063,7 +1068,10 @@ export async function createGpRenderer(
     });
   };
 
-  const recoverFromFailedStartup = (reason: string, options?: { reload?: boolean }): void => {
+  const recoverFromFailedStartup = (reason: string, options?: { reload?: boolean; escalate?: boolean }): void => {
+    consecutiveStartupFailureCount += 1;
+    const shouldReload =
+      options?.reload === true || (options?.escalate === true && consecutiveStartupFailureCount >= 2);
     tracePlayer("failed-startup-hard-recovery", {
       reason,
       playerPhase,
@@ -1071,9 +1079,12 @@ export async function createGpRenderer(
       activeSessionToken,
       requestedTrackIndex,
       confirmedActiveTrackIndex,
-      reload: options?.reload === true,
+      activeStartupTransactionId,
+      consecutiveStartupFailureCount,
+      reload: shouldReload,
     });
     clearStartIntent(`failed-startup:${reason}`);
+    activeStartupTransactionId = null;
     pendingProgrammaticSeek = null;
     playbackScrollLockSnapshot = null;
     playbackRuntimeInfo = {
@@ -1084,7 +1095,7 @@ export async function createGpRenderer(
     if (playerPhase !== "recreating") {
       setPlayerPhase("idle", `failed-startup:${reason}`);
     }
-    if (options?.reload && playerPhase !== "recreating") {
+    if (shouldReload && playerPhase !== "recreating") {
       void switchTrackByReload(confirmedActiveTrackIndex).catch(() => undefined);
     }
   };
@@ -1114,8 +1125,7 @@ export async function createGpRenderer(
         currentTick: playbackRuntimeInfo.currentTick,
         playerPhase,
       });
-      clearStartIntent("start-confirm-timeout");
-      recoverFromFailedStartup("start-confirm-timeout", { reload: true });
+      recoverFromFailedStartup("start-confirm-timeout", { escalate: true });
       tracePlayer("startup-timeout-soft-reset", {
         reason: "start-confirm-timeout",
         confirmedActiveTrackIndex,
@@ -1123,6 +1133,8 @@ export async function createGpRenderer(
       tracePlayer("hard-recovery-triggered", {
         reason: "start-confirm-timeout",
         confirmedActiveTrackIndex,
+        activeStartupTransactionId,
+        consecutiveStartupFailureCount,
       });
     }, START_CONFIRMATION_TIMEOUT_MS);
     tracePlayer("start-intent-began", {
@@ -3855,6 +3867,15 @@ export async function createGpRenderer(
         });
       });
     },
+    setStartupTransactionId: (startupTransactionId: number | null) => {
+      activeStartupTransactionId = startupTransactionId;
+      tracePlayer("startup-transaction-updated", {
+        activeStartupTransactionId,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+    },
     setZoom: (nextZoomPercent: number) => {
       const normalizedZoom = Math.max(50, Math.min(200, Math.round(nextZoomPercent)));
       if (normalizedZoom === zoomPercent) {
@@ -4020,7 +4041,7 @@ export async function createGpRenderer(
         const runtimeState = normalizePlaybackState(activeApi.playerState);
         const runtimeThinksPlaying = runtimeState === "playing" || playbackRuntimeInfo.isPlaying === true;
         if (!runtimeThinksPlaying) {
-          recoverFromFailedStartup("stale-playing-before-play", { reload: true });
+          recoverFromFailedStartup("stale-playing-before-play", { escalate: true });
           return;
         }
         tracePlayer("play-suppressed-invalid-state", {
@@ -4055,7 +4076,7 @@ export async function createGpRenderer(
         beginStartIntent();
         playbackApi.play();
       } catch (error) {
-        recoverFromFailedStartup("play-throw", { reload: true });
+        recoverFromFailedStartup("play-throw", { escalate: true });
         setPlayerPhase("invalid", "play-throw");
         tracePlayer("play-suppressed-invalid-state", {
           reason: "play-throw",
@@ -4110,7 +4131,7 @@ export async function createGpRenderer(
         playbackApi.pause();
         clearStartIntent("pause-called");
       } catch (error) {
-        recoverFromFailedStartup("pause-throw", { reload: true });
+        recoverFromFailedStartup("pause-throw", { escalate: true });
         setPlayerPhase("invalid", "pause-throw");
         tracePlayer("play-suppressed-invalid-state", {
           reason: "pause-throw",
@@ -4157,7 +4178,7 @@ export async function createGpRenderer(
         clearStartIntent("stop-called");
         setPlayerPhase("stopped", "stop-called");
       } catch (error) {
-        recoverFromFailedStartup("stop-throw", { reload: true });
+        recoverFromFailedStartup("stop-throw", { escalate: true });
         setPlayerPhase("invalid", "stop-throw");
         tracePlayer("stop-suppressed-invalid-state", {
           reason: "stop-throw",

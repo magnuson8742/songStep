@@ -2726,6 +2726,7 @@ export function startApp(rootElement: HTMLElement): void {
       });
     }
     state.pendingPlaybackStart = null;
+    state.gpRenderer?.setStartupTransactionId(null);
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     stopPlaybackMetronome(state);
@@ -3370,6 +3371,7 @@ export function startApp(rootElement: HTMLElement): void {
               : getActiveManualNavigationTarget(state)?.targetBar ?? null;
           const requestId = state.nextPlaybackRequestId + 1;
           state.nextPlaybackRequestId = requestId;
+          state.gpRenderer.setStartupTransactionId(requestId);
           const readiness = {
             hasRenderer: state.gpRenderer !== null,
             rendererScoreLoaded: state.rendererScoreLoaded,
@@ -3468,6 +3470,24 @@ export function startApp(rootElement: HTMLElement): void {
             if (!state.gpRenderer) {
               return;
             }
+            if (!state.pendingPlaybackStart) {
+              const startupTargetTick = targetTick ?? state.playbackCurrentTick ?? state.playbackCurrentBarStartTick ?? 0;
+              state.pendingPlaybackStart = {
+                requestId,
+                targetTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex,
+                targetTick: startupTargetTick,
+                targetBar,
+              };
+              const pendingStart = state.pendingPlaybackStart;
+              tracePlayback("pendingPlaybackStart-created", {
+                requestId,
+                targetTrackIndex: pendingStart.targetTrackIndex,
+                targetTick: pendingStart.targetTick,
+                targetBar,
+                reason: "startup-transaction-begin",
+              });
+              updateTransportControls(rootElement, state, "startup-transaction-begin");
+            }
             if (!requiresSeek || targetTick === null) {
               startPlaybackNow();
               return;
@@ -3475,22 +3495,13 @@ export function startApp(rootElement: HTMLElement): void {
             const seekApplied = state.gpRenderer.seekToTick(targetTick);
             logPlaybackPipeline("seek-dispatched", { requestId, targetTick, seekApplied });
             if (!seekApplied) {
+              state.pendingPlaybackStart = null;
+              state.gpRenderer.setStartupTransactionId(null);
+              updateTransportControls(rootElement, state, "startup-transaction-seek-failed");
               state.projectStatusMessage = "Could not seek to playback start.";
               updateProjectStatusBanner(rootElement, state.projectStatusMessage);
               return;
             }
-            state.pendingPlaybackStart = {
-              requestId,
-              targetTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex,
-              targetTick,
-              targetBar,
-            };
-            tracePlayback("pendingPlaybackStart-created", {
-              requestId,
-              targetTrackIndex: state.pendingPlaybackStart.targetTrackIndex,
-              targetTick,
-              targetBar,
-            });
             tracePlayback("play-dispatch-after-seek", {
               requestId,
               targetTick,
@@ -3824,6 +3835,7 @@ export function startApp(rootElement: HTMLElement): void {
           ) {
             const pendingStart = state.pendingPlaybackStart;
             state.pendingPlaybackStart = null;
+            state.gpRenderer?.setStartupTransactionId(null);
             logPlaybackPipeline("seek-confirmed", {
               requestId: pendingStart.requestId,
               targetTick: pendingStart.targetTick,
@@ -3920,9 +3932,11 @@ export function startApp(rootElement: HTMLElement): void {
           if (info.isPlaying === true) {
             state.playbackTransportActive = true;
             state.pendingPlaybackStart = null;
+            state.gpRenderer?.setStartupTransactionId(null);
           }
           if (info.isPlaying === false) {
             state.playbackTransportActive = false;
+            state.gpRenderer?.setStartupTransactionId(null);
             stopPlaybackMetronome(state);
           }
           state.playbackPositionLabel = info.positionLabel;
