@@ -1092,11 +1092,19 @@ export async function createGpRenderer(
       if (playerPhase === "starting") {
         setPlayerPhase("idle", "phase-reset-after-timeout");
       }
-      tracePlayer("runtime-recovery-after-unconfirmed-start", {
+      playbackRuntimeInfo = {
+        ...playbackRuntimeInfo,
+        isPlaying: false,
+      };
+      emitPlaybackRuntimeInfo();
+      tracePlayer("startup-timeout-soft-reset", {
         reason: "start-confirm-timeout",
         confirmedActiveTrackIndex,
       });
-      void switchTrackByReload(confirmedActiveTrackIndex).catch(() => undefined);
+      tracePlayer("hard-recovery-skipped", {
+        reason: "first-timeout-soft-reset",
+        confirmedActiveTrackIndex,
+      });
     }, START_CONFIRMATION_TIMEOUT_MS);
     tracePlayer("start-intent-began", {
       sessionTokenSnapshot,
@@ -3342,6 +3350,12 @@ export async function createGpRenderer(
         }
         if (normalizedState === "playing") {
           confirmRuntimeStart("player-state-changed", playbackRuntimeInfo.currentTick);
+          tracePlayer("startup-confirmed-by-state", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+          });
         } else if (normalizedState === "paused") {
           clearStartIntent("player-state-changed-paused");
           setPlayerPhase("paused", "player-state-changed");
@@ -3477,6 +3491,14 @@ export async function createGpRenderer(
           (startIntentBaseTick === null || Math.abs(currentTick - startIntentBaseTick) >= 1)
         ) {
           confirmRuntimeStart("player-position-changed-progress", currentTick);
+          tracePlayer("startup-confirmed-by-progress", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+            currentTick,
+            startIntentBaseTick,
+          });
         }
         if (shouldTracePosition) {
           tracePlayer("player-position-changed", {

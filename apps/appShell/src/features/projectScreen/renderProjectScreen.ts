@@ -22,6 +22,9 @@ export interface ProjectScreenActions {
   playbackSpeedPercent: number;
   effectiveTempoBpm: number | null;
   playbackIsPlaying: boolean | null;
+  canPlay: boolean;
+  canPause: boolean;
+  canStop: boolean;
   countInEnabled: boolean;
   metronomeEnabled: boolean;
   loopEnabled: boolean;
@@ -236,9 +239,9 @@ export function renderProjectScreen(
             <p class="appSubtitle">Source: ${actions.sourceFileName}</p>
           </div>
           <div class="playerTransport">
-            <button class="primaryButton" type="button" data-action="play">Play</button>
-            <button class="secondaryButton" type="button" data-action="pause">Pause</button>
-            <button class="secondaryButton" type="button" data-action="stop">Stop</button>
+            <button class="primaryButton" type="button" data-action="play" ${actions.canPlay ? "" : "disabled"}>Play</button>
+            <button class="secondaryButton" type="button" data-action="pause" ${actions.canPause ? "" : "disabled"}>Pause</button>
+            <button class="secondaryButton" type="button" data-action="stop" ${actions.canStop ? "" : "disabled"}>Stop</button>
           </div>
           <div class="playerCountInControls">
             <button
