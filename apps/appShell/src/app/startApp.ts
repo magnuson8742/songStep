@@ -425,7 +425,7 @@ function resolveTransportUiState(state: AppState): {
       uiState: "pending-start",
       canPlay: false,
       canPause: false,
-      canStop: true,
+      canStop: false,
       playDisabledReason: state.countInInProgress
         ? "count-in-in-progress"
         : state.pendingPlaybackStart !== null
@@ -3729,6 +3729,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.gpRenderer.pause();
         },
         onStop: () => {
+          if (blockStartupInteraction("stop")) {
+            return;
+          }
           if (!state.gpRenderer) {
             state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
@@ -3749,17 +3752,6 @@ export function startApp(rootElement: HTMLElement): void {
             state.countInInProgress ||
             state.pendingPlaybackStart !== null ||
             (state.playbackTransportActive && state.playbackIsPlaying !== true && state.playbackCurrentTick === null);
-          if (state.startupInteractionLocked && pendingStartup) {
-            tracePlayback("stop-allowed-during-pending-start", {
-              selectedTrackIndex: state.selectedTrackIndex,
-              pendingPlaybackStart: state.pendingPlaybackStart !== null,
-              countInInProgress: state.countInInProgress,
-              playbackTransportActive: state.playbackTransportActive,
-              playbackIsPlaying: state.playbackIsPlaying,
-            });
-          } else if (blockStartupInteraction("stop")) {
-            return;
-          }
           if (pendingStartup) {
             tracePlayback("startup-abort-requested", {
               source: "onStop",

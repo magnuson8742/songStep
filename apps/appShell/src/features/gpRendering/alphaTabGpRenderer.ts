@@ -1121,6 +1121,22 @@ export async function createGpRenderer(
       if (!hasStartIntent) {
         return;
       }
+      const currentTick = playbackRuntimeInfo.currentTick;
+      const startupMadeForwardProgress =
+        currentTick !== null && (baseTickSnapshot === null || Math.abs(currentTick - baseTickSnapshot) >= 1);
+      if (startupMadeForwardProgress) {
+        tracePlayer("startup-timeout-cancelled-because-progress", {
+          timeoutMs: START_CONFIRMATION_TIMEOUT_MS,
+          baseTickSnapshot,
+          currentTick,
+          sessionTokenSnapshot,
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+        });
+        confirmRuntimeStart("start-confirm-timeout-progress", currentTick);
+        return;
+      }
       tracePlayer("start-confirm-timeout", {
         timeoutMs: START_CONFIRMATION_TIMEOUT_MS,
         sessionTokenSnapshot,
@@ -1129,7 +1145,7 @@ export async function createGpRenderer(
         confirmedActiveTrackIndex,
         trackIndexSnapshot,
         baseTickSnapshot,
-        currentTick: playbackRuntimeInfo.currentTick,
+        currentTick,
         playerPhase,
       });
       recoverFromFailedStartup("start-confirm-timeout", { escalate: true });
