@@ -318,6 +318,7 @@ export interface GpRendererHooks {
 
 export interface GpRendererController {
   selectTrack: (trackIndex: number, targetTick?: number | null) => void;
+  setStartupTransactionId: (startupTransactionId: number | null) => void;
   setZoom: (zoomPercent: number) => void;
   seekToTick: (tick: number) => boolean;
   seekToBarStart: (barNumber: number) => number | null;
@@ -492,6 +493,9 @@ interface BarBoundsSystemSummary {
 interface ReloadOptions {
   targetTick?: number | null;
 }
+
+type PlayerPhase = "idle" | "starting" | "playing" | "paused" | "stopped" | "invalid" | "recreating";
+const START_CONFIRMATION_TIMEOUT_MS = 6500;
 
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -829,6 +833,11 @@ function waitForAnimationFrame(): Promise<void> {
   });
 }
 
+function hasRenderableHostSize(container: HTMLElement): boolean {
+  const rect = container.getBoundingClientRect();
+  return container.clientWidth > 0 && rect.width > 0 && rect.height > 0;
+}
+
 export async function createGpRenderer(
   container: HTMLElement,
   sourceFile: SourceFileData,
@@ -836,6 +845,23 @@ export async function createGpRenderer(
   hooks: GpRendererHooks,
   initialZoomPercent = 100,
 ): Promise<GpRendererController> {
+  const toTraceLine = (prefix: string, eventName: string, payload: Record<string, unknown>): string =>
+    `${prefix} ${eventName} ${JSON.stringify(payload)}`;
+  const traceRenderer = (eventName: string, payload: Record<string, unknown>): void => {
+    console.info(toTraceLine("[songstep-renderer]", eventName, payload));
+  };
+  const traceSeek = (eventName: string, payload: Record<string, unknown>): void => {
+    console.info(toTraceLine("[songstep-seek]", eventName, payload));
+  };
+  const tracePlayer = (eventName: string, payload: Record<string, unknown>): void => {
+    console.info(toTraceLine("[songstep-player]", eventName, payload));
+  };
+
+  traceRenderer("createGpRenderer-start", {
+    selectedTrackIndex,
+    initialZoomPercent,
+  });
+
   const sourceBytes = base64ToBytes(sourceFile.contentBase64);
 
   let activeApi: AlphaTabApi | null = null;
@@ -891,7 +917,6 @@ export async function createGpRenderer(
   let inPlaceZoomPlaybackContext: InPlaceZoomPlaybackContext | null = null;
   let inPlaceZoomTokenCounter = 0;
   let pendingProgrammaticSeek: PendingProgrammaticSeek | null = null;
-  let pendingPlayAfterProgrammaticSeek = false;
   let renderAttemptCounter = 0;
   let activeRenderAttemptId: string | null = null;
   let lastBarBoundsExtractionDiagnostics: BarBoundsExtractionDiagnostics | null = null;
@@ -902,6 +927,15 @@ export async function createGpRenderer(
   let masterVolume = 80;
   let masterBalance = 0;
   let hasLoggedMixerApplySuccess = false;
+  let lastLoggedPlayerBar: number | null = null;
+  let lastLoggedPlayerBeatInBar: number | null = null;
+  let lastLoggedPlayerState: "playing" | "paused" | "stopped" | null = null;
+  let playerPhase: PlayerPhase = "idle";
+  let hasStartIntent = false;
+  let startIntentBaseTick: number | null = null;
+  let startConfirmationTimeoutId: number | null = null;
+  let activeStartupTransactionId: number | null = null;
+  let consecutiveStartupFailureCount = 0;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -967,6 +1001,173 @@ export async function createGpRenderer(
     playbackCapabilityMessage = message;
   };
 
+  const emitRuntimeNotice = (message: string): void => {
+    traceRenderer("runtime-notice", {
+      message,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+      rendererBusy,
+      zoomRerenderInFlight,
+    });
+    hooks.onRuntimeNotice(message);
+  };
+
+  const setPlayerPhase = (nextPhase: PlayerPhase, reason: string): void => {
+    if (playerPhase === nextPhase) {
+      return;
+    }
+    const previousPhase = playerPhase;
+    playerPhase = nextPhase;
+    tracePlayer("player-phase-change", {
+      previousPhase,
+      nextPhase,
+      reason,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
+  };
+
+  const clearStartConfirmationTimeout = (): void => {
+    if (startConfirmationTimeoutId !== null) {
+      window.clearTimeout(startConfirmationTimeoutId);
+      startConfirmationTimeoutId = null;
+    }
+  };
+
+  const clearStartIntent = (reason: string): void => {
+    const hadStartIntent = hasStartIntent;
+    clearStartConfirmationTimeout();
+    hasStartIntent = false;
+    startIntentBaseTick = null;
+    if (hadStartIntent) {
+      tracePlayer("start-intent-cleared", {
+        reason,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+    }
+  };
+
+  const confirmRuntimeStart = (reason: string, currentTick: number | null = null): void => {
+    if (!hasStartIntent && playerPhase !== "starting") {
+      return;
+    }
+    clearStartIntent("runtime-start-confirmed");
+    activeStartupTransactionId = null;
+    consecutiveStartupFailureCount = 0;
+    setPlayerPhase("playing", reason);
+    tracePlayer("start-confirmed", {
+      reason,
+      currentTick,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
+    emitRenderLifecycle("startup-confirmed", {
+      reason,
+      currentTick,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
+  };
+
+  const recoverFromFailedStartup = (reason: string, options?: { reload?: boolean; escalate?: boolean }): void => {
+    consecutiveStartupFailureCount += 1;
+    const shouldReload =
+      options?.reload === true || (options?.escalate === true && consecutiveStartupFailureCount >= 2);
+    tracePlayer("failed-startup-hard-recovery", {
+      reason,
+      playerPhase,
+      hasStartIntent,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+      activeStartupTransactionId,
+      consecutiveStartupFailureCount,
+      reload: shouldReload,
+    });
+    clearStartIntent(`failed-startup:${reason}`);
+    activeStartupTransactionId = null;
+    pendingProgrammaticSeek = null;
+    playbackScrollLockSnapshot = null;
+    playbackRuntimeInfo = {
+      ...playbackRuntimeInfo,
+      isPlaying: false,
+    };
+    emitPlaybackRuntimeInfo();
+    if (playerPhase !== "recreating") {
+      setPlayerPhase("idle", `failed-startup:${reason}`);
+    }
+    if (shouldReload && playerPhase !== "recreating") {
+      void switchTrackByReload(confirmedActiveTrackIndex).catch(() => undefined);
+    }
+  };
+
+  const beginStartIntent = (): void => {
+    const sessionTokenSnapshot = activeSessionToken;
+    const trackIndexSnapshot = confirmedActiveTrackIndex;
+    const baseTickSnapshot = playbackRuntimeInfo.currentTick;
+    clearStartConfirmationTimeout();
+    hasStartIntent = true;
+    startIntentBaseTick = baseTickSnapshot;
+    startConfirmationTimeoutId = window.setTimeout(() => {
+      if (sessionTokenSnapshot !== activeSessionToken) {
+        return;
+      }
+      if (!hasStartIntent) {
+        return;
+      }
+      const currentTick = playbackRuntimeInfo.currentTick;
+      const startupMadeForwardProgress =
+        currentTick !== null && (baseTickSnapshot === null || Math.abs(currentTick - baseTickSnapshot) >= 1);
+      if (startupMadeForwardProgress) {
+        tracePlayer("startup-timeout-cancelled-because-progress", {
+          timeoutMs: START_CONFIRMATION_TIMEOUT_MS,
+          baseTickSnapshot,
+          currentTick,
+          sessionTokenSnapshot,
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+        });
+        confirmRuntimeStart("start-confirm-timeout-progress", currentTick);
+        return;
+      }
+      tracePlayer("start-confirm-timeout", {
+        timeoutMs: START_CONFIRMATION_TIMEOUT_MS,
+        sessionTokenSnapshot,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        trackIndexSnapshot,
+        baseTickSnapshot,
+        currentTick,
+        playerPhase,
+      });
+      tracePlayer("startup-pending", {
+        reason: "start-confirm-timeout-elapsed",
+        timeoutMs: START_CONFIRMATION_TIMEOUT_MS,
+        hasStartIntent,
+        activeStartupTransactionId,
+        confirmedActiveTrackIndex,
+        currentTick,
+      });
+    }, START_CONFIRMATION_TIMEOUT_MS);
+    tracePlayer("start-intent-began", {
+      sessionTokenSnapshot,
+      trackIndexSnapshot,
+      baseTickSnapshot,
+      timeoutMs: START_CONFIRMATION_TIMEOUT_MS,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
+  };
+
   const summarizeError = (error: unknown): Record<string, unknown> => {
     if (error instanceof Error) {
       return {
@@ -1017,6 +1218,7 @@ export async function createGpRenderer(
     tickBarRanges = [];
     tickLookupSourcePath = null;
     playbackScrollLockSnapshot = null;
+    clearStartIntent("reset-playback-runtime-info");
     emitPlaybackRuntimeInfo();
   };
 
@@ -2816,7 +3018,20 @@ export async function createGpRenderer(
   };
 
   const seekToTick = (tick: number): boolean => {
+    traceSeek("seekToTick-called", {
+      tick,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+      rendererBusy,
+      zoomRerenderInFlight,
+      hasActiveApi: activeApi !== null,
+    });
     if (!activeApi || !Number.isFinite(tick)) {
+      traceSeek("seekToTick-ignored", {
+        reason: !activeApi ? "no-active-api" : "invalid-tick",
+        tick,
+      });
       return false;
     }
     const api = activeApi;
@@ -2856,6 +3071,10 @@ export async function createGpRenderer(
       didApplyTick = true;
     }
     if (!didApplyTick) {
+      traceSeek("seekToTick-ignored", {
+        reason: "no-seek-api",
+        tick,
+      });
       return false;
     }
     pendingProgrammaticSeek = {
@@ -2864,6 +3083,13 @@ export async function createGpRenderer(
       sessionToken: activeSessionToken,
       retryCount: 0,
     };
+    traceSeek("pendingProgrammaticSeek-set", {
+      tick,
+      trackIndex: confirmedActiveTrackIndex,
+      sessionToken: activeSessionToken,
+      retryCount: 0,
+      requestedTrackIndex,
+    });
 
     const currentBarFromTick = resolveCurrentBarFromTick(tick);
     playbackRuntimeInfo = {
@@ -2947,6 +3173,14 @@ export async function createGpRenderer(
       if (sessionToken !== activeSessionToken || !rendererBusy) {
         return;
       }
+      traceRenderer("render-timeout", {
+        sessionToken,
+        activeSessionToken,
+        timedOutTrackIndex,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        rendererBusy,
+      });
 
       renderTimeoutHit = true;
       lastRendererErrorStage = "renderFinished-timeout";
@@ -2992,10 +3226,19 @@ export async function createGpRenderer(
   };
 
   const switchTrackByReload = async (nextTrackIndex: number, options?: ReloadOptions): Promise<void> => {
+    setPlayerPhase("recreating", "switchTrackByReload-start");
+    traceRenderer("switchTrackByReload-start", {
+      nextTrackIndex,
+      targetTick: options?.targetTick ?? null,
+      activeSessionToken,
+      rendererBusy,
+      pendingRequestedTrackIndex,
+      zoomRerenderInFlight,
+    });
     inPlaceZoomPlaybackContext = null;
     pendingZoomPercent = null;
     pendingProgrammaticSeek = null;
-    pendingPlayAfterProgrammaticSeek = false;
+    clearStartIntent("switchTrackByReload-start");
     requestedTrackIndex = nextTrackIndex;
     const renderPlan = buildRenderPlan(nextTrackIndex);
     currentRenderMode = renderPlan.mode;
@@ -3033,6 +3276,10 @@ export async function createGpRenderer(
 
     if (rendererBusy) {
       pendingRequestedTrackIndex = nextTrackIndex;
+      traceRenderer("switchTrackByReload-queued", {
+        nextTrackIndex,
+        activeSessionToken,
+      });
       emitDebugInfo();
       return;
     }
@@ -3055,6 +3302,12 @@ export async function createGpRenderer(
 
     const sessionToken = activeSessionToken + 1;
     activeSessionToken = sessionToken;
+    if (renderCycleCounter === 1) {
+      traceRenderer("initial-track-load-start", {
+        sessionToken,
+        nextTrackIndex,
+      });
+    }
     const sessionTargetTick = options?.targetTick ?? null;
     let sessionTargetTickApplied = false;
     pendingScrollSnapshot = captureRenderViewportScroll();
@@ -3070,15 +3323,58 @@ export async function createGpRenderer(
       return;
     }
 
+    if (!hasRenderableHostSize(container)) {
+      traceRenderer("renderer-host-not-ready", {
+        sessionToken,
+        nextTrackIndex,
+        clientWidth: container.clientWidth,
+      });
+      await waitForAnimationFrame();
+      await new Promise<void>((resolve) => {
+        window.setTimeout(() => resolve(), 40);
+      });
+      if (!hasRenderableHostSize(container)) {
+        traceRenderer("renderer-host-not-ready", {
+          sessionToken,
+          nextTrackIndex,
+          clientWidth: container.clientWidth,
+          deferred: true,
+        });
+      } else {
+        traceRenderer("renderer-host-ready", {
+          sessionToken,
+          nextTrackIndex,
+          clientWidth: container.clientWidth,
+        });
+      }
+    } else {
+      traceRenderer("renderer-host-ready", {
+        sessionToken,
+        nextTrackIndex,
+        clientWidth: container.clientWidth,
+      });
+    }
+
     const api = createAlphaTabApi(container, renderPlan, zoomPercent);
     applyPlaybackSpeedPercentToApi(api, playbackSpeedPercent);
     activeApi = api;
     applyMixerStateToApi(api, "renderer-created");
     const playbackAvailable = isPlaybackApiAvailable(api);
+    traceRenderer("api-created", {
+      sessionToken,
+      nextTrackIndex,
+      playbackAvailable,
+      renderMode: renderPlan.mode,
+      isPercussion: renderPlan.isPercussion,
+    });
     if (!playbackAvailable) {
       setPlaybackCapabilityMessage("Playback is unavailable in this runtime.");
     } else {
       setPlaybackCapabilityMessage(null);
+      emitRenderLifecycle("playback-runtime-ready-fallback", {
+        sessionToken,
+        reason: "playback-api-available",
+      });
     }
 
     if (playbackAvailable) {
@@ -3093,6 +3389,31 @@ export async function createGpRenderer(
         }
 
         const normalizedState = normalizePlaybackState(statePayload);
+        if (normalizedState !== lastLoggedPlayerState) {
+          tracePlayer("player-state-changed", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+            normalizedState,
+          });
+          lastLoggedPlayerState = normalizedState;
+        }
+        if (normalizedState === "playing") {
+          confirmRuntimeStart("player-state-changed", playbackRuntimeInfo.currentTick);
+          tracePlayer("startup-confirmed-by-state", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+          });
+        } else if (normalizedState === "paused") {
+          clearStartIntent("player-state-changed-paused");
+          setPlayerPhase("paused", "player-state-changed");
+        } else if (normalizedState === "stopped") {
+          clearStartIntent("player-state-changed-stopped");
+          setPlayerPhase("stopped", "player-state-changed");
+        }
         const playerStatePayloadShape = describePayloadShape(statePayload);
         if (normalizedState === "playing") {
           playbackScrollLockSnapshot = captureRenderViewportScroll();
@@ -3133,13 +3454,29 @@ export async function createGpRenderer(
             playbackRuntimeInfo.isPlaying === true || normalizePlaybackState(api.playerState) === "playing";
           const tickDelta = Math.abs(currentTick - pendingProgrammaticSeek.tick);
           if (tickDelta <= 1) {
+            traceSeek("pendingProgrammaticSeek-confirmed", {
+              sessionToken,
+              activeSessionToken,
+              requestedTrackIndex,
+              confirmedActiveTrackIndex,
+              tick: pendingProgrammaticSeek.tick,
+              currentTick,
+              tickDelta,
+              retryCount: pendingProgrammaticSeek.retryCount,
+            });
             hooks.onProgrammaticSeekConfirmed(confirmedActiveTrackIndex, pendingProgrammaticSeek.tick);
             pendingProgrammaticSeek = null;
-            if (pendingPlayAfterProgrammaticSeek && isPlaybackApiAvailable(api)) {
-              pendingPlayAfterProgrammaticSeek = false;
-              api.play?.();
-            }
           } else if (pendingProgrammaticSeek.retryCount < 2 && api.isReadyForPlayback !== false) {
+            traceSeek("pendingProgrammaticSeek-retry", {
+              sessionToken,
+              activeSessionToken,
+              requestedTrackIndex,
+              confirmedActiveTrackIndex,
+              targetTick: pendingProgrammaticSeek.tick,
+              currentTick,
+              tickDelta,
+              nextRetryCount: pendingProgrammaticSeek.retryCount + 1,
+            });
             pendingProgrammaticSeek.retryCount += 1;
             const retryTick = pendingProgrammaticSeek.tick;
             const retryCountSnapshot = pendingProgrammaticSeek.retryCount;
@@ -3167,7 +3504,6 @@ export async function createGpRenderer(
         if (playbackScrollLockSnapshot) {
           restoreRenderViewportScroll(playbackScrollLockSnapshot);
         }
-
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
           positionLabel: extractPositionLabelFromPayload(positionPayload),
@@ -3178,10 +3514,81 @@ export async function createGpRenderer(
           currentBarSourcePath: currentBarFromTick.sourcePath,
           playerPositionPayloadShape,
         };
+        const beatInBar =
+          currentTick === null ||
+          currentBarFromTick.currentBarStartTick === null ||
+          currentBarFromTick.currentBarEndTickExclusive === null ||
+          currentBarFromTick.currentBarEndTickExclusive <= currentBarFromTick.currentBarStartTick
+            ? null
+            : Math.max(
+                0,
+                Math.min(
+                  3,
+                  Math.floor(
+                    ((currentTick - currentBarFromTick.currentBarStartTick) /
+                      (currentBarFromTick.currentBarEndTickExclusive - currentBarFromTick.currentBarStartTick)) *
+                      4,
+                  ),
+                ),
+              );
+        const shouldTracePosition =
+          currentBarFromTick.currentBar !== lastLoggedPlayerBar ||
+          beatInBar !== lastLoggedPlayerBeatInBar ||
+          pendingProgrammaticSeek !== null;
+        const normalizedPlayerState = normalizePlaybackState(api.playerState);
+        const playbackStateLooksPlaying = normalizedPlayerState === "playing";
+        const playbackProgressLooksPlaying =
+          currentTick !== null && (startIntentBaseTick === null || Math.abs(currentTick - startIntentBaseTick) >= 1);
+        if (
+          hasStartIntent &&
+          (playbackStateLooksPlaying || playbackProgressLooksPlaying)
+        ) {
+          confirmRuntimeStart("player-position-changed-progress", currentTick);
+          tracePlayer("startup-confirmed-by-progress", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+            currentTick,
+            startIntentBaseTick,
+            normalizedPlayerState,
+            playbackProgressLooksPlaying,
+          });
+        }
+        if (shouldTracePosition) {
+          tracePlayer("player-position-changed", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+            currentTick,
+            currentBar: currentBarFromTick.currentBar,
+            beatInBar,
+            pendingProgrammaticSeek:
+              pendingProgrammaticSeek === null
+                ? null
+                : {
+                    tick: pendingProgrammaticSeek.tick,
+                    retryCount: pendingProgrammaticSeek.retryCount,
+                    trackIndex: pendingProgrammaticSeek.trackIndex,
+                    sessionToken: pendingProgrammaticSeek.sessionToken,
+                  },
+          });
+          lastLoggedPlayerBar = currentBarFromTick.currentBar;
+          lastLoggedPlayerBeatInBar = beatInBar;
+        }
         emitPlaybackRuntimeInfo();
       });
 
       api.playerReady?.on(() => {
+        traceRenderer("player-ready", {
+          sessionToken,
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+          hasPendingProgrammaticSeek: pendingProgrammaticSeek !== null,
+        });
+        emitRenderLifecycle("player-ready", { sessionToken });
         if (
           !pendingProgrammaticSeek ||
           pendingProgrammaticSeek.sessionToken !== sessionToken ||
@@ -3194,6 +3601,15 @@ export async function createGpRenderer(
     }
 
     api.scoreLoaded.on((score) => {
+      traceRenderer("score-loaded", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        scoreTrackCount: score.tracks?.length ?? 0,
+        masterBarCount: score.masterBars?.length ?? 0,
+      });
+      emitRenderLifecycle("score-loaded", { sessionToken });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3221,6 +3637,13 @@ export async function createGpRenderer(
     });
 
     api.renderStarted?.on(() => {
+      traceRenderer("renderStarted", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        renderCycleCounter,
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3229,6 +3652,14 @@ export async function createGpRenderer(
       if (renderedTrack) {
         confirmedActiveTrackIndex = renderedTrack.index;
         lastSuccessfulConfirmedTrackIndex = renderedTrack.index;
+        traceRenderer("active-track-confirmed", {
+          sessionToken,
+          trackIndex: renderedTrack.index,
+        });
+        emitRenderLifecycle("active-track-confirmed", {
+          sessionToken,
+          trackIndex: renderedTrack.index,
+        });
         hooks.onActiveTrackConfirmed(renderedTrack.index);
       }
 
@@ -3237,6 +3668,13 @@ export async function createGpRenderer(
     });
 
     api.renderFinished?.on(() => {
+      traceRenderer("renderFinished", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        renderCycleCounter,
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3259,6 +3697,12 @@ export async function createGpRenderer(
         lastRenderFinishedAtIso,
         barBoundsExtraction: lastBarBoundsExtractionDiagnostics,
       });
+      if (renderCycleCounter === 1) {
+        traceRenderer("initial-track-load-finished", {
+          sessionToken,
+          confirmedActiveTrackIndex,
+        });
+      }
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
       pendingRequestedTrackIndex = null;
@@ -3275,6 +3719,14 @@ export async function createGpRenderer(
     });
 
     api.postRenderFinished?.on(() => {
+      traceRenderer("postRenderFinished", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        sessionTargetTick,
+        sessionTargetTickApplied,
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3311,11 +3763,18 @@ export async function createGpRenderer(
 
       const started = api.play?.() === true;
       if (!started) {
-        hooks.onRuntimeNotice("Playback could not resume after zoom rerender.");
+        emitRuntimeNotice("Playback could not resume after zoom rerender.");
       }
     });
 
     api.error?.on((error) => {
+      traceRenderer("error-handler", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        error: summarizeError(error),
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3360,6 +3819,11 @@ export async function createGpRenderer(
     });
 
     lastRendererErrorStage = "load-start";
+    traceRenderer("score-load-start", {
+      sessionToken,
+      nextTrackIndex,
+      sourceBytesLength: sourceBytes.length,
+    });
     const loadWasStarted = api.load(sourceBytes, [nextTrackIndex]);
     if (!loadWasStarted) {
       clearRenderTimeout();
@@ -3396,6 +3860,14 @@ export async function createGpRenderer(
     }
 
     scheduleRenderTimeout(sessionToken, nextTrackIndex);
+    traceRenderer("switchTrackByReload-finish", {
+      nextTrackIndex,
+      sessionToken,
+      rendererBusy,
+    });
+    if (playerPhase === "recreating") {
+      setPlayerPhase("idle", "switchTrackByReload-finish");
+    }
     emitDebugInfo();
   };
 
@@ -3415,6 +3887,18 @@ export async function createGpRenderer(
             lastRendererErrorStage,
           },
         });
+      });
+    },
+    setStartupTransactionId: (startupTransactionId: number | null) => {
+      if (activeStartupTransactionId === startupTransactionId) {
+        return;
+      }
+      activeStartupTransactionId = startupTransactionId;
+      tracePlayer("startup-transaction-updated", {
+        activeStartupTransactionId,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
       });
     },
     setZoom: (nextZoomPercent: number) => {
@@ -3559,52 +4043,185 @@ export async function createGpRenderer(
       return applyMixerStateToApi(activeApi, "applyMixerState");
     },
     play: () => {
+      tracePlayer("play-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        rendererBusy,
+        zoomRerenderInFlight,
+        pendingProgrammaticSeek: pendingProgrammaticSeek
+          ? {
+              tick: pendingProgrammaticSeek.tick,
+              retryCount: pendingProgrammaticSeek.retryCount,
+              sessionToken: pendingProgrammaticSeek.sessionToken,
+              trackIndex: pendingProgrammaticSeek.trackIndex,
+            }
+          : null,
+      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
-
-      if (
-        pendingProgrammaticSeek &&
-        pendingProgrammaticSeek.sessionToken === activeSessionToken &&
-        pendingProgrammaticSeek.trackIndex === confirmedActiveTrackIndex
-      ) {
-        pendingPlayAfterProgrammaticSeek = true;
-        console.debug("[alphaTabGpRenderer] queued play after pending seek", {
-          tick: pendingProgrammaticSeek.tick,
-          trackIndex: pendingProgrammaticSeek.trackIndex,
+      if (playerPhase === "playing") {
+        const runtimeState = normalizePlaybackState(activeApi.playerState);
+        const runtimeThinksPlaying = runtimeState === "playing" || playbackRuntimeInfo.isPlaying === true;
+        if (!runtimeThinksPlaying) {
+          recoverFromFailedStartup("stale-playing-before-play", { escalate: true });
+          return;
+        }
+        tracePlayer("play-suppressed-invalid-state", {
+          reason: "already-playing",
+          playerPhase,
         });
+        return;
+      }
+      if (playerPhase === "starting") {
+        if (hasStartIntent) {
+          tracePlayer("play-suppressed-invalid-state", {
+            reason: "start-intent-in-flight",
+            playerPhase,
+          });
+          return;
+        }
+        setPlayerPhase("idle", "stale-starting-reset-before-play");
+      }
+      if (playerPhase === "invalid") {
+        tracePlayer("runtime-reset-before-replay", {
+          reason: "phase-invalid-before-play",
+          confirmedActiveTrackIndex,
+        });
+        void switchTrackByReload(confirmedActiveTrackIndex).catch(() => undefined);
         return;
       }
 
       playbackScrollLockSnapshot = captureRenderViewportScroll();
       const playbackApi = activeApi as AlphaTabApi & { play: () => boolean };
-      playbackApi.play();
+      try {
+        setPlayerPhase("starting", "play-called");
+        beginStartIntent();
+        playbackApi.play();
+      } catch (error) {
+        recoverFromFailedStartup("play-throw", { escalate: true });
+        setPlayerPhase("invalid", "play-throw");
+        tracePlayer("play-suppressed-invalid-state", {
+          reason: "play-throw",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        tracePlayer("runtime-reset-before-replay", {
+          reason: "play-throw",
+          confirmedActiveTrackIndex,
+        });
+        void switchTrackByReload(confirmedActiveTrackIndex).catch(() => undefined);
+        return;
+      }
+      tracePlayer("play-actually-dispatched-to-runtime", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
     },
     pause: () => {
+      tracePlayer("pause-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        return;
+      }
+      const runtimeState = normalizePlaybackState(activeApi.playerState);
+      const runtimeThinksPlaying = runtimeState === "playing" || playbackRuntimeInfo.isPlaying === true;
+      if (hasStartIntent || playerPhase === "starting") {
+        tracePlayer("pause-skipped-no-confirmed-start", {
+          playerPhase,
+          hasStartIntent,
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+        });
+        clearStartIntent("pause-no-confirmed-start");
+        setPlayerPhase("idle", "pause-no-confirmed-start");
         return;
       }
 
       playbackScrollLockSnapshot = null;
-      pendingPlayAfterProgrammaticSeek = false;
       const playbackApi = activeApi as AlphaTabApi & { pause: () => void };
-      playbackApi.pause();
+      try {
+        tracePlayer("pause-dispatch", {
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+          playerPhase,
+          runtimeState,
+          runtimeThinksPlaying,
+        });
+        playbackApi.pause();
+        clearStartIntent("pause-called");
+        setPlayerPhase("paused", "pause-called");
+        emitRenderLifecycle("pause-confirmed", {
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+        });
+      } catch (error) {
+        recoverFromFailedStartup("pause-throw", { escalate: true });
+        setPlayerPhase("invalid", "pause-throw");
+        tracePlayer("play-suppressed-invalid-state", {
+          reason: "pause-throw",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
     stop: () => {
+      tracePlayer("stop-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        hadPendingProgrammaticSeek: pendingProgrammaticSeek !== null,
+      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
 
       playbackScrollLockSnapshot = null;
       pendingProgrammaticSeek = null;
-      pendingPlayAfterProgrammaticSeek = false;
       const playbackApi = activeApi as AlphaTabApi & { stop: () => void };
-      playbackApi.stop();
+      try {
+        tracePlayer("stop-dispatch", {
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+          playerPhase,
+          runtimeState: normalizePlaybackState(activeApi.playerState),
+          runtimeIsPlaying: playbackRuntimeInfo.isPlaying,
+        });
+        playbackApi.stop();
+        clearStartIntent("stop-called");
+        setPlayerPhase("stopped", "stop-called");
+        emitRenderLifecycle("stop-confirmed", {
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+        });
+      } catch (error) {
+        recoverFromFailedStartup("stop-throw", { escalate: true });
+        setPlayerPhase("invalid", "stop-throw");
+        tracePlayer("stop-suppressed-invalid-state", {
+          reason: "stop-throw",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
     destroy: () => {
+      traceRenderer("destroy-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        rendererBusy,
+        zoomRerenderInFlight,
+      });
       activeSessionToken += 1;
       clearRenderTimeout();
       rendererBusy = false;
@@ -3613,8 +4230,8 @@ export async function createGpRenderer(
       pendingZoomPercent = null;
       inPlaceZoomPlaybackContext = null;
       pendingProgrammaticSeek = null;
-      pendingPlayAfterProgrammaticSeek = false;
       playbackScrollLockSnapshot = null;
+      clearStartIntent("destroy");
       destroyActiveRenderer();
       clearRenderHost(container);
     },
