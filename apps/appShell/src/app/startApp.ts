@@ -4365,7 +4365,28 @@ export function startApp(rootElement: HTMLElement): void {
           const eventSessionToken =
             typeof event.activeSessionToken === "number" && Number.isFinite(event.activeSessionToken)
               ? event.activeSessionToken
-              : null;
+              : typeof event.sessionToken === "number" && Number.isFinite(event.sessionToken)
+                ? event.sessionToken
+                : null;
+          const canApplySwitchTerminalForEventToken = (token: number | null): boolean => {
+            if (token === null || !state.requiresSwitchedTrackPlaybackReady) {
+              return false;
+            }
+            if (state.pendingTrackSwitchSessionToken === null) {
+              if (state.trackSwitchInProgress) {
+                state.pendingTrackSwitchSessionToken = token;
+                traceTrackSwitch("switched-track-session-bound", {
+                  source: "terminal-state-fallback-bind",
+                  selectedTrackIndex: state.selectedTrackIndex,
+                  requestedTrackIndex: state.requestedTrackIndex,
+                  sessionToken: token,
+                });
+                return true;
+              }
+              return false;
+            }
+            return state.pendingTrackSwitchSessionToken === token;
+          };
           if (eventSessionToken !== null) {
             state.latestRendererSessionToken = eventSessionToken;
           }
@@ -4373,8 +4394,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.rendererScoreLoaded = true;
           } else if (eventType === "render-start") {
             state.rendererRenderFinished = false;
-            if (state.requiresSwitchedTrackPlaybackReady && eventSessionToken !== null) {
-              state.pendingTrackSwitchSessionToken = eventSessionToken;
+            if (state.requiresSwitchedTrackPlaybackReady) {
               state.switchedTrackPlaybackReady = false;
               state.switchedTrackPlaybackReadySessionToken = null;
               state.switchedTrackSeekStillPending = false;
@@ -4455,22 +4475,44 @@ export function startApp(rootElement: HTMLElement): void {
               sessionToken: eventSessionToken,
             });
           } else if (eventType === "switched-track-seek-pending") {
-            if (
-              eventSessionToken !== null &&
-              state.pendingTrackSwitchSessionToken !== null &&
-              eventSessionToken === state.pendingTrackSwitchSessionToken
-            ) {
+            traceTrackSwitch("switched-track-seek-pending", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+              pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+            });
+            if (canApplySwitchTerminalForEventToken(eventSessionToken)) {
               state.switchedTrackSeekStillPending = true;
               state.switchedTrackPlaybackReady = false;
               state.switchedTrackPlaybackReadySessionToken = null;
+            } else {
+              traceTrackSwitch("switched-track-terminal-state-rejected", {
+                eventType,
+                reason: "seek-pending-session-mismatch",
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                sessionToken: eventSessionToken,
+                pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+              });
             }
           } else if (eventType === "switched-track-seek-cleared") {
-            if (
-              eventSessionToken !== null &&
-              state.pendingTrackSwitchSessionToken !== null &&
-              eventSessionToken === state.pendingTrackSwitchSessionToken
-            ) {
+            traceTrackSwitch("switched-track-seek-cleared", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+              pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+            });
+            if (canApplySwitchTerminalForEventToken(eventSessionToken)) {
               state.switchedTrackSeekStillPending = false;
+            } else {
+              traceTrackSwitch("switched-track-terminal-state-rejected", {
+                eventType,
+                reason: "seek-cleared-session-mismatch",
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                sessionToken: eventSessionToken,
+                pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+              });
             }
           } else if (eventType === "switched-track-playback-ready") {
             const matchingSwitchSession =
@@ -4502,33 +4544,68 @@ export function startApp(rootElement: HTMLElement): void {
               });
             }
           } else if (eventType === "switched-track-reload-complete-playable") {
-            const matchingSwitchSession =
-              eventSessionToken !== null &&
-              state.pendingTrackSwitchSessionToken !== null &&
-              eventSessionToken === state.pendingTrackSwitchSessionToken;
-            if (matchingSwitchSession) {
+            if (canApplySwitchTerminalForEventToken(eventSessionToken)) {
               state.trackSwitchInProgress = false;
               state.requestedTrackIndex = null;
+              state.requiresSwitchedTrackPlaybackReady = false;
+              state.pendingTrackSwitchSessionToken = null;
               state.switchedTrackSeekStillPending = false;
-              state.switchedTrackPlaybackReady = true;
-              state.switchedTrackPlaybackReadySessionToken = eventSessionToken;
+              state.switchedTrackPlaybackReady = false;
+              state.switchedTrackPlaybackReadySessionToken = null;
+              state.trackSwitchStartedAtMs = null;
+              traceTrackSwitch("switched-track-terminal-state-applied", {
+                eventType,
+                result: "success",
+                selectedTrackIndex: state.selectedTrackIndex,
+                sessionToken: eventSessionToken,
+              });
               traceTrackSwitch("switched-track-reload-complete-playable", {
                 selectedTrackIndex: state.selectedTrackIndex,
                 sessionToken: eventSessionToken,
               });
+            } else {
+              traceTrackSwitch("switched-track-terminal-state-rejected", {
+                eventType,
+                result: "success",
+                reason: "session-mismatch-or-switch-not-active",
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                sessionToken: eventSessionToken,
+                pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+              });
             }
           } else if (eventType === "switched-track-reload-failed") {
-            traceTrackSwitch("switched-track-reload-failed", {
-              selectedTrackIndex: state.selectedTrackIndex,
-              requestedTrackIndex: state.requestedTrackIndex,
-              sessionToken: eventSessionToken,
-            });
-            state.trackSwitchInProgress = false;
-            state.requestedTrackIndex = null;
-            state.requiresSwitchedTrackPlaybackReady = false;
-            state.switchedTrackPlaybackReady = false;
-            state.switchedTrackPlaybackReadySessionToken = null;
-            state.switchedTrackSeekStillPending = false;
+            if (canApplySwitchTerminalForEventToken(eventSessionToken)) {
+              traceTrackSwitch("switched-track-reload-failed", {
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                sessionToken: eventSessionToken,
+              });
+              state.trackSwitchInProgress = false;
+              state.requestedTrackIndex = null;
+              state.requiresSwitchedTrackPlaybackReady = false;
+              state.switchedTrackPlaybackReady = false;
+              state.pendingTrackSwitchSessionToken = null;
+              state.switchedTrackPlaybackReadySessionToken = null;
+              state.switchedTrackSeekStillPending = false;
+              state.trackSwitchStartedAtMs = null;
+              traceTrackSwitch("switched-track-terminal-state-applied", {
+                eventType,
+                result: "failure",
+                selectedTrackIndex: state.selectedTrackIndex,
+                sessionToken: eventSessionToken,
+              });
+            } else {
+              traceTrackSwitch("switched-track-terminal-state-rejected", {
+                eventType,
+                result: "failure",
+                reason: "session-mismatch-or-switch-not-active",
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                sessionToken: eventSessionToken,
+                pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+              });
+            }
           } else if (eventType === "player-runtime-not-ready-worker-missing") {
             tracePlayback("player-runtime-not-ready-worker-missing", {
               sessionToken: eventSessionToken,
