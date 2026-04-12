@@ -6,6 +6,7 @@ interface AlphaTabApi {
   load: (scoreData: unknown, trackIndexes?: number[]) => boolean;
   score?: AlphaTabScore;
   tracks?: AlphaTabTrack[];
+  renderTracks?: (tracks: AlphaTabTrack[]) => void;
   changeTrackMute?: (tracks: AlphaTabTrack[], mute: boolean) => void;
   changeTrackSolo?: (tracks: AlphaTabTrack[], solo: boolean) => void;
   changeTrackVolume?: (tracks: AlphaTabTrack[], volume: number) => void;
@@ -4038,21 +4039,89 @@ export async function createGpRenderer(
 
   await switchTrackByReload(selectedTrackIndex);
 
+  const switchTrackDirect = (nextTrackIndex: number, targetTick?: number | null): void => {
+    const api = activeApi;
+    if (!api) {
+      return;
+    }
+    const nextTrack = api.score?.tracks?.find((track) => track.index === nextTrackIndex) ?? null;
+    if (!nextTrack) {
+      return;
+    }
+    const resumeTick = Number.isFinite(targetTick)
+      ? (targetTick as number)
+      : (playbackRuntimeInfo.currentTick ?? api.tickPosition ?? 0);
+    const wasPlaying =
+      playbackRuntimeInfo.isPlaying === true || normalizePlaybackState(api.playerState) === "playing";
+    traceRenderer("track-switch-direct-start", {
+      nextTrackIndex,
+      confirmedActiveTrackIndex,
+      requestedTrackIndex,
+      wasPlaying,
+      resumeTick,
+    });
+    requestedTrackIndex = nextTrackIndex;
+    pendingRequestedTrackIndex = null;
+    pendingProgrammaticSeek = null;
+    try {
+      if (typeof api.renderTracks === "function") {
+        api.renderTracks([nextTrack]);
+      } else {
+        api.tracks = [nextTrack];
+        api.render?.();
+      }
+      confirmedActiveTrackIndex = nextTrackIndex;
+      lastSuccessfulConfirmedTrackIndex = nextTrackIndex;
+      requestedTrackIndex = nextTrackIndex;
+      emitRenderLifecycle("active-track-confirmed", {
+        activeSessionToken,
+        trackIndex: nextTrackIndex,
+      });
+      hooks.onActiveTrackConfirmed(nextTrackIndex);
+      hooks.onTrackRenderCommitted(nextTrackIndex);
+      if (Number.isFinite(resumeTick)) {
+        seekToTick(resumeTick);
+      }
+      if (wasPlaying && isPlaybackApiAvailable(api) && typeof api.play === "function") {
+        window.setTimeout(() => {
+          if (!activeApi || activeApi !== api) {
+            return;
+          }
+          const runtimeState = normalizePlaybackState(api.playerState);
+          if (runtimeState !== "playing") {
+            api.play?.();
+          }
+          traceRenderer("track-switch-direct-playback-restored", {
+            nextTrackIndex,
+            resumeTick,
+            runtimeState: normalizePlaybackState(api.playerState),
+          });
+        }, 0);
+      }
+      traceRenderer("track-switch-direct-applied", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+        resumeTick,
+      });
+      emitDebugInfo();
+    } catch (error) {
+      hooks.onRenderError({
+        message: error instanceof Error ? error.message : "Could not switch GP track.",
+        details: {
+          attemptId: activeRenderAttemptId,
+          stage: "selectTrackDirect",
+          error: summarizeError(error),
+          renderCycleCounter,
+          lastRendererErrorStage,
+          nextTrackIndex,
+        },
+      });
+    }
+  };
+
   return {
     selectTrack: (trackIndex: number, targetTick?: number | null) => {
-      void switchTrackByReload(trackIndex, { targetTick: targetTick ?? null }).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : "Could not switch GP track.";
-        hooks.onRenderError({
-          message,
-          details: {
-            attemptId: activeRenderAttemptId,
-            stage: "selectTrack",
-            error: summarizeError(error),
-            renderCycleCounter,
-            lastRendererErrorStage,
-          },
-        });
-      });
+      switchTrackDirect(trackIndex, targetTick ?? null);
     },
     setStartupTransactionId: (startupTransactionId: number | null) => {
       if (activeStartupTransactionId === startupTransactionId) {

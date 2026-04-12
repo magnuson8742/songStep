@@ -3506,24 +3506,10 @@ export function startApp(rootElement: HTMLElement): void {
             playbackTransportActive: state.playbackTransportActive,
             pendingPlaybackStart: state.pendingPlaybackStart !== null,
           });
-          const hotTrackSwitchCandidate =
-            state.gpRenderer !== null &&
-            state.rendererScoreLoaded &&
-            state.rendererRenderFinished &&
-            (state.rendererPlayerReady || state.rendererFallbackReady || state.rendererRuntimeWarm);
-          const trackSwitchPath = hotTrackSwitchCandidate ? "hot" : "cold";
-          if (trackSwitchPath === "hot") {
-            traceTrackSwitch("hot-track-switch-path-enter", {
-              previousTrackIndex: state.selectedTrackIndex,
-              nextTrackIndex: trackIndex,
-            });
-          } else {
-            traceTrackSwitch("cold-boot-path-enter", {
-              previousTrackIndex: state.selectedTrackIndex,
-              nextTrackIndex: trackIndex,
-              reason: "renderer-not-warm",
-            });
-          }
+          traceTrackSwitch("track-switch-direct-start", {
+            previousTrackIndex: state.selectedTrackIndex,
+            nextTrackIndex: trackIndex,
+          });
           logPlaybackPipeline("track-switch-start", {
             fromTrackIndex: state.selectedTrackIndex,
             requestedTrackIndex: trackIndex,
@@ -3544,15 +3530,12 @@ export function startApp(rootElement: HTMLElement): void {
             nextTrackIndex: trackIndex,
             previousTrackIndex: state.selectedTrackIndex,
           });
-          const preservedTick = state.gpRenderer?.getBarTickRange(1)?.startTick ?? 0;
+          const fallbackTrackStartTick = state.gpRenderer?.getBarTickRange(1)?.startTick ?? 0;
+          const preservedTick = state.playbackCurrentTick ?? fallbackTrackStartTick;
           state.desiredTrackSwitchTick = preservedTick;
-          state.desiredTrackSwitchBar = 1;
+          state.desiredTrackSwitchBar = state.playbackCurrentBar ?? 1;
           state.desiredTrackSwitchSourceTrackIndex = state.selectedTrackIndex;
           state.requestedTrackIndex = trackIndex;
-          state.playbackCurrentBar = null;
-          state.playbackCurrentTick = null;
-          state.playbackCurrentBarStartTick = null;
-          state.playbackCurrentBarEndTickExclusive = null;
           state.playerPositionPayloadShape = null;
           state.playerStatePayloadShape = null;
           state.currentBarSourcePath = null;
@@ -3560,40 +3543,17 @@ export function startApp(rootElement: HTMLElement): void {
           state.clickCounter += 1;
           state.lastClickTimestampIso = new Date().toISOString();
           state.selectionFired = true;
-          state.trackSwitchInProgress = true;
+          state.trackSwitchInProgress = false;
           state.trackSwitchStartedAtMs = Date.now();
-          state.requiresSwitchedTrackPlaybackReady = true;
+          state.requiresSwitchedTrackPlaybackReady = false;
           state.switchedTrackPlaybackReady = false;
           state.pendingTrackSwitchSessionToken = null;
           state.switchedTrackPlaybackReadySessionToken = null;
           state.switchedTrackSeekStillPending = false;
-          state.rendererRenderFinished = false;
-          if (trackSwitchPath === "cold") {
-            state.rendererPlayerReady = false;
-            state.rendererFallbackReady = false;
-            state.rendererRuntimeWarm = false;
-          }
-          const hasActivePlaybackToCancel =
-            state.pendingPlaybackStart !== null ||
-            state.playbackTransportActive ||
-            state.countInInProgress ||
-            state.playbackIsPlaying === true;
-          if (hasActivePlaybackToCancel) {
-            hardCancelPlaybackPipeline("track-switch", { resetPosition: true });
-            traceTrackSwitch("onTrackSelectionChange-after-hard-cancel", {
-              nextTrackIndex: trackIndex,
-              playbackTransportActive: state.playbackTransportActive,
-              pendingPlaybackStart: state.pendingPlaybackStart !== null,
-            });
-            logPlaybackPipeline("track-switch-after-hard-cancel", {
-              requestedTrackIndex: trackIndex,
-            });
-          } else {
-            traceTrackSwitch("onTrackSelectionChange-minimal-cancel", {
-              nextTrackIndex: trackIndex,
-              reason: "idle-track-switch-no-active-playback",
-            });
-          }
+          traceTrackSwitch("onTrackSelectionChange-minimal-cancel", {
+            nextTrackIndex: trackIndex,
+            reason: "direct-track-switch-no-playback-teardown",
+          });
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;
