@@ -3528,6 +3528,10 @@ export async function createGpRenderer(
             });
             hooks.onProgrammaticSeekConfirmed(confirmedActiveTrackIndex, pendingProgrammaticSeek.tick);
             pendingProgrammaticSeek = null;
+            emitRenderLifecycle("switched-track-seek-cleared", {
+              sessionToken,
+              trackIndex: confirmedActiveTrackIndex,
+            });
             maybeEmitSwitchedTrackPlaybackReady("player-position-pending-seek-cleared");
           } else if (pendingProgrammaticSeek.retryCount < 2 && api.isReadyForPlayback !== false) {
             traceSeek("pendingProgrammaticSeek-retry", {
@@ -3803,6 +3807,11 @@ export async function createGpRenderer(
       if (!sessionTargetTickApplied && sessionTargetTick !== null) {
         sessionTargetTickApplied = true;
         seekToTick(sessionTargetTick);
+        emitRenderLifecycle("switched-track-seek-pending", {
+          sessionToken,
+          trackIndex: committedTrackIndex,
+          targetTick: sessionTargetTick,
+        });
       }
       maybeEmitSwitchedTrackPlaybackReady("post-render-finished");
       if (!inPlaceZoomPlaybackContext) {
