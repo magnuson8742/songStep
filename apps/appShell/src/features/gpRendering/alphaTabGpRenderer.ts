@@ -1203,6 +1203,41 @@ export async function createGpRenderer(
     });
   };
 
+  const probeAlphaTabWorkerPath = async (): Promise<void> => {
+    const workerCandidatePath = "/node_modules/.vite/deps/alphaTab.worker.mjs";
+    try {
+      const response = await fetch(workerCandidatePath, {
+        method: "HEAD",
+        cache: "no-store",
+      });
+      if (response.ok) {
+        traceRenderer("alphaTab-worker-path-resolved", {
+          workerCandidatePath,
+          status: response.status,
+        });
+        return;
+      }
+      traceRenderer("alphaTab-worker-path-failed", {
+        workerCandidatePath,
+        status: response.status,
+      });
+      emitRenderLifecycle("player-runtime-not-ready-worker-missing", {
+        workerCandidatePath,
+        status: response.status,
+      });
+    } catch (error) {
+      traceRenderer("alphaTab-worker-path-failed", {
+        workerCandidatePath,
+        error: summarizeError(error),
+      });
+      emitRenderLifecycle("player-runtime-not-ready-worker-missing", {
+        workerCandidatePath,
+        error: summarizeError(error),
+      });
+    }
+  };
+  void probeAlphaTabWorkerPath();
+
   const resetPlaybackRuntimeInfo = (): void => {
     playbackRuntimeInfo = {
       isPlaying: null,
@@ -3657,6 +3692,10 @@ export async function createGpRenderer(
           hasPendingProgrammaticSeek: pendingProgrammaticSeek !== null,
         });
         emitRenderLifecycle("player-ready", { sessionToken });
+        emitRenderLifecycle("player-runtime-ready", {
+          sessionToken,
+          source: "player-ready",
+        });
         if (
           !pendingProgrammaticSeek ||
           pendingProgrammaticSeek.sessionToken !== sessionToken ||

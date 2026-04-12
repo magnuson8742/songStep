@@ -7,6 +7,9 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [alphaTab()],
+  optimizeDeps: {
+    exclude: ["@coderline/alphatab", "@coderline/alphatab-vite"],
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
@@ -22,8 +25,9 @@ export default defineConfig(async () => ({
           protocol: "ws",
           host,
           port: 1421,
+          clientPort: 1421,
         }
-      : undefined,
+      : false,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],

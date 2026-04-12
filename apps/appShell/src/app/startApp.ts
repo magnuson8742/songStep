@@ -412,7 +412,7 @@ function resolveTransportUiState(state: AppState): {
     confirmedTrackIndex !== null &&
     !state.trackSwitchInProgress &&
     state.requestedTrackIndex === null;
-  const runtimeReady = state.rendererPlayerReady || state.rendererFallbackReady || state.rendererRuntimeWarm;
+  const runtimeReady = state.rendererPlayerReady;
   const switchedTrackReadyGateSatisfied =
     !state.requiresSwitchedTrackPlaybackReady ||
     (state.switchedTrackPlaybackReady &&
@@ -533,12 +533,36 @@ function updateTransportControls(rootElement: HTMLElement, state: AppState, reas
       switchedTrackPlaybackReadySessionToken: state.switchedTrackPlaybackReadySessionToken,
     });
   }
+  if (
+    uiStateChanged &&
+    !transportUi.canPlay &&
+    state.gpRenderer !== null &&
+    state.rendererScoreLoaded &&
+    state.rendererRenderFinished &&
+    !state.rendererPlayerReady
+  ) {
+    tracePlayback("play-unlock-rejected-because-runtime-not-ready", {
+      reason,
+      rendererPlayerReady: state.rendererPlayerReady,
+      rendererFallbackReady: state.rendererFallbackReady,
+      rendererRuntimeWarm: state.rendererRuntimeWarm,
+    });
+  }
   if (transportUi.canPlay && uiStateChanged) {
+    const unlockSource = state.requiresSwitchedTrackPlaybackReady
+      ? "switched-track-playback-ready"
+      : "player-runtime-ready";
     tracePlayback("play-unlock-source", {
       reason,
-      source: state.requiresSwitchedTrackPlaybackReady ? "switched-track-playback-ready" : "runtime-ready",
+      source: unlockSource,
       switchedTrackPlaybackReady: state.switchedTrackPlaybackReady,
     });
+    if (unlockSource === "player-runtime-ready") {
+      tracePlayback("cold-load-playback-ready", {
+        reason,
+        selectedTrackIndex: state.selectedTrackIndex,
+      });
+    }
     tracePlayback("play-button-enabled", { reason, uiState: transportUi.uiState });
   } else if (transportUi.playDisabledReason && uiStateChanged) {
     tracePlayback("play-button-disabled-reason", {
@@ -3869,7 +3893,7 @@ export function startApp(rootElement: HTMLElement): void {
             readiness.requestedTrackIndex === null;
           const playbackReadyPrimary =
             playbackReadyBase &&
-            (readiness.rendererPlayerReady || readiness.rendererFallbackReady || state.rendererRuntimeWarm) &&
+            readiness.rendererPlayerReady &&
             (!state.requiresSwitchedTrackPlaybackReady ||
               (state.switchedTrackPlaybackReady &&
                 !state.switchedTrackSeekStillPending &&
@@ -4360,6 +4384,19 @@ export function startApp(rootElement: HTMLElement): void {
           } else if (eventType === "player-ready") {
             state.rendererPlayerReady = true;
             state.rendererRuntimeWarm = true;
+            tracePlayback("player-runtime-ready", {
+              source: "render-lifecycle:player-ready",
+              sessionToken: eventSessionToken,
+              selectedTrackIndex: state.selectedTrackIndex,
+            });
+          } else if (eventType === "player-runtime-ready") {
+            state.rendererPlayerReady = true;
+            state.rendererRuntimeWarm = true;
+            tracePlayback("player-runtime-ready", {
+              source: "render-lifecycle:player-runtime-ready",
+              sessionToken: eventSessionToken,
+              selectedTrackIndex: state.selectedTrackIndex,
+            });
           } else if (eventType === "startup-confirmed") {
             syncStartupConfirmedState("render-lifecycle-startup-confirmed");
           } else if (eventType === "pause-confirmed") {
@@ -4440,6 +4477,11 @@ export function startApp(rootElement: HTMLElement): void {
                 switchedTrackSeekStillPending: state.switchedTrackSeekStillPending,
               });
             }
+          } else if (eventType === "player-runtime-not-ready-worker-missing") {
+            tracePlayback("player-runtime-not-ready-worker-missing", {
+              sessionToken: eventSessionToken,
+              selectedTrackIndex: state.selectedTrackIndex,
+            });
           }
           appendSessionDebugEvent(state.sessionDebugLogger, {
             ...event,
