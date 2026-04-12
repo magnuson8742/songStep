@@ -3,12 +3,16 @@ import { alphaTab } from "@coderline/alphatab-vite";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+// @ts-expect-error process is a nodejs global
+const tauriPlatform = process.env.TAURI_ENV_PLATFORM;
+const isAndroid = tauriPlatform === "android";
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [alphaTab()],
   optimizeDeps: {
     exclude: ["@coderline/alphatab", "@coderline/alphatab-vite"],
+    noDiscovery: true,
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
@@ -19,8 +23,10 @@ export default defineConfig(async () => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
-    hmr: host
+    host: host || (isAndroid ? "0.0.0.0" : false),
+    hmr: isAndroid
+      ? false
+      : host
       ? {
           protocol: "ws",
           host,

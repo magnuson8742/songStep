@@ -366,6 +366,11 @@ const BRAVURA_FONT_DIRECTORY = "/font/";
 const SONIVOX_SOUND_FONT_PATH = "/soundfont/sonivox.sf2";
 const ENABLE_LAZY_LOADING_DEFAULT = false;
 const USE_WORKERS = false;
+const ALPHATAB_WORKER_SCRIPT_CANDIDATES = [
+  "/node_modules/@coderline/alphatab/dist/alphaTab.worker.mjs",
+  "/node_modules/@coderline/alphatab/dist/alphaTab.worker.js",
+] as const;
+const ALPHATAB_WORKER_SCRIPT_PATH = ALPHATAB_WORKER_SCRIPT_CANDIDATES[0];
 const RENDER_TIMEOUT_MS = 5000;
 const HEAVY_TRACK_NOTE_THRESHOLD = 5000;
 const HEAVY_TRACK_BAR_THRESHOLD = 400;
@@ -734,6 +739,7 @@ function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StavePr
       fontDirectory: BRAVURA_FONT_DIRECTORY,
       enableLazyLoading,
       useWorkers: USE_WORKERS,
+      scriptFile: ALPHATAB_WORKER_SCRIPT_PATH,
     },
     display: {
       staveProfile,
@@ -745,8 +751,14 @@ function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StavePr
   };
 
   const unsafeSettings = settings as unknown as {
+    core?: Record<string, unknown>;
     player?: Record<string, unknown>;
     display?: Record<string, unknown>;
+  };
+  unsafeSettings.core = {
+    ...(unsafeSettings.core ?? {}),
+    scriptFile: ALPHATAB_WORKER_SCRIPT_PATH,
+    workerScriptFile: ALPHATAB_WORKER_SCRIPT_PATH,
   };
   unsafeSettings.player = {
     ...(unsafeSettings.player ?? {}),
@@ -1204,37 +1216,29 @@ export async function createGpRenderer(
   };
 
   const probeAlphaTabWorkerPath = async (): Promise<void> => {
-    const workerCandidatePath = "/node_modules/.vite/deps/alphaTab.worker.mjs";
-    try {
-      const response = await fetch(workerCandidatePath, {
-        method: "HEAD",
-        cache: "no-store",
-      });
-      if (response.ok) {
-        traceRenderer("alphaTab-worker-path-resolved", {
-          workerCandidatePath,
-          status: response.status,
+    for (const workerCandidatePath of ALPHATAB_WORKER_SCRIPT_CANDIDATES) {
+      try {
+        const response = await fetch(workerCandidatePath, {
+          method: "HEAD",
+          cache: "no-store",
         });
-        return;
+        if (response.ok) {
+          traceRenderer("alphaTab-worker-path-resolved", {
+            workerCandidatePath,
+            status: response.status,
+          });
+          return;
+        }
+      } catch {
+        // Try next candidate path.
       }
-      traceRenderer("alphaTab-worker-path-failed", {
-        workerCandidatePath,
-        status: response.status,
-      });
-      emitRenderLifecycle("player-runtime-not-ready-worker-missing", {
-        workerCandidatePath,
-        status: response.status,
-      });
-    } catch (error) {
-      traceRenderer("alphaTab-worker-path-failed", {
-        workerCandidatePath,
-        error: summarizeError(error),
-      });
-      emitRenderLifecycle("player-runtime-not-ready-worker-missing", {
-        workerCandidatePath,
-        error: summarizeError(error),
-      });
     }
+    traceRenderer("alphaTab-worker-path-failed", {
+      workerCandidates: ALPHATAB_WORKER_SCRIPT_CANDIDATES,
+    });
+    emitRenderLifecycle("player-runtime-not-ready-worker-missing", {
+      workerCandidates: ALPHATAB_WORKER_SCRIPT_CANDIDATES,
+    });
   };
   void probeAlphaTabWorkerPath();
 
