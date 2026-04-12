@@ -3902,7 +3902,7 @@ export function startApp(rootElement: HTMLElement): void {
 
           if (!playbackReadyPrimary) {
             if (state.requiresSwitchedTrackPlaybackReady && !state.switchedTrackPlaybackReady) {
-              tracePlayback("play-blocked-waiting-for-switched-track-playback-ready", {
+              tracePlayback("play-blocked-waiting-for-switched-track-reload-complete", {
                 requestId,
                 selectedTrackIndex: state.selectedTrackIndex,
                 confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
@@ -3910,7 +3910,7 @@ export function startApp(rootElement: HTMLElement): void {
                 requestedTrackIndex: readiness.requestedTrackIndex,
               });
             } else if (state.requiresSwitchedTrackPlaybackReady && state.switchedTrackSeekStillPending) {
-              tracePlayback("play-blocked-waiting-for-switched-track-playback-ready", {
+              tracePlayback("play-blocked-waiting-for-switched-track-reload-complete", {
                 requestId,
                 selectedTrackIndex: state.selectedTrackIndex,
                 reason: "switched-track-seek-still-pending",
@@ -4430,6 +4430,30 @@ export function startApp(rootElement: HTMLElement): void {
             state.rendererRuntimeWarm = true;
           } else if (eventType === "active-track-confirmed") {
             state.trackSwitchInProgress = false;
+          } else if (eventType === "switched-track-reload-start") {
+            traceTrackSwitch("switched-track-reload-start", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+            });
+          } else if (eventType === "switched-track-reload-render-finished") {
+            traceTrackSwitch("switched-track-reload-render-finished", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+            });
+          } else if (eventType === "switched-track-reload-post-render-finished") {
+            traceTrackSwitch("switched-track-reload-post-render-finished", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+            });
+          } else if (eventType === "switched-track-reload-seek-cleared") {
+            traceTrackSwitch("switched-track-reload-seek-cleared", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+            });
           } else if (eventType === "switched-track-seek-pending") {
             if (
               eventSessionToken !== null &&
@@ -4477,6 +4501,34 @@ export function startApp(rootElement: HTMLElement): void {
                 switchedTrackSeekStillPending: state.switchedTrackSeekStillPending,
               });
             }
+          } else if (eventType === "switched-track-reload-complete-playable") {
+            const matchingSwitchSession =
+              eventSessionToken !== null &&
+              state.pendingTrackSwitchSessionToken !== null &&
+              eventSessionToken === state.pendingTrackSwitchSessionToken;
+            if (matchingSwitchSession) {
+              state.trackSwitchInProgress = false;
+              state.requestedTrackIndex = null;
+              state.switchedTrackSeekStillPending = false;
+              state.switchedTrackPlaybackReady = true;
+              state.switchedTrackPlaybackReadySessionToken = eventSessionToken;
+              traceTrackSwitch("switched-track-reload-complete-playable", {
+                selectedTrackIndex: state.selectedTrackIndex,
+                sessionToken: eventSessionToken,
+              });
+            }
+          } else if (eventType === "switched-track-reload-failed") {
+            traceTrackSwitch("switched-track-reload-failed", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+            });
+            state.trackSwitchInProgress = false;
+            state.requestedTrackIndex = null;
+            state.requiresSwitchedTrackPlaybackReady = false;
+            state.switchedTrackPlaybackReady = false;
+            state.switchedTrackPlaybackReadySessionToken = null;
+            state.switchedTrackSeekStillPending = false;
           } else if (eventType === "player-runtime-not-ready-worker-missing") {
             tracePlayback("player-runtime-not-ready-worker-missing", {
               sessionToken: eventSessionToken,

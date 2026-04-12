@@ -3243,6 +3243,13 @@ export async function createGpRenderer(
         lastRenderFinishedAtIso,
         renderTimeoutHit,
       });
+      if (isHotTrackSwitch) {
+        emitRenderLifecycle("switched-track-reload-failed", {
+          sessionToken,
+          nextTrackIndex: timedOutTrackIndex,
+          stage: "renderFinished-timeout",
+        });
+      }
       hooks.onRenderError({
         message: `Track ${timedOutTrackIndex + 1} timed out while rendering.`,
         details: {
@@ -3269,6 +3276,10 @@ export async function createGpRenderer(
     const isHotTrackSwitch = hasWarmRuntime && renderCycleCounter > 0 && nextTrackIndex !== confirmedActiveTrackIndex;
     if (isHotTrackSwitch) {
       traceRenderer("hot-track-switch-path-enter", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+      emitRenderLifecycle("switched-track-reload-start", {
         nextTrackIndex,
         confirmedActiveTrackIndex,
       });
@@ -3400,6 +3411,12 @@ export async function createGpRenderer(
       }
       sessionSwitchedTrackPlaybackReadyEmitted = true;
       traceRenderer("hot-track-switch-playback-ready", {
+        sessionToken,
+        stage,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+      emitRenderLifecycle("switched-track-reload-complete-playable", {
         sessionToken,
         stage,
         requestedTrackIndex,
@@ -3567,6 +3584,10 @@ export async function createGpRenderer(
             });
             hooks.onProgrammaticSeekConfirmed(confirmedActiveTrackIndex, pendingProgrammaticSeek.tick);
             pendingProgrammaticSeek = null;
+            emitRenderLifecycle("switched-track-reload-seek-cleared", {
+              sessionToken,
+              trackIndex: confirmedActiveTrackIndex,
+            });
             emitRenderLifecycle("switched-track-seek-cleared", {
               sessionToken,
               trackIndex: confirmedActiveTrackIndex,
@@ -3808,6 +3829,12 @@ export async function createGpRenderer(
         lastRenderFinishedAtIso,
         barBoundsExtraction: lastBarBoundsExtractionDiagnostics,
       });
+      if (isHotTrackSwitch) {
+        emitRenderLifecycle("switched-track-reload-render-finished", {
+          sessionToken,
+          trackIndex: confirmedActiveTrackIndex,
+        });
+      }
       if (renderCycleCounter === 1) {
         traceRenderer("initial-track-load-finished", {
           sessionToken,
@@ -3845,6 +3872,12 @@ export async function createGpRenderer(
         return;
       }
       const committedTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+      if (isHotTrackSwitch) {
+        emitRenderLifecycle("switched-track-reload-post-render-finished", {
+          sessionToken,
+          trackIndex: committedTrackIndex,
+        });
+      }
       sessionPostRenderFinishedCompleted = true;
       hooks.onTrackRenderCommitted(committedTrackIndex);
       if (!sessionTargetTickApplied && sessionTargetTick !== null) {
@@ -3921,6 +3954,13 @@ export async function createGpRenderer(
         rawError: summarizeError(error),
       };
       emitRenderLifecycle("render-error", errorDetails);
+      if (isHotTrackSwitch) {
+        emitRenderLifecycle("switched-track-reload-failed", {
+          sessionToken,
+          nextTrackIndex,
+          stage: "error-event",
+        });
+      }
       hooks.onRenderError({
         message: "alphaTab failed to render this GP file.",
         details: errorDetails,
@@ -3967,6 +4007,13 @@ export async function createGpRenderer(
         lastRenderFinishedAtIso,
         renderTimeoutHit,
       });
+      if (isHotTrackSwitch) {
+        emitRenderLifecycle("switched-track-reload-failed", {
+          sessionToken,
+          nextTrackIndex,
+          stage: "load",
+        });
+      }
       const queuedTrackIndex = pendingRequestedTrackIndex;
       pendingRequestedTrackIndex = null;
       if (queuedTrackIndex !== null) {
