@@ -4972,6 +4972,33 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onRenderError: (payload) => {
           const message = payload.message;
+          const errorStage =
+            typeof payload.details?.stage === "string" ? payload.details.stage : null;
+          const previousTrackIndex = state.desiredTrackSwitchSourceTrackIndex;
+          const rollbackTick = state.desiredTrackSwitchTick;
+          if (
+            errorStage === "selectTrackDirect" &&
+            previousTrackIndex !== null &&
+            state.gpRenderer !== null
+          ) {
+            traceTrackSwitch("track-switch-render-error-rollback", {
+              targetIndex: state.requestedTrackIndex,
+              prevIndex: previousTrackIndex,
+              errorStage,
+            });
+            state.projectStatusMessage = `Track render failed. Reverted to track ${previousTrackIndex + 1}.`;
+            state.requestedTrackIndex = null;
+            state.trackSwitchInProgress = false;
+            state.requiresSwitchedTrackPlaybackReady = false;
+            state.switchedTrackPlaybackReady = false;
+            state.pendingTrackSwitchSessionToken = null;
+            state.switchedTrackPlaybackReadySessionToken = null;
+            state.switchedTrackSeekStillPending = false;
+            state.gpRenderer.selectTrack(previousTrackIndex, rollbackTick ?? 0);
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            updateTransportControls(rootElement, state, "track-switch-render-error-rollback");
+            return;
+          }
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "render-error",
             timestamp: new Date().toISOString(),

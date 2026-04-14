@@ -31,6 +31,8 @@ interface AlphaTabApi {
     on: (handler: () => void) => void;
   };
   isReadyForPlayback?: boolean;
+  endTime?: number;
+  endTick?: number;
   playerState?: number | string | null;
   tickPosition?: number;
   playerStateChanged?: {
@@ -3718,6 +3720,11 @@ export async function createGpRenderer(
           confirmedActiveTrackIndex,
           hasPendingProgrammaticSeek: pendingProgrammaticSeek !== null,
         });
+        traceRenderer("playback-ready", {
+          isReadyForPlayback: api.isReadyForPlayback === true,
+          endTimeMs: typeof api.endTime === "number" ? api.endTime : null,
+          endTick: typeof api.endTick === "number" ? api.endTick : null,
+        });
         emitRenderLifecycle("player-ready", { sessionToken });
         emitRenderLifecycle("player-runtime-ready", {
           sessionToken,
@@ -4045,8 +4052,30 @@ export async function createGpRenderer(
     if (!api) {
       return;
     }
-    const nextTrack = api.score?.tracks?.find((track) => track.index === nextTrackIndex) ?? null;
+    traceRenderer("track-switch-request", {
+      targetIndex: nextTrackIndex,
+      prevIndex: confirmedActiveTrackIndex,
+    });
+    const scoreTracks = api.score?.tracks ?? [];
+    const trackByIndex = scoreTracks.find((track) => track.index === nextTrackIndex) ?? null;
+    const trackByPosition =
+      nextTrackIndex >= 0 && nextTrackIndex < scoreTracks.length ? (scoreTracks[nextTrackIndex] ?? null) : null;
+    const nextTrack = trackByIndex ?? trackByPosition;
     if (!nextTrack) {
+      traceRenderer("track-switch-invalid-index", {
+        targetIndex: nextTrackIndex,
+        prevIndex: confirmedActiveTrackIndex,
+        scoreTrackCount: scoreTracks.length,
+      });
+      return;
+    }
+    if (!nextTrack.staves || nextTrack.staves.length === 0) {
+      traceRenderer("track-switch-track-undefined", {
+        targetIndex: nextTrackIndex,
+        prevIndex: confirmedActiveTrackIndex,
+        trackIndex: nextTrack.index,
+        hasStaves: false,
+      });
       return;
     }
     const resumeTick = Number.isFinite(targetTick)
@@ -4061,12 +4090,13 @@ export async function createGpRenderer(
       wasPlaying,
       resumeTick,
     });
-    const directRenderPlan = buildRenderPlan(nextTrackIndex);
-    currentRenderMode = directRenderPlan.mode;
-    heavyTrackDetected = directRenderPlan.heavyTrackDetected;
-    heavyTrackReason = directRenderPlan.heavyTrackReason;
-    isPercussionTrack = directRenderPlan.isPercussion;
-    effectiveStaveProfile = directRenderPlan.effectiveStaveProfile;
+    const directTrackPercussion =
+      nextTrack.isPercussion === true || (nextTrack.staves ?? []).some((staff) => staff.isPercussion === true);
+    currentRenderMode = directTrackPercussion ? "percussion-default" : "string-tab";
+    heavyTrackDetected = false;
+    heavyTrackReason = null;
+    isPercussionTrack = directTrackPercussion;
+    effectiveStaveProfile = "Default";
     traceRenderer("track-switch-direct-mode-resolved", {
       nextTrackIndex,
       renderMode: currentRenderMode,
@@ -4090,12 +4120,17 @@ export async function createGpRenderer(
     pendingRequestedTrackIndex = null;
     pendingProgrammaticSeek = null;
     try {
-      if (typeof api.renderTracks === "function") {
-        api.renderTracks([nextTrack]);
-      } else {
-        api.tracks = [nextTrack];
-        api.render?.();
+      if (typeof api.renderTracks !== "function") {
+        traceRenderer("track-switch-direct-failed", {
+          nextTrackIndex,
+          reason: "renderTracks-unavailable",
+        });
+        return;
       }
+      traceRenderer("track-switch-renderTracks-called", {
+        targetIndex: nextTrackIndex,
+      });
+      api.renderTracks([nextTrack]);
       const finishDirectSwitch = (attempt: number): void => {
         if (!activeApi || activeApi !== api) {
           traceRenderer("track-switch-direct-api-not-ready", {
@@ -4351,6 +4386,10 @@ export async function createGpRenderer(
           : null,
       });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
+        tracePlayer("play-rejected-not-ready", {
+          hasActiveApi: activeApi !== null,
+          isReadyForPlayback: activeApi?.isReadyForPlayback ?? null,
+        });
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
