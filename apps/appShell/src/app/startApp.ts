@@ -4976,8 +4976,13 @@ export function startApp(rootElement: HTMLElement): void {
             typeof payload.details?.stage === "string" ? payload.details.stage : null;
           const previousTrackIndex = state.desiredTrackSwitchSourceTrackIndex;
           const rollbackTick = state.desiredTrackSwitchTick;
+          const isTrackSwitchDirectError =
+            errorStage === "selectTrackDirect" ||
+            (state.requestedTrackIndex !== null &&
+              previousTrackIndex !== null &&
+              state.trackSwitchInProgress === false);
           if (
-            errorStage === "selectTrackDirect" &&
+            isTrackSwitchDirectError &&
             previousTrackIndex !== null &&
             state.gpRenderer !== null
           ) {

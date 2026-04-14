@@ -4056,12 +4056,17 @@ export async function createGpRenderer(
       targetIndex: nextTrackIndex,
       prevIndex: confirmedActiveTrackIndex,
     });
-    const scoreTracks = api.score?.tracks ?? [];
-    const trackByIndex = scoreTracks.find((track) => track.index === nextTrackIndex) ?? null;
-    const trackByPosition =
-      nextTrackIndex >= 0 && nextTrackIndex < scoreTracks.length ? (scoreTracks[nextTrackIndex] ?? null) : null;
-    const nextTrack = trackByIndex ?? trackByPosition;
-    if (!nextTrack) {
+    const score = api.score;
+    if (!score || !Array.isArray(score.tracks)) {
+      traceRenderer("track-switch-invalid-index", {
+        targetIndex: nextTrackIndex,
+        prevIndex: confirmedActiveTrackIndex,
+        scoreTrackCount: 0,
+      });
+      return;
+    }
+    const scoreTracks = score.tracks;
+    if (nextTrackIndex < 0 || nextTrackIndex >= scoreTracks.length) {
       traceRenderer("track-switch-invalid-index", {
         targetIndex: nextTrackIndex,
         prevIndex: confirmedActiveTrackIndex,
@@ -4069,15 +4074,40 @@ export async function createGpRenderer(
       });
       return;
     }
-    if (!nextTrack.staves || nextTrack.staves.length === 0) {
+    let nextTrack = scoreTracks[nextTrackIndex] ?? null;
+    if (!nextTrack) {
       traceRenderer("track-switch-track-undefined", {
         targetIndex: nextTrackIndex,
         prevIndex: confirmedActiveTrackIndex,
-        trackIndex: nextTrack.index,
-        hasStaves: false,
       });
       return;
     }
+    if (nextTrack.index !== nextTrackIndex) {
+      const mappedTrack = scoreTracks.find((track) => track.index === nextTrackIndex) ?? null;
+      if (!mappedTrack) {
+        traceRenderer("track-switch-invalid-index", {
+          targetIndex: nextTrackIndex,
+          prevIndex: confirmedActiveTrackIndex,
+          scoreTrackCount: scoreTracks.length,
+          reason: "track-index-position-mismatch",
+        });
+        return;
+      }
+      nextTrack = mappedTrack;
+    }
+    if (!Array.isArray(nextTrack.staves) || nextTrack.staves.length === 0) {
+      traceRenderer("track-switch-track-invalid-staves", {
+        targetIndex: nextTrackIndex,
+        prevIndex: confirmedActiveTrackIndex,
+        trackIndex: nextTrack.index,
+      });
+      return;
+    }
+    traceRenderer("track-switch-validated", {
+      targetIndex: nextTrackIndex,
+      isPercussion: nextTrack.isPercussion === true,
+      staveCount: nextTrack.staves.length,
+    });
     const resumeTick = Number.isFinite(targetTick)
       ? (targetTick as number)
       : (playbackRuntimeInfo.currentTick ?? api.tickPosition ?? 0);
@@ -4090,8 +4120,7 @@ export async function createGpRenderer(
       wasPlaying,
       resumeTick,
     });
-    const directTrackPercussion =
-      nextTrack.isPercussion === true || (nextTrack.staves ?? []).some((staff) => staff.isPercussion === true);
+    const directTrackPercussion = nextTrack.isPercussion === true;
     currentRenderMode = directTrackPercussion ? "percussion-default" : "string-tab";
     heavyTrackDetected = false;
     heavyTrackReason = null;
@@ -4193,6 +4222,23 @@ export async function createGpRenderer(
       };
       finishDirectSwitch(0);
     } catch (error) {
+      const previousTrackPosition =
+        confirmedActiveTrackIndex >= 0 && confirmedActiveTrackIndex < scoreTracks.length
+          ? confirmedActiveTrackIndex
+          : null;
+      const previousTrack =
+        previousTrackPosition === null ? null : (scoreTracks[previousTrackPosition] ?? null);
+      if (previousTrack && typeof api.renderTracks === "function") {
+        try {
+          api.renderTracks([previousTrack]);
+          traceRenderer("track-switch-render-error-rollback", {
+            targetIndex: nextTrackIndex,
+            prevIndex: previousTrack.index,
+          });
+        } catch {
+          // Controlled escalation to app-level error handling below.
+        }
+      }
       traceRenderer("track-switch-direct-failed", {
         nextTrackIndex,
         reason: "direct-switch-throw",
