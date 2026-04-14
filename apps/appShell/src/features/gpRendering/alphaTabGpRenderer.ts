@@ -885,6 +885,9 @@ export async function createGpRenderer(
   let requestedTrackIndex = selectedTrackIndex;
   let confirmedActiveTrackIndex = selectedTrackIndex;
   let lastSuccessfulConfirmedTrackIndex: number | null = selectedTrackIndex;
+  let directSwitchInFlight = false;
+  let directSwitchTargetIndex: number | null = null;
+  let directSwitchPreviousIndex: number | null = null;
 
   let rendererBusy = false;
   let pendingRequestedTrackIndex: number | null = null;
@@ -3352,7 +3355,7 @@ export async function createGpRenderer(
             totalNotes: scoreTrackSignature.totalNotes,
             firstNonEmptyBarIndex: scoreTrackSignature.firstNonEmptyBarIndex,
           }
-        : { reason: "track-not-found-in-lastLoadedScoreTracks" },
+        : { reason: "track-selection-unresolved" },
     });
 
     if (rendererBusy) {
@@ -3938,6 +3941,51 @@ export async function createGpRenderer(
       if (sessionToken !== activeSessionToken) {
         return;
       }
+      if (directSwitchInFlight) {
+        const scoreTracks = api.score?.tracks ?? [];
+        const rollbackTrack =
+          directSwitchPreviousIndex !== null &&
+          directSwitchPreviousIndex >= 0 &&
+          directSwitchPreviousIndex < scoreTracks.length
+            ? (scoreTracks[directSwitchPreviousIndex] ?? null)
+            : null;
+        if (rollbackTrack && typeof api.renderTracks === "function") {
+          try {
+            api.renderTracks([rollbackTrack]);
+            confirmedActiveTrackIndex = rollbackTrack.index;
+            requestedTrackIndex = rollbackTrack.index;
+            lastSuccessfulConfirmedTrackIndex = rollbackTrack.index;
+            traceRenderer("track-switch-render-error-rollback", {
+              targetIndex: directSwitchTargetIndex,
+              prevIndex: rollbackTrack.index,
+            });
+            emitDebugInfo();
+            const failedTarget = directSwitchTargetIndex;
+            directSwitchInFlight = false;
+            directSwitchTargetIndex = null;
+            directSwitchPreviousIndex = null;
+            hooks.onRenderError({
+              message: "Direct track switch failed and was rolled back.",
+              details: {
+                stage: "direct-switch-error-rolled-back",
+                targetTrackIndex: failedTarget,
+                rollbackTrackIndex: rollbackTrack.index,
+                rawError: summarizeError(error),
+              },
+            });
+            return;
+          } catch (rollbackError) {
+            traceRenderer("track-switch-direct-failed", {
+              nextTrackIndex: directSwitchTargetIndex,
+              reason: "rollback-throw",
+              error: summarizeError(rollbackError),
+            });
+          }
+        }
+        directSwitchInFlight = false;
+        directSwitchTargetIndex = null;
+        directSwitchPreviousIndex = null;
+      }
 
       clearRenderTimeout();
       lastRendererErrorStage = "error-event";
@@ -4056,6 +4104,9 @@ export async function createGpRenderer(
       targetIndex: nextTrackIndex,
       prevIndex: confirmedActiveTrackIndex,
     });
+    directSwitchInFlight = true;
+    directSwitchTargetIndex = nextTrackIndex;
+    directSwitchPreviousIndex = confirmedActiveTrackIndex;
     const score = api.score;
     if (!score || !Array.isArray(score.tracks)) {
       traceRenderer("track-switch-invalid-index", {
@@ -4154,6 +4205,9 @@ export async function createGpRenderer(
           nextTrackIndex,
           reason: "renderTracks-unavailable",
         });
+        directSwitchInFlight = false;
+        directSwitchTargetIndex = null;
+        directSwitchPreviousIndex = null;
         return;
       }
       traceRenderer("track-switch-renderTracks-called", {
@@ -4218,6 +4272,12 @@ export async function createGpRenderer(
           confirmedActiveTrackIndex,
           resumeTick,
         });
+        traceRenderer("track-switch-applied", {
+          targetIndex: nextTrackIndex,
+        });
+        directSwitchInFlight = false;
+        directSwitchTargetIndex = null;
+        directSwitchPreviousIndex = null;
         emitDebugInfo();
       };
       finishDirectSwitch(0);
@@ -4239,6 +4299,9 @@ export async function createGpRenderer(
           // Controlled escalation to app-level error handling below.
         }
       }
+      directSwitchInFlight = false;
+      directSwitchTargetIndex = null;
+      directSwitchPreviousIndex = null;
       traceRenderer("track-switch-direct-failed", {
         nextTrackIndex,
         reason: "direct-switch-throw",

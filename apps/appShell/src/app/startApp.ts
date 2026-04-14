@@ -4978,6 +4978,7 @@ export function startApp(rootElement: HTMLElement): void {
           const rollbackTick = state.desiredTrackSwitchTick;
           const isTrackSwitchDirectError =
             errorStage === "selectTrackDirect" ||
+            errorStage === "direct-switch-error-rolled-back" ||
             (state.requestedTrackIndex !== null &&
               previousTrackIndex !== null &&
               state.trackSwitchInProgress === false);
