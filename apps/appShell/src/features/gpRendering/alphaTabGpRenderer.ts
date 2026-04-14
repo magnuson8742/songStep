@@ -18,6 +18,7 @@ interface AlphaTabApi {
   settings?: {
     display?: {
       scale?: number;
+      staveProfile?: string;
     };
     player?: Record<string, unknown>;
   };
@@ -4060,6 +4061,31 @@ export async function createGpRenderer(
       wasPlaying,
       resumeTick,
     });
+    const directRenderPlan = buildRenderPlan(nextTrackIndex);
+    currentRenderMode = directRenderPlan.mode;
+    heavyTrackDetected = directRenderPlan.heavyTrackDetected;
+    heavyTrackReason = directRenderPlan.heavyTrackReason;
+    isPercussionTrack = directRenderPlan.isPercussion;
+    effectiveStaveProfile = directRenderPlan.effectiveStaveProfile;
+    traceRenderer("track-switch-direct-mode-resolved", {
+      nextTrackIndex,
+      renderMode: currentRenderMode,
+      isPercussion: isPercussionTrack,
+      effectiveStaveProfile,
+      heavyTrackDetected,
+      heavyTrackReason,
+    });
+    if (api.settings?.display) {
+      api.settings.display.staveProfile = effectiveStaveProfile;
+      api.updateSettings?.();
+      if (isPercussionTrack) {
+        traceRenderer("track-switch-direct-percussion-config-applied", {
+          nextTrackIndex,
+          renderMode: currentRenderMode,
+          effectiveStaveProfile,
+        });
+      }
+    }
     requestedTrackIndex = nextTrackIndex;
     pendingRequestedTrackIndex = null;
     pendingProgrammaticSeek = null;
@@ -4070,23 +4096,49 @@ export async function createGpRenderer(
         api.tracks = [nextTrack];
         api.render?.();
       }
-      confirmedActiveTrackIndex = nextTrackIndex;
-      lastSuccessfulConfirmedTrackIndex = nextTrackIndex;
-      requestedTrackIndex = nextTrackIndex;
-      emitRenderLifecycle("active-track-confirmed", {
-        activeSessionToken,
-        trackIndex: nextTrackIndex,
-      });
-      hooks.onActiveTrackConfirmed(nextTrackIndex);
-      hooks.onTrackRenderCommitted(nextTrackIndex);
-      if (Number.isFinite(resumeTick)) {
-        seekToTick(resumeTick);
-      }
-      if (wasPlaying && isPlaybackApiAvailable(api) && typeof api.play === "function") {
-        window.setTimeout(() => {
-          if (!activeApi || activeApi !== api) {
+      const finishDirectSwitch = (attempt: number): void => {
+        if (!activeApi || activeApi !== api) {
+          traceRenderer("track-switch-direct-api-not-ready", {
+            nextTrackIndex,
+            attempt,
+            hasActiveApi: activeApi !== null,
+            activeApiMatchesSwitchApi: activeApi === api,
+          });
+          if (attempt >= 12) {
+            traceRenderer("track-switch-direct-failed", {
+              nextTrackIndex,
+              reason: "api-not-ready-timeout",
+              attempt,
+            });
             return;
           }
+          window.setTimeout(() => finishDirectSwitch(attempt + 1), 16);
+          return;
+        }
+        traceRenderer("track-switch-direct-api-ready", {
+          nextTrackIndex,
+          attempt,
+          activeSessionToken,
+        });
+        confirmedActiveTrackIndex = nextTrackIndex;
+        lastSuccessfulConfirmedTrackIndex = nextTrackIndex;
+        requestedTrackIndex = nextTrackIndex;
+        emitRenderLifecycle("active-track-confirmed", {
+          activeSessionToken,
+          trackIndex: nextTrackIndex,
+        });
+        hooks.onActiveTrackConfirmed(nextTrackIndex);
+        hooks.onTrackRenderCommitted(nextTrackIndex);
+        if (Number.isFinite(resumeTick)) {
+          const didRestoreSeek = seekToTick(resumeTick);
+          if (didRestoreSeek) {
+            traceRenderer("track-switch-direct-seek-restored", {
+              nextTrackIndex,
+              resumeTick,
+            });
+          }
+        }
+        if (wasPlaying && isPlaybackApiAvailable(api) && typeof api.play === "function") {
           const runtimeState = normalizePlaybackState(api.playerState);
           if (runtimeState !== "playing") {
             api.play?.();
@@ -4096,15 +4148,21 @@ export async function createGpRenderer(
             resumeTick,
             runtimeState: normalizePlaybackState(api.playerState),
           });
-        }, 0);
-      }
-      traceRenderer("track-switch-direct-applied", {
-        nextTrackIndex,
-        confirmedActiveTrackIndex,
-        resumeTick,
-      });
-      emitDebugInfo();
+        }
+        traceRenderer("track-switch-direct-applied", {
+          nextTrackIndex,
+          confirmedActiveTrackIndex,
+          resumeTick,
+        });
+        emitDebugInfo();
+      };
+      finishDirectSwitch(0);
     } catch (error) {
+      traceRenderer("track-switch-direct-failed", {
+        nextTrackIndex,
+        reason: "direct-switch-throw",
+        error: summarizeError(error),
+      });
       hooks.onRenderError({
         message: error instanceof Error ? error.message : "Could not switch GP track.",
         details: {
