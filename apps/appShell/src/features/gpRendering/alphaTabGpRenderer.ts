@@ -321,7 +321,11 @@ export interface GpRendererHooks {
 }
 
 export interface GpRendererController {
-  selectTrack: (trackIndex: number, targetTick?: number | null) => void;
+  selectTrack: (
+    trackIndex: number,
+    targetTick?: number | null,
+    options?: { forceReload?: boolean; source?: string },
+  ) => void;
   setZoom: (zoomPercent: number) => void;
   seekToTick: (tick: number) => boolean;
   seekToBarStart: (barNumber: number) => number | null;
@@ -943,7 +947,6 @@ export async function createGpRenderer(
   let masterBalance = 0;
   let hasLoggedMixerApplySuccess = false;
   let lastLoggedPlayerBar: number | null = null;
-  let lastLoggedPlayerBeatInBar: number | null = null;
   let lastLoggedPlayerState: "playing" | "paused" | "stopped" | null = null;
 
   const emitDebugInfo = (): void => {
@@ -3472,26 +3475,8 @@ export async function createGpRenderer(
           currentBarSourcePath: currentBarFromTick.sourcePath,
           playerPositionPayloadShape,
         };
-        const beatInBar =
-          currentTick === null ||
-          currentBarFromTick.currentBarStartTick === null ||
-          currentBarFromTick.currentBarEndTickExclusive === null ||
-          currentBarFromTick.currentBarEndTickExclusive <= currentBarFromTick.currentBarStartTick
-            ? null
-            : Math.max(
-                0,
-                Math.min(
-                  3,
-                  Math.floor(
-                    ((currentTick - currentBarFromTick.currentBarStartTick) /
-                      (currentBarFromTick.currentBarEndTickExclusive - currentBarFromTick.currentBarStartTick)) *
-                      4,
-                  ),
-                ),
-              );
         const shouldTracePosition =
           currentBarFromTick.currentBar !== lastLoggedPlayerBar ||
-          beatInBar !== lastLoggedPlayerBeatInBar ||
           pendingProgrammaticSeek !== null;
         if (shouldTracePosition) {
           tracePlayer("player-position-changed", {
@@ -3501,7 +3486,6 @@ export async function createGpRenderer(
             confirmedActiveTrackIndex,
             currentTick,
             currentBar: currentBarFromTick.currentBar,
-            beatInBar,
             pendingProgrammaticSeek:
               pendingProgrammaticSeek === null
                 ? null
@@ -3513,7 +3497,6 @@ export async function createGpRenderer(
                   },
           });
           lastLoggedPlayerBar = currentBarFromTick.currentBar;
-          lastLoggedPlayerBeatInBar = beatInBar;
         }
         maybeEmitSwitchedTrackPlaybackReady("player-position-changed");
         emitPlaybackRuntimeInfo();
@@ -3977,7 +3960,7 @@ export async function createGpRenderer(
     heavyTrackDetected = false;
     heavyTrackReason = null;
     isPercussionTrack = directTrackPercussion;
-    effectiveStaveProfile = "Default";
+    effectiveStaveProfile = directTrackPercussion ? "Default" : "Tab";
     traceRenderer("track-switch-direct-mode-resolved", {
       nextTrackIndex,
       renderMode: currentRenderMode,
@@ -4123,7 +4106,18 @@ export async function createGpRenderer(
   };
 
   return {
-    selectTrack: (trackIndex: number, targetTick?: number | null) => {
+    selectTrack: (trackIndex: number, targetTick?: number | null, options?: { forceReload?: boolean; source?: string }) => {
+      if (options?.forceReload) {
+        traceRenderer("track-switch-force-reload", {
+          targetIndex: trackIndex,
+          source: options.source ?? "unknown",
+          targetTick: targetTick ?? null,
+        });
+        void switchTrackByReload(trackIndex, {
+          targetTick: targetTick ?? null,
+        });
+        return;
+      }
       switchTrackDirect(trackIndex, targetTick ?? null);
     },
     setZoom: (nextZoomPercent: number) => {
