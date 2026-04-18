@@ -2711,6 +2711,9 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
     state.pendingCubeNavigationTrackIndex = clickedTrackIndex;
     state.pendingCubeNavigationBar = targetBarNumber;
     state.pendingCubeNavigationTick = targetTick;
+    state.pendingOverviewNavigationBar = null;
+    state.pendingOverviewNavigationTrackIndex = null;
+    state.pendingOverviewNavigationTick = null;
     traceTrackSwitch("cube-navigation-track-switch", {
       clickedTrackIndex,
       targetBarNumber,
@@ -4248,6 +4251,9 @@ export function startApp(rootElement: HTMLElement): void {
             state.pendingCubeNavigationTrackIndex = null;
             state.pendingCubeNavigationBar = null;
             state.pendingCubeNavigationTick = null;
+            state.pendingOverviewNavigationBar = null;
+            state.pendingOverviewNavigationTrackIndex = null;
+            state.pendingOverviewNavigationTick = null;
             return;
           }
           if (
