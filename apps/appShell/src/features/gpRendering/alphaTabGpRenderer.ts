@@ -901,6 +901,7 @@ export async function createGpRenderer(
     commitEvidenceLogged: boolean;
     postRenderFinished: boolean;
     startedAtMs: number;
+    source: string;
   } | null = null;
   let directSwitchAttemptCounter = 0;
 
@@ -4096,6 +4097,12 @@ export async function createGpRenderer(
       traceRenderer("track-switch-applied", {
         targetIndex: pendingContext.targetIndex,
       });
+      if (pendingContext.source === "cube-navigation") {
+        traceRenderer("cube-navigation-direct-switch-finalized", {
+          targetIndex: pendingContext.targetIndex,
+          elapsedMs,
+        });
+      }
       pendingDirectSwitchContext = null;
       directSwitchInFlight = false;
       directSwitchTargetIndex = null;
@@ -4156,7 +4163,7 @@ export async function createGpRenderer(
     window.setTimeout(() => tryFinalizePendingDirectSwitch(api, attempt + 1), 16);
   }
 
-  const switchTrackDirect = (nextTrackIndex: number, targetTick?: number | null): void => {
+  const switchTrackDirect = (nextTrackIndex: number, targetTick?: number | null, source = "unknown"): void => {
     const api = activeApi;
     if (!api) {
       return;
@@ -4289,6 +4296,7 @@ export async function createGpRenderer(
         commitEvidenceLogged: false,
         postRenderFinished: false,
         startedAtMs: Date.now(),
+        source,
       };
       tryFinalizePendingDirectSwitch(api, 0);
     } catch (error) {
@@ -4335,6 +4343,12 @@ export async function createGpRenderer(
   return {
     selectTrack: (trackIndex: number, targetTick?: number | null, options?: { forceReload?: boolean; source?: string }) => {
       if (options?.forceReload) {
+        if (options.source === "cube-navigation") {
+          traceRenderer("cube-navigation-direct-switch-fallback-reload", {
+            targetIndex: trackIndex,
+            targetTick: targetTick ?? null,
+          });
+        }
         traceRenderer("track-switch-force-reload", {
           targetIndex: trackIndex,
           source: options.source ?? "unknown",
@@ -4345,7 +4359,13 @@ export async function createGpRenderer(
         });
         return;
       }
-      switchTrackDirect(trackIndex, targetTick ?? null);
+      if (options?.source === "cube-navigation") {
+        traceRenderer("cube-navigation-direct-switch", {
+          targetIndex: trackIndex,
+          targetTick: targetTick ?? null,
+        });
+      }
+      switchTrackDirect(trackIndex, targetTick ?? null, options?.source ?? "unknown");
     },
     setZoom: (nextZoomPercent: number) => {
       const normalizedZoom = Math.max(50, Math.min(200, Math.round(nextZoomPercent)));
