@@ -406,8 +406,14 @@ function resolveTransportUiState(state: AppState): {
     state.rendererSessionHadAuthoritativePlayerReady ||
     state.trackSwitchInProgress ||
     state.requiresSwitchedTrackPlaybackReady;
+  const switchedTrackGateSatisfied =
+    !state.requiresSwitchedTrackPlaybackReady &&
+    !state.switchedTrackSeekStillPending
+      ? true
+      : state.switchedTrackPlaybackReady && !state.switchedTrackSeekStillPending;
   const runtimeSignalReady =
-    authoritativeReady || (allowWarmReuseSignals && (state.rendererFallbackReady || state.rendererRuntimeWarm));
+    (authoritativeReady || (allowWarmReuseSignals && (state.rendererFallbackReady || state.rendererRuntimeWarm))) &&
+    switchedTrackGateSatisfied;
   const ready = state.gpRenderer !== null && runtimeSignalReady && !state.rendererRuntimeBlocked;
   if (!ready) {
     return {
@@ -3914,6 +3920,26 @@ export function startApp(rootElement: HTMLElement): void {
               ...event,
               ignored: true,
               ignoredReason: "no-active-switch-session",
+            });
+            updateTransportControls(rootElement, state, `render-lifecycle-ignored:${eventType}`);
+            return;
+          }
+          if (
+            isSwitchedTrackLifecycleEvent &&
+            state.pendingTrackSwitchSessionToken !== null &&
+            eventSessionToken !== state.pendingTrackSwitchSessionToken
+          ) {
+            traceTrackSwitch("switched-track-event-ignored-session-mismatch", {
+              eventType,
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+              pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+            });
+            appendSessionDebugEvent(state.sessionDebugLogger, {
+              ...event,
+              ignored: true,
+              ignoredReason: "session-mismatch",
             });
             updateTransportControls(rootElement, state, `render-lifecycle-ignored:${eventType}`);
             return;

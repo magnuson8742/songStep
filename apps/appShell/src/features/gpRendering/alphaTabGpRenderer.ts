@@ -3338,6 +3338,12 @@ export async function createGpRenderer(
     }
 
     if (playbackAvailable) {
+      playbackRuntimeInfo = {
+        ...playbackRuntimeInfo,
+        isPlaying: false,
+      };
+      emitPlaybackRuntimeInfo();
+
       api.playerStateChanged?.on((statePayload) => {
         if (sessionToken !== activeSessionToken) {
           return;
@@ -3368,12 +3374,7 @@ export async function createGpRenderer(
         }
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
-          isPlaying:
-            normalizedState === null
-              ? playbackRuntimeInfo.isPlaying
-              : normalizedState === "playing"
-                ? true
-                : false,
+          isPlaying: normalizedState === "playing",
           playerStatePayloadShape,
         };
         emitPlaybackRuntimeInfo();
