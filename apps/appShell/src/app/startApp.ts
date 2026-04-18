@@ -84,6 +84,11 @@ interface AppState {
   playbackCurrentBarStartTick: number | null;
   playbackCurrentBarEndTickExclusive: number | null;
   playbackIsPlaying: boolean | null;
+  hasExplicitPausedState: boolean;
+  pausedResumeTick: number | null;
+  pausedResumeBar: number | null;
+  pausedResumeTrackIndex: number | null;
+  pausedResumeSessionToken: number | null;
   playbackTransportActive: boolean;
   playerPositionPayloadShape: string | null;
   playerStatePayloadShape: string | null;
@@ -142,6 +147,25 @@ interface AppState {
   sessionDebugLogger: SessionDebugLogger | null;
   sessionDebugLogPath: string | null;
   sessionDebugBannerShown: boolean;
+  rendererScoreLoaded: boolean;
+  rendererRenderFinished: boolean;
+  rendererPlayerReady: boolean;
+  rendererFallbackReady: boolean;
+  rendererRuntimeWarm: boolean;
+  requiresSwitchedTrackPlaybackReady: boolean;
+  switchedTrackPlaybackReady: boolean;
+  pendingTrackSwitchSessionToken: number | null;
+  switchedTrackPlaybackReadySessionToken: number | null;
+  switchedTrackSeekStillPending: boolean;
+  latestRendererSessionToken: number | null;
+  trackSwitchInProgress: boolean;
+  trackSwitchStartedAtMs: number | null;
+  coldBootStartedAtMs: number | null;
+  projectRendererCreateInFlight: boolean;
+  projectRendererCreateKey: string | null;
+  lastTransportUiState: "not-ready" | "idle-ready" | "pending-start" | "playing-confirmed" | "paused-confirmed" | null;
+  lastTransportControlSnapshot: string | null;
+  startupInteractionLocked: boolean;
 }
 
 function triggerJsonDownload(fileName: string, payload: unknown): void {
@@ -290,6 +314,52 @@ function updateTrackRowVisualState(state: AppState, rootElement: HTMLElement): v
   });
 }
 
+function refreshTrackStripUi(state: AppState, rootElement: HTMLElement): boolean {
+  const trackStrip = rootElement.querySelector<HTMLElement>("[data-action='track-strip']");
+  if (!trackStrip) {
+    traceTrackSwitch("tracks-ui-refresh-skipped", { reason: "track-strip-not-found" });
+    return false;
+  }
+  traceTrackSwitch("tracks-ui-refresh-start", {
+    trackCount: state.gpTracks.length,
+    selectedTrackIndex: state.selectedTrackIndex,
+    confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+  });
+  if (state.gpTracks.length === 0) {
+    trackStrip.innerHTML = '<p class="helperText">Loading tracks...</p>';
+    traceTrackSwitch("tracks-ui-refresh-finish", { mode: "loading-placeholder" });
+    return true;
+  }
+  trackStrip.innerHTML = state.gpTracks
+    .map((track) => {
+      const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null;
+      const isActive = activeTrackIndex === track.index;
+      const activeClass = isActive ? "trackStripItem isActiveTrack" : "trackStripItem";
+      const compactLabel = track.displayLabel?.trim() || track.name || `Track ${track.index + 1}`;
+      const volume = state.trackVolumeByIndex[track.index] ?? 80;
+      const muteOn = state.mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : "";
+      const soloOn = state.soloTrackIndexes.includes(track.index) ? "isTrackToggleOn" : "";
+      return `
+        <article class="${activeClass}" data-track-item-index="${track.index}" role="button" tabindex="0" aria-label="Select track ${track.name}">
+          <div class="trackControlRow trackControlRowCompact" aria-label="Track controls for ${track.name}">
+            <span class="trackNameCompact" title="${track.name}">${compactLabel}</span>
+            <button class="secondaryButton trackControlButton ${soloOn}" type="button" data-stop-track-select="true" data-track-action="toggle-solo" data-track-index="${track.index}">S</button>
+            <button class="secondaryButton trackControlButton ${muteOn}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}">M</button>
+            <label class="trackControlLabel trackControlLabelCompact">
+              <input class="trackControlRange" type="range" min="0" max="100" value="${volume}" data-stop-track-select="true" data-track-action="set-volume" data-track-volume-index="${track.index}" />
+              <span class="trackControlValue" data-track-volume-value="${track.index}">${volume}</span>
+            </label>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+  updateTrackRowVisualState(state, rootElement);
+  updateTrackControlVisualState(state, rootElement);
+  traceTrackSwitch("tracks-ui-refresh-finish", { mode: "tracks-rendered", trackCount: state.gpTracks.length });
+  return true;
+}
+
 function applyMixerStateToRenderer(state: AppState): void {
   if (!state.gpRenderer) {
     return;
@@ -313,6 +383,164 @@ function logPlaybackPipeline(eventType: string, payload: Record<string, unknown>
       ...payload,
     }),
   );
+}
+
+function tracePlayback(eventName: string, payload: Record<string, unknown>): void {
+  console.info(`[songstep-playback] ${eventName} ${JSON.stringify(payload)}`);
+}
+
+function traceTrackSwitch(eventName: string, payload: Record<string, unknown>): void {
+  console.info(`[songstep-track] ${eventName} ${JSON.stringify(payload)}`);
+}
+
+function traceRendererLifecycle(eventName: string, payload: Record<string, unknown>): void {
+  console.info(`[songstep-renderer] ${eventName} ${JSON.stringify(payload)}`);
+}
+
+function resolveTransportUiState(state: AppState): {
+  uiState: "not-ready" | "idle-ready" | "playing-confirmed" | "paused-confirmed";
+  canPlay: boolean;
+  canPause: boolean;
+  canStop: boolean;
+  playDisabledReason: string | null;
+} {
+  const ready = state.gpRenderer !== null && state.rendererPlayerReady;
+  if (!ready) {
+    return {
+      uiState: "not-ready",
+      canPlay: false,
+      canPause: false,
+      canStop: false,
+      playDisabledReason: "not-ready",
+    };
+  }
+
+  if (state.playbackIsPlaying === true) {
+    return {
+      uiState: "playing-confirmed",
+      canPlay: false,
+      canPause: true,
+      canStop: true,
+      playDisabledReason: "already-playing",
+    };
+  }
+
+  const hasPausedPosition =
+    state.hasExplicitPausedState &&
+    (state.pausedResumeTick !== null || state.pausedResumeBar !== null) &&
+    state.pausedResumeTrackIndex === state.selectedTrackIndex &&
+    (state.gpRenderDebugInfo?.confirmedActiveTrackIndex === null ||
+      state.pausedResumeTrackIndex === state.gpRenderDebugInfo?.confirmedActiveTrackIndex) &&
+    (state.pausedResumeSessionToken === null ||
+      state.latestRendererSessionToken === null ||
+      state.pausedResumeSessionToken === state.latestRendererSessionToken);
+  if (hasPausedPosition) {
+    return {
+      uiState: "paused-confirmed",
+      canPlay: true,
+      canPause: false,
+      canStop: true,
+      playDisabledReason: null,
+    };
+  }
+
+  return {
+    uiState: "idle-ready",
+    canPlay: true,
+    canPause: false,
+    canStop: false,
+    playDisabledReason: null,
+  };
+}
+
+function updateTransportControls(rootElement: HTMLElement, state: AppState, reason: string): void {
+  const transportUi = resolveTransportUiState(state);
+  const uiStateChanged = state.lastTransportUiState !== transportUi.uiState;
+  state.startupInteractionLocked = false;
+  const transportSnapshot = `${transportUi.uiState}|${transportUi.canPlay ? "1" : "0"}|${transportUi.canPause ? "1" : "0"}|${transportUi.canStop ? "1" : "0"}|${transportUi.playDisabledReason ?? "-"}`;
+  if (state.lastTransportControlSnapshot !== transportSnapshot) {
+    tracePlayback("transport-ready-evaluated", {
+      reason,
+      uiState: transportUi.uiState,
+      canPlay: transportUi.canPlay,
+      canPause: transportUi.canPause,
+      canStop: transportUi.canStop,
+      playDisabledReason: transportUi.playDisabledReason,
+    });
+    state.lastTransportControlSnapshot = transportSnapshot;
+  }
+  const playButton = rootElement.querySelector<HTMLButtonElement>("[data-action='play']");
+  const pauseButton = rootElement.querySelector<HTMLButtonElement>("[data-action='pause']");
+  const stopButton = rootElement.querySelector<HTMLButtonElement>("[data-action='stop']");
+  if (playButton) {
+    playButton.disabled = !transportUi.canPlay;
+  }
+  if (pauseButton) {
+    pauseButton.disabled = !transportUi.canPause;
+  }
+  if (stopButton) {
+    stopButton.disabled = !transportUi.canStop;
+  }
+  if (uiStateChanged) {
+    tracePlayback("transport-state-change", {
+      previousState: state.lastTransportUiState,
+      nextState: transportUi.uiState,
+      canPlay: transportUi.canPlay,
+      canPause: transportUi.canPause,
+      canStop: transportUi.canStop,
+      playDisabledReason: transportUi.playDisabledReason,
+    });
+    state.lastTransportUiState = transportUi.uiState;
+  }
+  if (
+    uiStateChanged &&
+    state.requiresSwitchedTrackPlaybackReady &&
+    state.switchedTrackSeekStillPending
+  ) {
+    tracePlayback("play-unlock-rejected-because-seek-still-pending", {
+      reason,
+      pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+      switchedTrackPlaybackReadySessionToken: state.switchedTrackPlaybackReadySessionToken,
+    });
+  }
+  if (
+    uiStateChanged &&
+    !transportUi.canPlay &&
+    state.gpRenderer !== null &&
+    state.rendererScoreLoaded &&
+    state.rendererRenderFinished &&
+    !state.rendererPlayerReady
+  ) {
+    tracePlayback("play-unlock-rejected-because-runtime-not-ready", {
+      reason,
+      rendererPlayerReady: state.rendererPlayerReady,
+      rendererFallbackReady: state.rendererFallbackReady,
+      rendererRuntimeWarm: state.rendererRuntimeWarm,
+    });
+  }
+  if (transportUi.canPlay && uiStateChanged) {
+    const unlockSource = state.requiresSwitchedTrackPlaybackReady
+      ? "switched-track-playback-ready"
+      : "player-runtime-ready";
+    tracePlayback("play-unlock-source", {
+      reason,
+      source: unlockSource,
+      switchedTrackPlaybackReady: state.switchedTrackPlaybackReady,
+    });
+    if (unlockSource === "player-runtime-ready") {
+      tracePlayback("cold-load-playback-ready", {
+        reason,
+        selectedTrackIndex: state.selectedTrackIndex,
+      });
+    }
+    tracePlayback("play-button-enabled", { reason, uiState: transportUi.uiState });
+  } else if (transportUi.playDisabledReason && uiStateChanged) {
+    tracePlayback("play-button-disabled-reason", {
+      reason: transportUi.playDisabledReason,
+      uiState: transportUi.uiState,
+      source: reason,
+    });
+  }
 }
 
 function renderPlayerFieldValue(value: string | number | null): string {
@@ -511,6 +739,33 @@ function cancelCountIn(state: AppState, rootElement: HTMLElement): void {
   if (!state.metronomeEnabled) {
     stopPlaybackMetronome(state);
   }
+}
+
+function resetPlaybackVisualState(state: AppState, rootElement: HTMLElement): void {
+  tracePlayback("resetPlaybackVisualState-enter", {
+    playbackBarAnchorCount: state.playbackBarAnchorCount,
+    playbackFollowTargetFound: state.playbackFollowTargetFound,
+    playbackPlayheadVisible: state.playbackPlayheadVisible,
+  });
+  state.playbackFollowTargetFound = false;
+  state.playbackFollowSource = null;
+  state.lastPlaybackFollowRowIndex = null;
+  state.playbackPlayheadVisible = false;
+  state.playbackBarAnchorCount = 0;
+  state.playbackBarAnchorSource = null;
+  state.playbackAnchorStrategyAttempts = null;
+  invalidatePlaybackBarAnchorRebuild(state);
+  updatePlaybackFollowDiagnostics(rootElement, false, null);
+  updateDebugField(rootElement, "playback-bar-anchor-count", "0");
+  updateDebugField(rootElement, "playback-bar-anchor-source", "-");
+  updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
+  updateArrangementPlaybackHighlight(state, rootElement);
+  hidePlaybackPlayhead(rootElement, state);
+  tracePlayback("resetPlaybackVisualState-exit", {
+    playbackBarAnchorCount: state.playbackBarAnchorCount,
+    playbackFollowTargetFound: state.playbackFollowTargetFound,
+    playbackPlayheadVisible: state.playbackPlayheadVisible,
+  });
 }
 
 function updatePlayerRuntimeFields(state: AppState, rootElement: HTMLElement): void {
@@ -784,6 +1039,10 @@ function updateArrangementSelectionHighlight(state: AppState, rootElement: HTMLE
     cell.classList.remove("isSelectedNavigationBar");
   });
 
+  if (state.playbackIsPlaying === true) {
+    return;
+  }
+
   if (
     state.selectedNavigationBar === null ||
     state.selectedNavigationBar <= 0 ||
@@ -906,6 +1165,11 @@ function hideNavigationSelection(rootElement: HTMLElement): void {
 }
 
 function updateNavigationSelectionVisual(state: AppState, rootElement: HTMLElement): void {
+  if (state.playbackIsPlaying === true) {
+    hideNavigationSelection(rootElement);
+    return;
+  }
+
   if (state.selectedNavigationBar === null || state.selectedNavigationBar <= 0) {
     hideNavigationSelection(rootElement);
     return;
@@ -1792,6 +2056,43 @@ function applyNavigationSelection(
   updateNavigationSelectionVisual(state, rootElement);
 }
 
+function resetNavigationSelectionToFirstBar(
+  state: AppState,
+  rootElement: HTMLElement,
+  reason: string,
+  preferredTrackIndex?: number,
+): void {
+  const trackIndex = preferredTrackIndex ?? state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+  const firstBarRange = state.gpRenderer?.getBarTickRange(1) ?? null;
+  state.selectedNavigationBar = 1;
+  state.selectedNavigationTick = firstBarRange?.startTick ?? 0;
+  state.selectedNavigationTrackIndex = trackIndex;
+  state.selectionDivergenceSuppressTicks = 0;
+  state.manualNavigationVisualOverrideActive = false;
+  traceTrackSwitch("selected-bar-reset-to-first", {
+    reason,
+    trackIndex,
+    tick: state.selectedNavigationTick,
+  });
+  updateArrangementSelectionHighlight(state, rootElement);
+  updateNavigationSelectionVisual(state, rootElement);
+}
+
+function ensureNavigationSelectionIsValid(state: AppState, rootElement: HTMLElement, reason: string): void {
+  const selectedBar = state.selectedNavigationBar;
+  const selectedTrackIndex = state.selectedNavigationTrackIndex;
+  if (selectedBar === null || selectedBar <= 0 || selectedTrackIndex === null) {
+    resetNavigationSelectionToFirstBar(state, rootElement, `${reason}:missing-selection`);
+    return;
+  }
+  const trackRow = state.scoreOverview?.trackRows.find((row) => row.trackIndex === selectedTrackIndex) ?? null;
+  const lastBarFromRow = trackRow?.barActivity.length ?? 0;
+  const lastBar = Math.max(lastBarFromRow, state.scoreOverview?.totalBars ?? 0, state.totalBars ?? 0);
+  if (lastBar <= 0 || selectedBar > lastBar) {
+    resetNavigationSelectionToFirstBar(state, rootElement, `${reason}:invalid-selection`);
+  }
+}
+
 function resetPlaybackFollowBaselineAfterSeek(state: AppState): void {
   state.lastPlaybackVisualBarNumber = null;
   state.lastPlaybackFollowRowIndex = null;
@@ -1809,16 +2110,6 @@ function haltPlaybackTransportAfterSeek(state: AppState, rootElement: HTMLElemen
   state.pendingPlaybackStart = null;
   updatePlaybackFollowDiagnostics(rootElement, false, "seek-paused");
   resetPlaybackFollowBaselineAfterSeek(state);
-}
-
-function clearNavigationSelectionState(state: AppState, rootElement: HTMLElement): void {
-  state.selectedNavigationBar = null;
-  state.selectedNavigationTick = null;
-  state.selectedNavigationTrackIndex = null;
-  state.selectionDivergenceSuppressTicks = 0;
-  state.manualNavigationVisualOverrideActive = false;
-  updateArrangementSelectionHighlight(state, rootElement);
-  hideNavigationSelection(rootElement);
 }
 
 function clearLoopState(state: AppState): void {
@@ -2233,7 +2524,7 @@ function tryCompletePendingOverviewNavigationAfterRender(
   state.pendingOverviewNavigationTrackIndex = null;
   state.pendingOverviewNavigationTick = null;
   if (!seekSucceeded) {
-    clearNavigationSelectionState(state, rootElement);
+    resetNavigationSelectionToFirstBar(state, rootElement, "overview-pending-seek-failed");
   }
 }
 
@@ -2244,6 +2535,10 @@ function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): 
   }
 
   renderHost.addEventListener("click", (event) => {
+    if (state.startupInteractionLocked) {
+      tracePlayback("interaction-blocked", { area: "notation-bar-click", reason: "startup-pending" });
+      return;
+    }
     if (!state.gpRenderer || state.playbackBarAnchors.length === 0) {
       return;
     }
@@ -2316,6 +2611,10 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
   }
 
   rowsContainer.addEventListener("click", (event) => {
+    if (state.startupInteractionLocked) {
+      tracePlayback("interaction-blocked", { area: "arrangement-bar-click", reason: "startup-pending" });
+      return;
+    }
     if (!state.gpRenderer) {
       return;
     }
@@ -2370,7 +2669,7 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
     state.pendingOverviewNavigationBar = targetBarNumber;
     state.pendingOverviewNavigationTrackIndex = clickedTrackIndex;
     state.pendingOverviewNavigationTick = targetTick;
-    clearNavigationSelectionState(state, rootElement);
+    applyNavigationSelection(state, rootElement, targetBarNumber, targetTick, clickedTrackIndex);
     state.manualNavigationVisualOverrideActive = true;
     haltPlaybackTransportAfterSeek(state, rootElement);
     state.requestedTrackIndex = clickedTrackIndex;
@@ -2408,6 +2707,11 @@ export function startApp(rootElement: HTMLElement): void {
     playbackCurrentBarStartTick: null,
     playbackCurrentBarEndTickExclusive: null,
     playbackIsPlaying: null,
+    hasExplicitPausedState: false,
+    pausedResumeTick: null,
+    pausedResumeBar: null,
+    pausedResumeTrackIndex: null,
+    pausedResumeSessionToken: null,
     playbackTransportActive: false,
     playerPositionPayloadShape: null,
     playerStatePayloadShape: null,
@@ -2425,9 +2729,9 @@ export function startApp(rootElement: HTMLElement): void {
     playbackPlayheadVisible: false,
     lastPlaybackVisualBarNumber: null,
     playbackBarAnchors: [],
-    selectedNavigationBar: null,
-    selectedNavigationTick: null,
-    selectedNavigationTrackIndex: null,
+    selectedNavigationBar: 1,
+    selectedNavigationTick: 0,
+    selectedNavigationTrackIndex: 0,
     selectionDivergenceSuppressTicks: 0,
     manualNavigationVisualOverrideActive: false,
     pendingOverviewNavigationBar: null,
@@ -2461,26 +2765,338 @@ export function startApp(rootElement: HTMLElement): void {
     sessionDebugLogger: null,
     sessionDebugLogPath: null,
     sessionDebugBannerShown: false,
+    rendererScoreLoaded: false,
+    rendererRenderFinished: false,
+    rendererPlayerReady: false,
+    rendererFallbackReady: false,
+    rendererRuntimeWarm: false,
+    requiresSwitchedTrackPlaybackReady: false,
+    switchedTrackPlaybackReady: false,
+    pendingTrackSwitchSessionToken: null,
+    switchedTrackPlaybackReadySessionToken: null,
+    switchedTrackSeekStillPending: false,
+    latestRendererSessionToken: null,
+    trackSwitchInProgress: false,
+    trackSwitchStartedAtMs: null,
+    coldBootStartedAtMs: null,
+    projectRendererCreateInFlight: false,
+    projectRendererCreateKey: null,
+    lastTransportUiState: null,
+    lastTransportControlSnapshot: null,
+    startupInteractionLocked: false,
   };
 
-  const cleanupRenderer = (): void => {
-    clearCountInTimer(state);
+  const hardCancelPlaybackPipeline = (
+    reason: "pause" | "stop" | "track-switch" | "renderer-cleanup",
+    options?: { stopRenderer?: boolean; resetPosition?: boolean },
+  ): void => {
+    const beforeSnapshot = {
+      pendingPlaybackStart: state.pendingPlaybackStart !== null,
+      playbackTransportActive: state.playbackTransportActive,
+      countInInProgress: state.countInInProgress,
+      playbackIsPlaying: state.playbackIsPlaying,
+      selectedTrackIndex: state.selectedTrackIndex,
+    };
+    tracePlayback("hard-cancel-enter", {
+      reason,
+      options: options ?? null,
+      ...beforeSnapshot,
+    });
+    logPlaybackPipeline("play-cancelled", {
+      reason,
+      hadPendingPlaybackStart: state.pendingPlaybackStart !== null,
+      playbackTransportActive: state.playbackTransportActive,
+      countInInProgress: state.countInInProgress,
+      playbackIsPlaying: state.playbackIsPlaying,
+    });
+    cancelCountIn(state, rootElement);
+    if (state.pendingPlaybackStart) {
+      logPlaybackPipeline("play-cancelled", {
+        reason,
+        requestId: state.pendingPlaybackStart.requestId,
+      });
+    }
+    state.pendingPlaybackStart = null;
+    state.playbackTransportActive = false;
     state.countInInProgress = false;
     stopPlaybackMetronome(state);
-    invalidatePlaybackBarAnchorRebuild(state);
+    state.manualNavigationVisualOverrideActive = false;
+    resetPlaybackVisualState(state, rootElement);
+    if (options?.resetPosition) {
+      state.playbackCurrentBar = null;
+      state.playbackCurrentTick = null;
+      state.playbackCurrentBarStartTick = null;
+      state.playbackCurrentBarEndTickExclusive = null;
+    }
+    if (options?.stopRenderer && state.gpRenderer) {
+      state.gpRenderer.stop();
+    }
+    if (reason === "stop" || reason === "track-switch" || reason === "renderer-cleanup") {
+      clearPausedResumeSnapshot(`hard-cancel:${reason}`);
+    }
+    tracePlayback("hard-cancel-exit", {
+      reason,
+      options: options ?? null,
+      pendingPlaybackStart: state.pendingPlaybackStart !== null,
+      playbackTransportActive: state.playbackTransportActive,
+      countInInProgress: state.countInInProgress,
+      playbackIsPlaying: state.playbackIsPlaying,
+      selectedTrackIndex: state.selectedTrackIndex,
+    });
+  };
+
+  const clearPendingStartupState = (reason: string): void => {
+    const hadPendingPlaybackStart = state.pendingPlaybackStart !== null;
+    const hadCountInInProgress = state.countInInProgress;
+    const hadPlaybackTransportActive = state.playbackTransportActive;
+    state.pendingPlaybackStart = null;
+    state.playbackTransportActive = false;
+    state.countInInProgress = false;
+    cancelCountIn(state, rootElement);
+    stopPlaybackMetronome(state);
+    tracePlayback("pending-start-cleared", {
+      reason,
+      hadPendingPlaybackStart,
+      hadCountInInProgress,
+      hadPlaybackTransportActive,
+    });
+    tracePlayback("pending-seek-cleared", {
+      reason,
+      pendingPlaybackStart: state.pendingPlaybackStart !== null,
+    });
+    updateTransportControls(rootElement, state, `pending-start-cleared:${reason}`);
+    if (!state.startupInteractionLocked) {
+      tracePlayback("startup-lock-released", {
+        reason,
+      });
+    }
+    const nextTransportUi = resolveTransportUiState(state);
+    if (nextTransportUi.uiState === "idle-ready") {
+      tracePlayback("transport-returned-idle-ready", {
+        reason,
+      });
+    }
+  };
+
+  const syncStartupConfirmedState = (reason: string): void => {
+    const hadPendingPlaybackStart = state.pendingPlaybackStart !== null;
+    state.pendingPlaybackStart = null;
+    clearPausedResumeSnapshot(`startup-confirmed:${reason}`);
+    state.playbackTransportActive = true;
+    state.countInInProgress = false;
+    cancelCountIn(state, rootElement);
+    if (state.playbackIsPlaying !== true) {
+      state.playbackIsPlaying = true;
+    }
+    tracePlayback("startup-confirmed-app-sync", {
+      reason,
+      hadPendingPlaybackStart,
+      playbackCurrentTick: state.playbackCurrentTick,
+      playbackCurrentBar: state.playbackCurrentBar,
+    });
+    if (hadPendingPlaybackStart) {
+      tracePlayback("pending-start-cleared-on-success", {
+        reason,
+      });
+    }
+    updateTransportControls(rootElement, state, `startup-confirmed:${reason}`);
+    const promotedUi = resolveTransportUiState(state);
+    if (promotedUi.uiState === "playing-confirmed") {
+      tracePlayback("transport-promoted-to-playing-confirmed", {
+        reason,
+      });
+    }
+    if (promotedUi.canPause) {
+      tracePlayback("pause-enabled-after-confirmation", {
+        reason,
+      });
+    }
+    if (promotedUi.canStop) {
+      tracePlayback("stop-enabled-after-confirmation", {
+        reason,
+      });
+    }
+    if (!state.startupInteractionLocked) {
+      tracePlayback("startup-lock-released-on-success", {
+        reason,
+      });
+    }
+  };
+
+  const finalizeStoppedTransportState = (
+    reason: string,
+    options?: { resetPosition?: boolean; resetNavigationToFirstBar?: boolean },
+  ): void => {
+    const before = {
+      pendingPlaybackStart: state.pendingPlaybackStart !== null,
+      playbackTransportActive: state.playbackTransportActive,
+      countInInProgress: state.countInInProgress,
+      playbackIsPlaying: state.playbackIsPlaying,
+      playbackCurrentTick: state.playbackCurrentTick,
+    };
+    state.pendingPlaybackStart = null;
+    clearPausedResumeSnapshot(`stop-finalized:${reason}`);
+    state.playbackTransportActive = false;
+    state.countInInProgress = false;
+    state.playbackIsPlaying = false;
+    cancelCountIn(state, rootElement);
+    stopPlaybackMetronome(state);
+    if (options?.resetPosition) {
+      state.playbackCurrentBar = null;
+      state.playbackCurrentTick = null;
+      state.playbackCurrentBarStartTick = null;
+      state.playbackCurrentBarEndTickExclusive = null;
+    }
+    if (options?.resetNavigationToFirstBar) {
+      resetNavigationSelectionToFirstBar(state, rootElement, `stop-finalized:${reason}`);
+    }
+    updateTransportControls(rootElement, state, `stop-finalized:${reason}`);
+    tracePlayback("stop-finalized", {
+      reason,
+      before,
+      after: {
+        pendingPlaybackStart: state.pendingPlaybackStart !== null,
+        playbackTransportActive: state.playbackTransportActive,
+        countInInProgress: state.countInInProgress,
+        playbackIsPlaying: state.playbackIsPlaying,
+        playbackCurrentTick: state.playbackCurrentTick,
+      },
+    });
+  };
+
+  const finalizePausedTransportState = (reason: string): void => {
+    const before = {
+      pendingPlaybackStart: state.pendingPlaybackStart !== null,
+      playbackTransportActive: state.playbackTransportActive,
+      countInInProgress: state.countInInProgress,
+      playbackIsPlaying: state.playbackIsPlaying,
+      playbackCurrentTick: state.playbackCurrentTick,
+      playbackCurrentBar: state.playbackCurrentBar,
+    };
+    state.pendingPlaybackStart = null;
+    state.playbackTransportActive = false;
+    state.countInInProgress = false;
+    state.playbackIsPlaying = false;
+    const pausedTickSnapshot =
+      state.playbackCurrentTick ?? state.playbackCurrentBarStartTick ?? state.selectedNavigationTick ?? null;
+    const pausedBarSnapshot = state.playbackCurrentBar ?? state.selectedNavigationBar ?? null;
+    state.pausedResumeTick = pausedTickSnapshot;
+    state.pausedResumeBar = pausedBarSnapshot;
+    state.pausedResumeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+    state.pausedResumeSessionToken = state.latestRendererSessionToken;
+    state.hasExplicitPausedState = pausedTickSnapshot !== null || pausedBarSnapshot !== null;
+    cancelCountIn(state, rootElement);
+    stopPlaybackMetronome(state);
+    updateTransportControls(rootElement, state, `pause-finalized:${reason}`);
+    tracePlayback("pause-confirmed", {
+      reason,
+      pausedResumeTick: state.pausedResumeTick,
+      pausedResumeBar: state.pausedResumeBar,
+    });
+    tracePlayback("paused-snapshot-captured", {
+      reason,
+      pausedResumeTick: state.pausedResumeTick,
+      pausedResumeBar: state.pausedResumeBar,
+      pausedResumeTrackIndex: state.pausedResumeTrackIndex,
+      pausedResumeSessionToken: state.pausedResumeSessionToken,
+      selectedTrackIndex: state.selectedTrackIndex,
+      confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+    });
+    tracePlayback("pause-finalized", {
+      reason,
+      before,
+      after: {
+        pendingPlaybackStart: state.pendingPlaybackStart !== null,
+        playbackTransportActive: state.playbackTransportActive,
+        countInInProgress: state.countInInProgress,
+        playbackIsPlaying: state.playbackIsPlaying,
+        playbackCurrentTick: state.playbackCurrentTick,
+        playbackCurrentBar: state.playbackCurrentBar,
+        hasExplicitPausedState: state.hasExplicitPausedState,
+        pausedResumeTick: state.pausedResumeTick,
+        pausedResumeBar: state.pausedResumeBar,
+        pausedResumeTrackIndex: state.pausedResumeTrackIndex,
+        pausedResumeSessionToken: state.pausedResumeSessionToken,
+      },
+    });
+  };
+
+  function clearPausedResumeSnapshot(reason: string): void {
+    const hadSnapshot =
+      state.hasExplicitPausedState || state.pausedResumeTick !== null || state.pausedResumeBar !== null;
+    state.hasExplicitPausedState = false;
+    state.pausedResumeTick = null;
+    state.pausedResumeBar = null;
+    state.pausedResumeTrackIndex = null;
+    state.pausedResumeSessionToken = null;
+    if (hadSnapshot) {
+      tracePlayback("paused-snapshot-cleared", {
+        reason,
+      });
+    }
+  }
+
+  const cleanupRenderer = (): void => {
+    const hasActivePlaybackPipeline =
+      state.pendingPlaybackStart !== null ||
+      state.playbackTransportActive ||
+      state.countInInProgress ||
+      state.playbackIsPlaying === true;
+    if (
+      !state.gpRenderer &&
+      !hasActivePlaybackPipeline &&
+      !state.trackSwitchInProgress &&
+      !state.projectRendererCreateInFlight
+    ) {
+      return;
+    }
+    traceRendererLifecycle("cleanupRenderer-enter", {
+      currentView: state.currentView,
+      hasRenderer: state.gpRenderer !== null,
+      selectedTrackIndex: state.selectedTrackIndex,
+    });
+    if (hasActivePlaybackPipeline) {
+      hardCancelPlaybackPipeline("renderer-cleanup");
+    }
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
     state.pendingOverviewNavigationTick = null;
-    state.manualNavigationVisualOverrideActive = false;
     state.desiredTrackSwitchTick = null;
     state.desiredTrackSwitchBar = null;
     state.desiredTrackSwitchSourceTrackIndex = null;
+    state.trackSwitchInProgress = false;
+    state.rendererScoreLoaded = false;
+    state.rendererRenderFinished = false;
+    state.rendererPlayerReady = false;
+    state.rendererFallbackReady = false;
+    state.rendererRuntimeWarm = false;
+    state.requiresSwitchedTrackPlaybackReady = false;
+    state.switchedTrackPlaybackReady = false;
+    state.pendingTrackSwitchSessionToken = null;
+    state.switchedTrackPlaybackReadySessionToken = null;
+    state.switchedTrackSeekStillPending = false;
+    state.trackSwitchStartedAtMs = null;
+    state.coldBootStartedAtMs = null;
+    state.projectRendererCreateInFlight = false;
+    state.projectRendererCreateKey = null;
     if (!state.gpRenderer) {
+      traceRendererLifecycle("cleanupRenderer-exit-noop", {
+        reason: "no-renderer",
+      });
       return;
     }
 
+    traceRendererLifecycle("renderer-destroy-start", {
+      selectedTrackIndex: state.selectedTrackIndex,
+    });
+    logPlaybackPipeline("renderer-destroy", {
+      selectedTrackIndex: state.selectedTrackIndex,
+    });
     state.gpRenderer.destroy();
     state.gpRenderer = null;
+    traceRendererLifecycle("renderer-destroy-finish", {
+      selectedTrackIndex: state.selectedTrackIndex,
+    });
   };
 
   reportSessionDebugAppendFailure = (message: string): void => {
@@ -2571,7 +3187,15 @@ export function startApp(rootElement: HTMLElement): void {
   };
 
   const render = (): void => {
+    traceRendererLifecycle("render-enter", {
+      currentView: state.currentView,
+      hasRenderer: state.gpRenderer !== null,
+      selectedTrackIndex: state.selectedTrackIndex,
+    });
     if (state.currentView !== "project") {
+      traceRendererLifecycle("render-cleanup-non-project", {
+        currentView: state.currentView,
+      });
       cleanupRenderer();
     }
 
@@ -2614,6 +3238,11 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
           state.playbackIsPlaying = null;
+          state.hasExplicitPausedState = false;
+          state.pausedResumeTick = null;
+          state.pausedResumeBar = null;
+          state.pausedResumeTrackIndex = null;
+          state.pausedResumeSessionToken = null;
           state.playbackTransportActive = false;
           state.playerPositionPayloadShape = null;
           state.playerStatePayloadShape = null;
@@ -2650,6 +3279,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingPlaybackStart = null;
           state.pendingCountInTimerId = null;
           state.metronomeEnabled = false;
+          state.selectedNavigationBar = 1;
+          state.selectedNavigationTick = 0;
+          state.selectedNavigationTrackIndex = state.selectedTrackIndex;
+          state.lastTransportUiState = null;
           stopPlaybackMetronome(state);
           render();
         },
@@ -2686,6 +3319,11 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackCurrentBarStartTick = null;
             state.playbackCurrentBarEndTickExclusive = null;
             state.playbackIsPlaying = null;
+            state.hasExplicitPausedState = false;
+            state.pausedResumeTick = null;
+            state.pausedResumeBar = null;
+            state.pausedResumeTrackIndex = null;
+            state.pausedResumeSessionToken = null;
             state.playbackTransportActive = false;
             state.playerPositionPayloadShape = null;
             state.playerStatePayloadShape = null;
@@ -2732,11 +3370,34 @@ export function startApp(rootElement: HTMLElement): void {
     }
 
     if (state.currentView === "project" && state.currentProject) {
-      cleanupRenderer();
+      const projectCreateKey = `${state.currentProject.sourceFile.fileName}::${state.selectedTrackIndex}`;
+      if (state.projectRendererCreateInFlight && state.projectRendererCreateKey === projectCreateKey) {
+        traceRendererLifecycle("initial-render-in-flight-skip", {
+          projectCreateKey,
+        });
+        return;
+      }
+      traceRendererLifecycle("project-render-path", {
+        action: "render-project-screen",
+        selectedTrackIndex: state.selectedTrackIndex,
+      });
       if (state.sessionDebugLogPath && !state.sessionDebugBannerShown) {
         state.projectStatusMessage = `Debug logging active: ${state.sessionDebugLogPath}`;
         state.sessionDebugBannerShown = true;
       }
+      const transportUi = resolveTransportUiState(state);
+      state.startupInteractionLocked = false;
+      const blockStartupInteraction = (action: string): boolean => {
+        if (!state.startupInteractionLocked) {
+          return false;
+        }
+        tracePlayback("interaction-blocked", {
+          action,
+          reason: "startup-pending",
+          uiState: transportUi.uiState,
+        });
+        return true;
+      };
 
       renderProjectScreen(rootElement, state.currentProject, {
         statusMessage: state.projectStatusMessage,
@@ -2760,6 +3421,10 @@ export function startApp(rootElement: HTMLElement): void {
         effectiveTempoBpm:
           state.tempoBpm === null ? null : Number(((state.tempoBpm * state.playbackSpeedPercent) / 100).toFixed(1)),
         playbackIsPlaying: state.playbackIsPlaying,
+        canPlay: transportUi.canPlay,
+        canPause: transportUi.canPause,
+        canStop: transportUi.canStop,
+        startupInteractionLocked: state.startupInteractionLocked,
         countInEnabled: state.countInEnabled,
         metronomeEnabled: state.metronomeEnabled,
         loopEnabled: state.loopEnabled,
@@ -2794,6 +3459,29 @@ export function startApp(rootElement: HTMLElement): void {
           : state.tabZoomPercent > MIN_TAB_ZOOM_PERCENT,
         isBottomDockCollapsed: state.isBottomDockCollapsed,
         onTrackSelectionChange: (trackIndex: number) => {
+          if (blockStartupInteraction("track-select")) {
+            return;
+          }
+          traceTrackSwitch("onTrackSelectionChange-enter", {
+            previousTrackIndex: state.selectedTrackIndex,
+            nextTrackIndex: trackIndex,
+            selectedNavigationTick: state.selectedNavigationTick,
+            playbackCurrentTick: state.playbackCurrentTick,
+            playbackCurrentBar: state.playbackCurrentBar,
+            playbackTransportActive: state.playbackTransportActive,
+            pendingPlaybackStart: state.pendingPlaybackStart !== null,
+          });
+          traceTrackSwitch("track-switch-direct-start", {
+            previousTrackIndex: state.selectedTrackIndex,
+            nextTrackIndex: trackIndex,
+          });
+          logPlaybackPipeline("track-switch-start", {
+            fromTrackIndex: state.selectedTrackIndex,
+            requestedTrackIndex: trackIndex,
+            playbackTransportActive: state.playbackTransportActive,
+            countInInProgress: state.countInInProgress,
+            pendingPlaybackStart: state.pendingPlaybackStart !== null,
+          });
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "track-select-requested",
             timestamp: new Date().toISOString(),
@@ -2802,15 +3490,17 @@ export function startApp(rootElement: HTMLElement): void {
             currentPlaybackBar: state.playbackCurrentBar,
           });
           clearLoopState(state);
-          const preservedTick = state.selectedNavigationTick ?? state.playbackCurrentTick ?? state.playbackCurrentBarStartTick;
+          clearPausedResumeSnapshot("track-switch-clears-paused-state");
+          tracePlayback("track-switch-clears-paused-state", {
+            nextTrackIndex: trackIndex,
+            previousTrackIndex: state.selectedTrackIndex,
+          });
+          const fallbackTrackStartTick = state.gpRenderer?.getBarTickRange(1)?.startTick ?? 0;
+          const preservedTick = state.playbackCurrentTick ?? fallbackTrackStartTick;
           state.desiredTrackSwitchTick = preservedTick;
-          state.desiredTrackSwitchBar = state.selectedNavigationBar ?? state.playbackCurrentBar;
+          state.desiredTrackSwitchBar = state.playbackCurrentBar ?? 1;
           state.desiredTrackSwitchSourceTrackIndex = state.selectedTrackIndex;
           state.requestedTrackIndex = trackIndex;
-          state.playbackCurrentBar = null;
-          state.playbackCurrentTick = null;
-          state.playbackCurrentBarStartTick = null;
-          state.playbackCurrentBarEndTickExclusive = null;
           state.playerPositionPayloadShape = null;
           state.playerStatePayloadShape = null;
           state.currentBarSourcePath = null;
@@ -2818,11 +3508,23 @@ export function startApp(rootElement: HTMLElement): void {
           state.clickCounter += 1;
           state.lastClickTimestampIso = new Date().toISOString();
           state.selectionFired = true;
+          state.trackSwitchInProgress = false;
+          state.trackSwitchStartedAtMs = Date.now();
+          state.requiresSwitchedTrackPlaybackReady = false;
+          state.switchedTrackPlaybackReady = false;
+          state.pendingTrackSwitchSessionToken = null;
+          state.switchedTrackPlaybackReadySessionToken = null;
+          state.switchedTrackSeekStillPending = false;
+          traceTrackSwitch("onTrackSelectionChange-minimal-cancel", {
+            nextTrackIndex: trackIndex,
+            reason: "direct-track-switch-no-playback-teardown",
+          });
           state.pendingOverviewNavigationBar = null;
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;
-          clearNavigationSelectionState(state, rootElement);
-          state.manualNavigationVisualOverrideActive = preservedTick !== null;
+          resetNavigationSelectionToFirstBar(state, rootElement, "track-switch-left-list", trackIndex);
+          state.manualNavigationVisualOverrideActive = false;
+          updateTransportControls(rootElement, state, "track-selection-change");
 
           updateDebugField(rootElement, "requested-track-index", String(trackIndex));
           updateDebugField(rootElement, "last-clicked-track-index", String(trackIndex));
@@ -2840,6 +3542,11 @@ export function startApp(rootElement: HTMLElement): void {
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
           hidePlaybackPlayhead(rootElement, state);
+          traceTrackSwitch("onTrackSelectionChange-selectTrack", {
+            nextTrackIndex: trackIndex,
+            preservedTick,
+            preservedBar: state.desiredTrackSwitchBar,
+          });
           state.gpRenderer?.selectTrack(trackIndex, preservedTick);
         },
         onBackToHome: () => {
@@ -2887,6 +3594,9 @@ export function startApp(rootElement: HTMLElement): void {
           void exportAnchorDebugSnapshot();
         },
         onToggleTrackMute: (trackIndex) => {
+          if (blockStartupInteraction("toggle-track-mute")) {
+            return;
+          }
           const isMuted = state.mutedTrackIndexes.includes(trackIndex);
           state.mutedTrackIndexes = isMuted
             ? state.mutedTrackIndexes.filter((value) => value !== trackIndex)
@@ -2897,6 +3607,9 @@ export function startApp(rootElement: HTMLElement): void {
           updateTrackControlVisualState(state, rootElement);
         },
         onToggleTrackSolo: (trackIndex) => {
+          if (blockStartupInteraction("toggle-track-solo")) {
+            return;
+          }
           const isSolo = state.soloTrackIndexes.includes(trackIndex);
           state.soloTrackIndexes = isSolo
             ? state.soloTrackIndexes.filter((value) => value !== trackIndex)
@@ -2907,30 +3620,51 @@ export function startApp(rootElement: HTMLElement): void {
           updateTrackControlVisualState(state, rootElement);
         },
         onTrackVolumeChange: (trackIndex, volume) => {
+          if (blockStartupInteraction("track-volume-change")) {
+            return;
+          }
           state.trackVolumeByIndex[trackIndex] = volume;
           state.gpRenderer?.setTrackVolume(trackIndex, volume);
           applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onMasterVolumeChange: (volume) => {
+          if (blockStartupInteraction("master-volume-change")) {
+            return;
+          }
           state.masterVolume = volume;
           state.gpRenderer?.setMasterVolume(volume);
           applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onMoveLoopStartLeft: () => {
+          if (blockStartupInteraction("move-loop-start-left")) {
+            return;
+          }
           moveLoopBoundaryByBars(state, rootElement, "start", -1);
         },
         onMoveLoopStartRight: () => {
+          if (blockStartupInteraction("move-loop-start-right")) {
+            return;
+          }
           moveLoopBoundaryByBars(state, rootElement, "start", 1);
         },
         onMoveLoopEndLeft: () => {
+          if (blockStartupInteraction("move-loop-end-left")) {
+            return;
+          }
           moveLoopBoundaryByBars(state, rootElement, "end", -1);
         },
         onMoveLoopEndRight: () => {
+          if (blockStartupInteraction("move-loop-end-right")) {
+            return;
+          }
           moveLoopBoundaryByBars(state, rootElement, "end", 1);
         },
         onZoomIn: () => {
+          if (blockStartupInteraction("zoom-in")) {
+            return;
+          }
           const isMobile = isMobileViewport();
           const nextZoomPercent = isMobile
             ? MOBILE_ZOOM_PRESETS[Math.max(0, getMobileZoomStepIndex(state.tabZoomPercent) - 1)]
@@ -2943,6 +3677,9 @@ export function startApp(rootElement: HTMLElement): void {
           render();
         },
         onZoomOut: () => {
+          if (blockStartupInteraction("zoom-out")) {
+            return;
+          }
           const isMobile = isMobileViewport();
           const nextZoomPercent = isMobile
             ? MOBILE_ZOOM_PRESETS[Math.min(MOBILE_ZOOM_PRESETS.length - 1, getMobileZoomStepIndex(state.tabZoomPercent) + 1)]
@@ -2971,101 +3708,28 @@ export function startApp(rootElement: HTMLElement): void {
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             return;
           }
-          if (state.pendingPlaybackStart || state.countInInProgress || state.playbackTransportActive || state.playbackIsPlaying === true) {
-            logPlaybackPipeline("play-ignored-duplicate", {
-              pendingPlaybackStart: state.pendingPlaybackStart !== null,
-              countInInProgress: state.countInInProgress,
-              playbackTransportActive: state.playbackTransportActive,
-              playbackIsPlaying: state.playbackIsPlaying,
+          if (!state.rendererPlayerReady) {
+            tracePlayback("play-rejected-not-ready", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              rendererPlayerReady: state.rendererPlayerReady,
             });
             return;
           }
-
           cancelCountIn(state, rootElement);
-          const targetTick =
-            state.loopEnabled && state.loopStartTick !== null
+          const hasPausedSnapshot =
+            state.hasExplicitPausedState &&
+            state.pausedResumeTick !== null &&
+            state.pausedResumeTrackIndex === state.selectedTrackIndex;
+          const manualTarget = getActiveManualNavigationTarget(state);
+          const targetTick = hasPausedSnapshot
+            ? state.pausedResumeTick
+            : state.loopEnabled && state.loopStartTick !== null
               ? state.loopStartTick
-              : getActiveManualNavigationTarget(state)?.targetTick ?? null;
-          const targetBar =
-            state.loopEnabled && state.loopStartBar !== null
-              ? state.loopStartBar
-              : getActiveManualNavigationTarget(state)?.targetBar ?? null;
-          const requestId = state.nextPlaybackRequestId + 1;
-          state.nextPlaybackRequestId = requestId;
-          const startPlaybackNow = (): void => {
-            if (!state.gpRenderer) {
-              return;
-            }
-            logPlaybackPipeline("play-dispatch", { requestId, targetTick, targetBar });
-            state.playbackTransportActive = true;
-            clearNavigationSelectionState(state, rootElement);
-            state.manualNavigationVisualOverrideActive = false;
-            state.projectStatusMessage = null;
-            updateProjectStatusBanner(rootElement, "");
-            if (state.metronomeEnabled) {
-              startPlaybackMetronome(state);
-            } else {
-              stopPlaybackMetronome(state);
-            }
-            state.gpRenderer.play();
-          };
-          const requiresSeek = targetTick !== null && (state.playbackCurrentTick === null || Math.abs(state.playbackCurrentTick - targetTick) > 1);
-          logPlaybackPipeline("play-request", { requestId, targetTick, targetBar, requiresSeek });
-
-          const schedulePlaybackStart = (): void => {
-            if (!state.gpRenderer) {
-              return;
-            }
-            if (!requiresSeek || targetTick === null) {
-              startPlaybackNow();
-              return;
-            }
-            const seekApplied = state.gpRenderer.seekToTick(targetTick);
-            logPlaybackPipeline("play-seek-dispatched", { requestId, targetTick, seekApplied });
-            if (!seekApplied) {
-              state.projectStatusMessage = "Could not seek to playback start.";
-              updateProjectStatusBanner(rootElement, state.projectStatusMessage);
-              return;
-            }
-            state.pendingPlaybackStart = {
-              requestId,
-              targetTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex,
-              targetTick,
-              targetBar,
-            };
-          };
-
-          if (!state.countInEnabled) {
-            schedulePlaybackStart();
-            return;
+              : manualTarget?.targetTick ?? state.selectedNavigationTick ?? null;
+          if (targetTick !== null && (state.playbackCurrentTick === null || Math.abs(state.playbackCurrentTick - targetTick) > 1)) {
+            state.gpRenderer.seekToTick(targetTick);
           }
-
-          const beatsPerBar = 4;
-          const beatDurationMs = Math.max(120, Math.round(60000 / resolveEffectiveTempoBpm(state)));
-          let beatsRemaining = beatsPerBar;
-          state.countInInProgress = true;
-          state.playbackTransportActive = false;
-
-          const runCountInBeat = (): void => {
-            if (!state.countInInProgress) {
-              return;
-            }
-            state.projectStatusMessage = `Count-in: ${beatsRemaining}`;
-            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
-            playMetronomeClick(state, beatsRemaining === beatsPerBar);
-            if (beatsRemaining <= 1) {
-              state.pendingCountInTimerId = window.setTimeout(() => {
-                state.pendingCountInTimerId = null;
-                state.countInInProgress = false;
-                schedulePlaybackStart();
-              }, beatDurationMs);
-              return;
-            }
-            beatsRemaining -= 1;
-            state.pendingCountInTimerId = window.setTimeout(runCountInBeat, beatDurationMs);
-          };
-
-          runCountInBeat();
+          state.gpRenderer.play();
         },
         onPause: () => {
           if (!state.gpRenderer) {
@@ -3073,15 +3737,8 @@ export function startApp(rootElement: HTMLElement): void {
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             return;
           }
-
-          cancelCountIn(state, rootElement);
-          if (state.pendingPlaybackStart) {
-            logPlaybackPipeline("play-cancelled", { reason: "pause", requestId: state.pendingPlaybackStart.requestId });
-          }
-          state.pendingPlaybackStart = null;
-          state.playbackTransportActive = false;
-          stopPlaybackMetronome(state);
           state.gpRenderer.pause();
+          finalizePausedTransportState("pause-runtime-dispatch");
         },
         onStop: () => {
           if (!state.gpRenderer) {
@@ -3089,36 +3746,16 @@ export function startApp(rootElement: HTMLElement): void {
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             return;
           }
-
-          state.playbackCurrentBar = null;
-          state.playbackCurrentTick = null;
-          state.playbackCurrentBarStartTick = null;
-          state.playbackCurrentBarEndTickExclusive = null;
-          cancelCountIn(state, rootElement);
-          if (state.pendingPlaybackStart) {
-            logPlaybackPipeline("play-cancelled", { reason: "stop", requestId: state.pendingPlaybackStart.requestId });
-          }
-          state.pendingPlaybackStart = null;
-          stopPlaybackMetronome(state);
-          state.playbackTransportActive = false;
-          state.playbackFollowTargetFound = false;
-          state.playbackFollowSource = null;
-          state.lastPlaybackFollowRowIndex = null;
-          state.playbackPlayheadVisible = false;
-          state.playbackBarAnchorCount = 0;
-          state.playbackBarAnchorSource = null;
-          state.playbackAnchorStrategyAttempts = null;
-          state.manualNavigationVisualOverrideActive = false;
-          invalidatePlaybackBarAnchorRebuild(state);
-          updatePlaybackFollowDiagnostics(rootElement, false, null);
-          updateDebugField(rootElement, "playback-bar-anchor-count", "0");
-          updateDebugField(rootElement, "playback-bar-anchor-source", "-");
-          updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
-          updateArrangementPlaybackHighlight(state, rootElement);
-          hidePlaybackPlayhead(rootElement, state);
           state.gpRenderer.stop();
+          finalizeStoppedTransportState("stop-runtime-dispatch", {
+            resetPosition: true,
+            resetNavigationToFirstBar: true,
+          });
         },
         onToggleLoop: () => {
+          if (blockStartupInteraction("toggle-loop")) {
+            return;
+          }
           if (state.loopEnabled) {
             clearLoopState(state);
             state.projectStatusMessage = "Loop mode disabled.";
@@ -3131,10 +3768,16 @@ export function startApp(rootElement: HTMLElement): void {
           updateProjectStatusBanner(rootElement, state.projectStatusMessage);
         },
         onToggleCountIn: () => {
+          if (blockStartupInteraction("toggle-count-in")) {
+            return;
+          }
           state.countInEnabled = !state.countInEnabled;
           updateCountInToggleVisual(state, rootElement);
         },
         onToggleMetronome: () => {
+          if (blockStartupInteraction("toggle-metronome")) {
+            return;
+          }
           state.metronomeEnabled = !state.metronomeEnabled;
           if (state.metronomeEnabled && state.playbackTransportActive && !state.countInInProgress) {
             startPlaybackMetronome(state);
@@ -3145,6 +3788,9 @@ export function startApp(rootElement: HTMLElement): void {
           updateMetronomeToggleVisual(state, rootElement);
         },
         onDecreasePlaybackSpeed: () => {
+          if (blockStartupInteraction("decrease-playback-speed")) {
+            return;
+          }
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(
             state.playbackSpeedPercent - PLAYBACK_SPEED_BUTTON_STEP_PERCENT,
           );
@@ -3155,6 +3801,9 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onIncreasePlaybackSpeed: () => {
+          if (blockStartupInteraction("increase-playback-speed")) {
+            return;
+          }
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(
             state.playbackSpeedPercent + PLAYBACK_SPEED_BUTTON_STEP_PERCENT,
           );
@@ -3165,6 +3814,9 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onSetPlaybackSpeedPercent: (speedPercent: number) => {
+          if (blockStartupInteraction("set-playback-speed")) {
+            return;
+          }
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(speedPercent);
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
@@ -3173,6 +3825,9 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onResetPlaybackSpeed: () => {
+          if (blockStartupInteraction("reset-playback-speed")) {
+            return;
+          }
           state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
@@ -3181,6 +3836,10 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
       });
+      tracePlayback("transport-rerender-triggered", {
+        reason: "project-screen-rendered",
+      });
+      updateTransportControls(rootElement, state, "project-screen-rendered");
       setupBottomDockResize(rootElement, state);
       setupBottomDockHorizontalSync(rootElement);
       setupTabViewportZoomWheel(rootElement, state);
@@ -3217,6 +3876,17 @@ export function startApp(rootElement: HTMLElement): void {
         reason: "project-screen-init",
         selectedTrackIndex: state.selectedTrackIndex,
       });
+      state.projectRendererCreateInFlight = true;
+      state.projectRendererCreateKey = projectCreateKey;
+      traceRendererLifecycle("renderer-create-start", {
+        projectCreateKey,
+        selectedTrackIndex: state.selectedTrackIndex,
+      });
+      state.coldBootStartedAtMs = Date.now();
+      traceRendererLifecycle("cold-boot-path-enter", {
+        selectedTrackIndex: state.selectedTrackIndex,
+        projectCreateKey,
+      });
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
         onTracksLoaded: (tracks) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
@@ -3250,7 +3920,11 @@ export function startApp(rootElement: HTMLElement): void {
           }
 
           state.projectStatusMessage = `Loaded ${tracks.length} track${tracks.length === 1 ? "" : "s"}.`;
-          render();
+          refreshTrackStripUi(state, rootElement);
+          traceRendererLifecycle("project-init-deduped", {
+            reason: "skip-render-on-tracks-loaded",
+            trackCount: tracks.length,
+          });
         },
         onDebugInfo: (debugInfo) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
@@ -3280,9 +3954,264 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onRenderLifecycle: (event) => {
+          const eventType = typeof event.type === "string" ? event.type : "unknown";
+          const eventSessionToken =
+            typeof event.activeSessionToken === "number" && Number.isFinite(event.activeSessionToken)
+              ? event.activeSessionToken
+              : typeof event.sessionToken === "number" && Number.isFinite(event.sessionToken)
+                ? event.sessionToken
+                : null;
+          const canApplySwitchTerminalForEventToken = (token: number | null): boolean => {
+            if (token === null || !state.requiresSwitchedTrackPlaybackReady) {
+              return false;
+            }
+            if (state.pendingTrackSwitchSessionToken === null) {
+              if (state.trackSwitchInProgress) {
+                state.pendingTrackSwitchSessionToken = token;
+                traceTrackSwitch("switched-track-session-bound", {
+                  source: "terminal-state-fallback-bind",
+                  selectedTrackIndex: state.selectedTrackIndex,
+                  requestedTrackIndex: state.requestedTrackIndex,
+                  sessionToken: token,
+                });
+                return true;
+              }
+              return false;
+            }
+            return state.pendingTrackSwitchSessionToken === token;
+          };
+          if (eventSessionToken !== null) {
+            state.latestRendererSessionToken = eventSessionToken;
+          }
+          if (eventType === "score-loaded") {
+            state.rendererScoreLoaded = true;
+          } else if (eventType === "render-start") {
+            state.rendererRenderFinished = false;
+            if (state.requiresSwitchedTrackPlaybackReady) {
+              state.switchedTrackPlaybackReady = false;
+              state.switchedTrackPlaybackReadySessionToken = null;
+              state.switchedTrackSeekStillPending = false;
+            }
+          } else if (eventType === "render-finish") {
+            state.rendererRenderFinished = true;
+          } else if (eventType === "player-ready") {
+            state.rendererPlayerReady = true;
+            state.rendererRuntimeWarm = true;
+            tracePlayback("player-runtime-ready", {
+              source: "render-lifecycle:player-ready",
+              sessionToken: eventSessionToken,
+              selectedTrackIndex: state.selectedTrackIndex,
+            });
+          } else if (eventType === "player-runtime-ready") {
+            state.rendererPlayerReady = true;
+            state.rendererRuntimeWarm = true;
+            tracePlayback("player-runtime-ready", {
+              source: "render-lifecycle:player-runtime-ready",
+              sessionToken: eventSessionToken,
+              selectedTrackIndex: state.selectedTrackIndex,
+            });
+          } else if (eventType === "startup-confirmed") {
+            syncStartupConfirmedState("render-lifecycle-startup-confirmed");
+          } else if (eventType === "pause-confirmed") {
+            const eventConfirmedTrackIndex =
+              typeof event.confirmedActiveTrackIndex === "number" && Number.isFinite(event.confirmedActiveTrackIndex)
+                ? event.confirmedActiveTrackIndex
+                : null;
+            if (state.trackSwitchInProgress) {
+              tracePlayback("paused-confirmed-state-rejected", {
+                reason: "track-switch-in-progress",
+                eventConfirmedTrackIndex,
+                selectedTrackIndex: state.selectedTrackIndex,
+              });
+            } else if (eventConfirmedTrackIndex !== null && eventConfirmedTrackIndex !== state.selectedTrackIndex) {
+              tracePlayback("paused-confirmed-state-rejected", {
+                reason: "track-mismatch",
+                eventConfirmedTrackIndex,
+                selectedTrackIndex: state.selectedTrackIndex,
+              });
+            } else {
+              tracePlayback("paused-confirmed-state-entered", {
+                eventConfirmedTrackIndex,
+                selectedTrackIndex: state.selectedTrackIndex,
+              });
+              finalizePausedTransportState("render-lifecycle-pause-confirmed");
+            }
+          } else if (eventType === "stop-confirmed") {
+            finalizeStoppedTransportState("render-lifecycle-stop-confirmed");
+          } else if (eventType === "playback-runtime-ready-fallback") {
+            state.rendererFallbackReady = true;
+            state.rendererRuntimeWarm = true;
+          } else if (eventType === "active-track-confirmed") {
+            state.trackSwitchInProgress = false;
+          } else if (eventType === "switched-track-reload-start") {
+            traceTrackSwitch("switched-track-reload-start", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+            });
+          } else if (eventType === "switched-track-reload-render-finished") {
+            traceTrackSwitch("switched-track-reload-render-finished", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+            });
+          } else if (eventType === "switched-track-reload-post-render-finished") {
+            traceTrackSwitch("switched-track-reload-post-render-finished", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+            });
+          } else if (eventType === "switched-track-reload-seek-cleared") {
+            traceTrackSwitch("switched-track-reload-seek-cleared", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+            });
+          } else if (eventType === "switched-track-seek-pending") {
+            traceTrackSwitch("switched-track-seek-pending", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+              pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+            });
+            if (canApplySwitchTerminalForEventToken(eventSessionToken)) {
+              state.switchedTrackSeekStillPending = true;
+              state.switchedTrackPlaybackReady = false;
+              state.switchedTrackPlaybackReadySessionToken = null;
+            } else {
+              traceTrackSwitch("switched-track-terminal-state-rejected", {
+                eventType,
+                reason: "seek-pending-session-mismatch",
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                sessionToken: eventSessionToken,
+                pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+              });
+            }
+          } else if (eventType === "switched-track-seek-cleared") {
+            traceTrackSwitch("switched-track-seek-cleared", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+              pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+            });
+            if (canApplySwitchTerminalForEventToken(eventSessionToken)) {
+              state.switchedTrackSeekStillPending = false;
+            } else {
+              traceTrackSwitch("switched-track-terminal-state-rejected", {
+                eventType,
+                reason: "seek-cleared-session-mismatch",
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                sessionToken: eventSessionToken,
+                pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+              });
+            }
+          } else if (eventType === "switched-track-playback-ready") {
+            const matchingSwitchSession =
+              eventSessionToken !== null &&
+              state.pendingTrackSwitchSessionToken !== null &&
+              eventSessionToken === state.pendingTrackSwitchSessionToken;
+            const canAcceptPlaybackReady =
+              matchingSwitchSession &&
+              !state.trackSwitchInProgress &&
+              state.requestedTrackIndex === null &&
+              !state.switchedTrackSeekStillPending;
+            if (canAcceptPlaybackReady) {
+              state.switchedTrackPlaybackReady = true;
+              state.switchedTrackPlaybackReadySessionToken = eventSessionToken;
+              traceTrackSwitch("hot-track-switch-playback-ready", {
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                latestRendererSessionToken: state.latestRendererSessionToken,
+                switchSessionToken: state.pendingTrackSwitchSessionToken,
+              });
+            } else {
+              tracePlayback("play-unlock-rejected-because-seek-still-pending", {
+                source: "render-lifecycle:switched-track-playback-ready",
+                eventSessionToken,
+                pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+                trackSwitchInProgress: state.trackSwitchInProgress,
+                requestedTrackIndex: state.requestedTrackIndex,
+                switchedTrackSeekStillPending: state.switchedTrackSeekStillPending,
+              });
+            }
+          } else if (eventType === "switched-track-reload-complete-playable") {
+            if (canApplySwitchTerminalForEventToken(eventSessionToken)) {
+              state.trackSwitchInProgress = false;
+              state.requestedTrackIndex = null;
+              state.requiresSwitchedTrackPlaybackReady = false;
+              state.pendingTrackSwitchSessionToken = null;
+              state.switchedTrackSeekStillPending = false;
+              state.switchedTrackPlaybackReady = false;
+              state.switchedTrackPlaybackReadySessionToken = null;
+              state.trackSwitchStartedAtMs = null;
+              traceTrackSwitch("switched-track-terminal-state-applied", {
+                eventType,
+                result: "success",
+                selectedTrackIndex: state.selectedTrackIndex,
+                sessionToken: eventSessionToken,
+              });
+              traceTrackSwitch("switched-track-reload-complete-playable", {
+                selectedTrackIndex: state.selectedTrackIndex,
+                sessionToken: eventSessionToken,
+              });
+            } else {
+              traceTrackSwitch("switched-track-terminal-state-rejected", {
+                eventType,
+                result: "success",
+                reason: "session-mismatch-or-switch-not-active",
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                sessionToken: eventSessionToken,
+                pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+              });
+            }
+          } else if (eventType === "switched-track-reload-failed") {
+            if (canApplySwitchTerminalForEventToken(eventSessionToken)) {
+              traceTrackSwitch("switched-track-reload-failed", {
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                sessionToken: eventSessionToken,
+              });
+              state.trackSwitchInProgress = false;
+              state.requestedTrackIndex = null;
+              state.requiresSwitchedTrackPlaybackReady = false;
+              state.switchedTrackPlaybackReady = false;
+              state.pendingTrackSwitchSessionToken = null;
+              state.switchedTrackPlaybackReadySessionToken = null;
+              state.switchedTrackSeekStillPending = false;
+              state.trackSwitchStartedAtMs = null;
+              traceTrackSwitch("switched-track-terminal-state-applied", {
+                eventType,
+                result: "failure",
+                selectedTrackIndex: state.selectedTrackIndex,
+                sessionToken: eventSessionToken,
+              });
+            } else {
+              traceTrackSwitch("switched-track-terminal-state-rejected", {
+                eventType,
+                result: "failure",
+                reason: "session-mismatch-or-switch-not-active",
+                selectedTrackIndex: state.selectedTrackIndex,
+                requestedTrackIndex: state.requestedTrackIndex,
+                sessionToken: eventSessionToken,
+                pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
+              });
+            }
+          } else if (eventType === "player-runtime-not-ready-worker-missing") {
+            tracePlayback("player-runtime-not-ready-worker-missing", {
+              sessionToken: eventSessionToken,
+              selectedTrackIndex: state.selectedTrackIndex,
+            });
+          }
           appendSessionDebugEvent(state.sessionDebugLogger, {
             ...event,
           });
+          tracePlayback("transport-rerender-triggered", {
+            reason: `render-lifecycle:${eventType}`,
+          });
+          updateTransportControls(rootElement, state, `render-lifecycle:${eventType}`);
         },
         onTrackRenderCommitted: (trackIndex) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
@@ -3294,8 +4223,53 @@ export function startApp(rootElement: HTMLElement): void {
           applyMixerStateToRenderer(state);
           nudgeRenderedSectionLabels(rootElement, state);
           updateLoopHandlesVisual(state, rootElement);
+          state.trackSwitchInProgress = false;
+          state.rendererRenderFinished = true;
+          if (state.requiresSwitchedTrackPlaybackReady && !state.switchedTrackPlaybackReady) {
+            traceTrackSwitch("hot-track-switch-visual-committed", {
+              trackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+            });
+          }
+          const trackSwitchDurationMs =
+            state.trackSwitchStartedAtMs === null ? null : Math.max(0, Date.now() - state.trackSwitchStartedAtMs);
+          if (trackSwitchDurationMs !== null) {
+            traceTrackSwitch("hot-track-switch-duration-ms", {
+              trackIndex,
+              durationMs: trackSwitchDurationMs,
+            });
+            traceTrackSwitch("hot-track-switch-ready", {
+              trackIndex,
+              durationMs: trackSwitchDurationMs,
+              switchedTrackPlaybackReady: state.switchedTrackPlaybackReady,
+            });
+            state.trackSwitchStartedAtMs = null;
+          }
+          if (state.coldBootStartedAtMs !== null) {
+            const coldBootDurationMs = Math.max(0, Date.now() - state.coldBootStartedAtMs);
+            traceRendererLifecycle("cold-boot-duration-ms", {
+              trackIndex,
+              durationMs: coldBootDurationMs,
+            });
+            state.coldBootStartedAtMs = null;
+          }
+          traceTrackSwitch("track-switch-finished", {
+            trackIndex,
+            selectedTrackIndex: state.selectedTrackIndex,
+          });
         },
         onProgrammaticSeekConfirmed: (trackIndex, tick) => {
+          tracePlayback("onProgrammaticSeekConfirmed", {
+            trackIndex,
+            tick,
+          });
+          tracePlayback("onProgrammaticSeekConfirmed-enter", {
+            trackIndex,
+            tick,
+            pendingPlaybackStart: state.pendingPlaybackStart,
+            selectedTrackIndex: state.selectedTrackIndex,
+            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
+          });
           if (
             state.pendingPlaybackStart &&
             state.pendingPlaybackStart.targetTrackIndex === trackIndex &&
@@ -3303,13 +4277,12 @@ export function startApp(rootElement: HTMLElement): void {
           ) {
             const pendingStart = state.pendingPlaybackStart;
             state.pendingPlaybackStart = null;
-            logPlaybackPipeline("play-seek-confirmed", {
+            logPlaybackPipeline("seek-confirmed", {
               requestId: pendingStart.requestId,
               targetTick: pendingStart.targetTick,
               confirmedTick: tick,
             });
             state.playbackTransportActive = true;
-            clearNavigationSelectionState(state, rootElement);
             state.manualNavigationVisualOverrideActive = false;
             state.projectStatusMessage = null;
             updateProjectStatusBanner(rootElement, "");
@@ -3318,10 +4291,18 @@ export function startApp(rootElement: HTMLElement): void {
             } else {
               stopPlaybackMetronome(state);
             }
+            updateTransportControls(rootElement, state, "seek-confirmed-play-dispatch");
             logPlaybackPipeline("play-dispatch", {
               requestId: pendingStart.requestId,
               targetTick: pendingStart.targetTick,
               targetBar: pendingStart.targetBar,
+            });
+            tracePlayback("play-dispatch", {
+              source: "onProgrammaticSeekConfirmed",
+              requestId: pendingStart.requestId,
+              targetTick: pendingStart.targetTick,
+              targetBar: pendingStart.targetBar,
+              trackIndex,
             });
             state.gpRenderer?.play();
           }
@@ -3380,6 +4361,7 @@ export function startApp(rootElement: HTMLElement): void {
             }
           });
           updateArrangementOverview(state, rootElement);
+          ensureNavigationSelectionIsValid(state, rootElement, "score-overview-runtime-info");
           nudgeRenderedSectionLabels(rootElement, state);
           updateLoopHandlesVisual(state, rootElement);
           updateTrackControlVisualState(state, rootElement);
@@ -3387,10 +4369,31 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
         },
         onPlaybackRuntimeInfo: (info) => {
-          state.playbackIsPlaying = info.isPlaying;
+          const previousPlaybackIsPlaying = state.playbackIsPlaying;
+          if (typeof info.isPlaying === "boolean") {
+            state.playbackIsPlaying = info.isPlaying;
+          }
+          if (info.isPlaying === true) {
+            syncStartupConfirmedState("runtime-is-playing");
+          }
           if (info.isPlaying === false) {
-            state.playbackTransportActive = false;
-            stopPlaybackMetronome(state);
+            const startupWasPending =
+              state.pendingPlaybackStart !== null ||
+              state.countInInProgress ||
+              (state.playbackTransportActive && previousPlaybackIsPlaying !== true);
+            if (startupWasPending) {
+              tracePlayback("startup-pending", {
+                reason: "runtime-not-playing-during-startup",
+                previousPlaybackIsPlaying,
+                pendingPlaybackStart: state.pendingPlaybackStart !== null,
+                countInInProgress: state.countInInProgress,
+                playbackTransportActive: state.playbackTransportActive,
+              });
+              updateTransportControls(rootElement, state, "runtime-not-playing-during-startup");
+            } else {
+              state.playbackTransportActive = false;
+              stopPlaybackMetronome(state);
+            }
           }
           state.playbackPositionLabel = info.positionLabel;
           state.playbackCurrentBar = info.currentBar;
@@ -3430,7 +4433,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.selectedNavigationBar !== null &&
             state.selectedNavigationTrackIndex !== null
           ) {
-            clearNavigationSelectionState(state, rootElement);
+            state.selectionDivergenceSuppressTicks = 0;
           }
           if (
             state.selectedNavigationBar !== null &&
@@ -3446,7 +4449,14 @@ export function startApp(rootElement: HTMLElement): void {
             } else if (state.selectionDivergenceSuppressTicks > 0) {
               state.selectionDivergenceSuppressTicks -= 1;
             } else if (info.isPlaying === true) {
-              clearNavigationSelectionState(state, rootElement);
+              const fallbackTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
+              const fallbackBar = info.currentBar ?? 1;
+              const fallbackTick =
+                info.currentTick ??
+                state.gpRenderer?.getBarTickRange(fallbackBar)?.startTick ??
+                state.gpRenderer?.getBarTickRange(1)?.startTick ??
+                0;
+              applyNavigationSelection(state, rootElement, fallbackBar, fallbackTick, fallbackTrackIndex);
             }
           }
           updatePlayerRuntimeFields(state, rootElement);
@@ -3475,6 +4485,7 @@ export function startApp(rootElement: HTMLElement): void {
           updateNavigationSelectionVisual(state, rootElement);
           updatePlaybackFollowInRenderHost(state, rootElement);
           updateLoopHandlesVisual(state, rootElement);
+          updateTransportControls(rootElement, state, "playback-runtime-info");
         },
         onRuntimeNotice: (message) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
@@ -3488,6 +4499,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentTick = null;
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
+          clearPendingStartupState("runtime-notice");
           state.playbackTransportActive = false;
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
@@ -3500,6 +4512,12 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingOverviewNavigationTrackIndex = null;
           state.pendingOverviewNavigationTick = null;
           state.manualNavigationVisualOverrideActive = false;
+          state.trackSwitchInProgress = false;
+          state.requiresSwitchedTrackPlaybackReady = false;
+          state.switchedTrackPlaybackReady = false;
+          state.pendingTrackSwitchSessionToken = null;
+          state.switchedTrackPlaybackReadySessionToken = null;
+          state.switchedTrackSeekStillPending = false;
           invalidatePlaybackBarAnchorRebuild(state);
           updateProjectStatusBanner(rootElement, message);
           updateDebugField(rootElement, "current-tick", "-");
@@ -3508,10 +4526,14 @@ export function startApp(rootElement: HTMLElement): void {
           updateDebugField(rootElement, "playback-anchor-strategy-attempts", "-");
           updatePlaybackFollowDiagnostics(rootElement, false, null);
           updateArrangementPlaybackHighlight(state, rootElement);
-          clearNavigationSelectionState(state, rootElement);
+          resetNavigationSelectionToFirstBar(state, rootElement, "render-error");
           hidePlaybackPlayhead(rootElement, state);
         },
         onActiveTrackConfirmed: (trackIndex) => {
+          traceRendererLifecycle("active-track-confirmed", {
+            trackIndex,
+            selectedTrackIndex: state.selectedTrackIndex,
+          });
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "active-track-confirmed",
             timestamp: new Date().toISOString(),
@@ -3555,8 +4577,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.requestedTrackIndex = null;
           state.selectionFired = false;
           if (!isPendingOverviewTrackSwitch) {
-            clearNavigationSelectionState(state, rootElement);
+            resetNavigationSelectionToFirstBar(state, rootElement, "active-track-confirmed-default", trackIndex);
           }
+          ensureNavigationSelectionIsValid(state, rootElement, "active-track-confirmed");
           if (state.currentProject) {
             state.currentProject.viewState.selectedTrackIndex = trackIndex;
           }
@@ -3580,6 +4603,39 @@ export function startApp(rootElement: HTMLElement): void {
         },
         onRenderError: (payload) => {
           const message = payload.message;
+          const errorStage =
+            typeof payload.details?.stage === "string" ? payload.details.stage : null;
+          const previousTrackIndex = state.desiredTrackSwitchSourceTrackIndex;
+          const rollbackTick = state.desiredTrackSwitchTick;
+          const isTrackSwitchDirectError =
+            errorStage === "selectTrackDirect" ||
+            errorStage === "direct-switch-error-rolled-back" ||
+            (state.requestedTrackIndex !== null &&
+              previousTrackIndex !== null &&
+              state.trackSwitchInProgress === false);
+          if (
+            isTrackSwitchDirectError &&
+            previousTrackIndex !== null &&
+            state.gpRenderer !== null
+          ) {
+            traceTrackSwitch("track-switch-render-error-rollback", {
+              targetIndex: state.requestedTrackIndex,
+              prevIndex: previousTrackIndex,
+              errorStage,
+            });
+            state.projectStatusMessage = `Track render failed. Reverted to track ${previousTrackIndex + 1}.`;
+            state.requestedTrackIndex = null;
+            state.trackSwitchInProgress = false;
+            state.requiresSwitchedTrackPlaybackReady = false;
+            state.switchedTrackPlaybackReady = false;
+            state.pendingTrackSwitchSessionToken = null;
+            state.switchedTrackPlaybackReadySessionToken = null;
+            state.switchedTrackSeekStillPending = false;
+            state.gpRenderer.selectTrack(previousTrackIndex, rollbackTick ?? 0);
+            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
+            updateTransportControls(rootElement, state, "track-switch-render-error-rollback");
+            return;
+          }
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "render-error",
             timestamp: new Date().toISOString(),
@@ -3619,6 +4675,11 @@ export function startApp(rootElement: HTMLElement): void {
           state.desiredTrackSwitchTick = null;
           state.desiredTrackSwitchBar = null;
           state.desiredTrackSwitchSourceTrackIndex = null;
+          state.requiresSwitchedTrackPlaybackReady = false;
+          state.switchedTrackPlaybackReady = false;
+          state.pendingTrackSwitchSessionToken = null;
+          state.switchedTrackPlaybackReadySessionToken = null;
+          state.switchedTrackSeekStillPending = false;
           invalidatePlaybackBarAnchorRebuild(state);
           hidePlaybackPlayhead(rootElement, state);
           appendSessionDebugEvent(state.sessionDebugLogger, {
@@ -3632,10 +4693,24 @@ export function startApp(rootElement: HTMLElement): void {
       }, state.tabZoomPercent)
         .then((renderer) => {
           state.gpRenderer = renderer;
+          state.projectRendererCreateInFlight = false;
+          state.projectRendererCreateKey = null;
+          traceRendererLifecycle("renderer-created", {
+            selectedTrackIndex: state.selectedTrackIndex,
+            requestedTrackIndex: state.requestedTrackIndex,
+          });
+          traceRendererLifecycle("renderer-create-finish", {
+            selectedTrackIndex: state.selectedTrackIndex,
+          });
+          logPlaybackPipeline("renderer-created", {
+            selectedTrackIndex: state.selectedTrackIndex,
+          });
           state.gpRenderer.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           applyMixerStateToRenderer(state);
         })
         .catch((error: unknown) => {
+          state.projectRendererCreateInFlight = false;
+          state.projectRendererCreateKey = null;
           state.projectStatusMessage =
             error instanceof Error ? error.message : "Could not initialize GP renderer.";
           render();
