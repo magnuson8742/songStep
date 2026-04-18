@@ -398,28 +398,13 @@ function traceRendererLifecycle(eventName: string, payload: Record<string, unkno
 }
 
 function resolveTransportUiState(state: AppState): {
-  uiState: "not-ready" | "idle-ready" | "pending-start" | "playing-confirmed" | "paused-confirmed";
+  uiState: "not-ready" | "idle-ready" | "playing-confirmed" | "paused-confirmed";
   canPlay: boolean;
   canPause: boolean;
   canStop: boolean;
   playDisabledReason: string | null;
 } {
-  const confirmedTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null;
-  const readyBase =
-    state.gpRenderer !== null &&
-    state.rendererScoreLoaded &&
-    state.rendererRenderFinished &&
-    confirmedTrackIndex !== null &&
-    !state.trackSwitchInProgress &&
-    state.requestedTrackIndex === null;
-  const runtimeReady = state.rendererPlayerReady;
-  const switchedTrackReadyGateSatisfied =
-    !state.requiresSwitchedTrackPlaybackReady ||
-    (state.switchedTrackPlaybackReady &&
-      !state.switchedTrackSeekStillPending &&
-      state.pendingTrackSwitchSessionToken !== null &&
-      state.switchedTrackPlaybackReadySessionToken === state.pendingTrackSwitchSessionToken);
-  const ready = readyBase && runtimeReady && switchedTrackReadyGateSatisfied;
+  const ready = state.gpRenderer !== null && state.rendererPlayerReady;
   if (!ready) {
     return {
       uiState: "not-ready",
@@ -437,21 +422,6 @@ function resolveTransportUiState(state: AppState): {
       canPause: true,
       canStop: true,
       playDisabledReason: "already-playing",
-    };
-  }
-
-  const pendingStart = state.countInInProgress || state.pendingPlaybackStart !== null || state.playbackTransportActive;
-  if (pendingStart) {
-    return {
-      uiState: "pending-start",
-      canPlay: false,
-      canPause: false,
-      canStop: false,
-      playDisabledReason: state.countInInProgress
-        ? "count-in-in-progress"
-        : state.pendingPlaybackStart !== null
-          ? "seek-pending"
-          : "startup-pending",
     };
   }
 
@@ -486,7 +456,7 @@ function resolveTransportUiState(state: AppState): {
 function updateTransportControls(rootElement: HTMLElement, state: AppState, reason: string): void {
   const transportUi = resolveTransportUiState(state);
   const uiStateChanged = state.lastTransportUiState !== transportUi.uiState;
-  state.startupInteractionLocked = transportUi.uiState === "pending-start";
+  state.startupInteractionLocked = false;
   const transportSnapshot = `${transportUi.uiState}|${transportUi.canPlay ? "1" : "0"}|${transportUi.canPause ? "1" : "0"}|${transportUi.canStop ? "1" : "0"}|${transportUi.playDisabledReason ?? "-"}`;
   if (state.lastTransportControlSnapshot !== transportSnapshot) {
     tracePlayback("transport-ready-evaluated", {
@@ -2847,7 +2817,6 @@ export function startApp(rootElement: HTMLElement): void {
       });
     }
     state.pendingPlaybackStart = null;
-    state.gpRenderer?.setStartupTransactionId(null);
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     stopPlaybackMetronome(state);
@@ -2881,7 +2850,6 @@ export function startApp(rootElement: HTMLElement): void {
     const hadCountInInProgress = state.countInInProgress;
     const hadPlaybackTransportActive = state.playbackTransportActive;
     state.pendingPlaybackStart = null;
-    state.gpRenderer?.setStartupTransactionId(null);
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     cancelCountIn(state, rootElement);
@@ -2913,7 +2881,6 @@ export function startApp(rootElement: HTMLElement): void {
   const syncStartupConfirmedState = (reason: string): void => {
     const hadPendingPlaybackStart = state.pendingPlaybackStart !== null;
     state.pendingPlaybackStart = null;
-    state.gpRenderer?.setStartupTransactionId(null);
     clearPausedResumeSnapshot(`startup-confirmed:${reason}`);
     state.playbackTransportActive = true;
     state.countInInProgress = false;
@@ -2968,7 +2935,6 @@ export function startApp(rootElement: HTMLElement): void {
       playbackCurrentTick: state.playbackCurrentTick,
     };
     state.pendingPlaybackStart = null;
-    state.gpRenderer?.setStartupTransactionId(null);
     clearPausedResumeSnapshot(`stop-finalized:${reason}`);
     state.playbackTransportActive = false;
     state.countInInProgress = false;
@@ -3008,7 +2974,6 @@ export function startApp(rootElement: HTMLElement): void {
       playbackCurrentBar: state.playbackCurrentBar,
     };
     state.pendingPlaybackStart = null;
-    state.gpRenderer?.setStartupTransactionId(null);
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     state.playbackIsPlaying = false;
@@ -3421,7 +3386,7 @@ export function startApp(rootElement: HTMLElement): void {
         state.sessionDebugBannerShown = true;
       }
       const transportUi = resolveTransportUiState(state);
-      state.startupInteractionLocked = transportUi.uiState === "pending-start";
+      state.startupInteractionLocked = false;
       const blockStartupInteraction = (action: string): boolean => {
         if (!state.startupInteractionLocked) {
           return false;
@@ -3738,381 +3703,49 @@ export function startApp(rootElement: HTMLElement): void {
           render();
         },
         onPlay: () => {
-          if (blockStartupInteraction("play")) {
-            return;
-          }
           if (!state.gpRenderer) {
             state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             return;
           }
-          if (state.pendingPlaybackStart || state.countInInProgress || state.playbackTransportActive || state.playbackIsPlaying === true) {
-            tracePlayback("onPlay-ignored-duplicate", {
+          if (!state.rendererPlayerReady) {
+            tracePlayback("play-rejected-not-ready", {
               selectedTrackIndex: state.selectedTrackIndex,
-              confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-              pendingPlaybackStart: state.pendingPlaybackStart !== null,
-              countInInProgress: state.countInInProgress,
-              playbackTransportActive: state.playbackTransportActive,
-              playbackIsPlaying: state.playbackIsPlaying,
-            });
-            logPlaybackPipeline("play-ignored-duplicate", {
-              pendingPlaybackStart: state.pendingPlaybackStart !== null,
-              countInInProgress: state.countInInProgress,
-              playbackTransportActive: state.playbackTransportActive,
-              playbackIsPlaying: state.playbackIsPlaying,
+              rendererPlayerReady: state.rendererPlayerReady,
             });
             return;
           }
-
           cancelCountIn(state, rootElement);
           const hasPausedSnapshot =
             state.hasExplicitPausedState &&
-            (state.pausedResumeTick !== null || state.pausedResumeBar !== null) &&
-            state.pausedResumeTrackIndex === state.selectedTrackIndex &&
-            (state.gpRenderDebugInfo?.confirmedActiveTrackIndex === null ||
-              state.pausedResumeTrackIndex === state.gpRenderDebugInfo?.confirmedActiveTrackIndex) &&
-            (state.pausedResumeSessionToken === null ||
-              state.latestRendererSessionToken === null ||
-              state.pausedResumeSessionToken === state.latestRendererSessionToken);
-          if (
-            state.hasExplicitPausedState &&
-            !hasPausedSnapshot &&
-            state.pausedResumeTrackIndex !== null &&
-            state.pausedResumeTrackIndex !== state.selectedTrackIndex
-          ) {
-            tracePlayback("paused-snapshot-ignored-due-to-track-mismatch", {
-              pausedResumeTrackIndex: state.pausedResumeTrackIndex,
-              selectedTrackIndex: state.selectedTrackIndex,
-              confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-            });
-          } else if (
-            state.hasExplicitPausedState &&
-            !hasPausedSnapshot &&
-            state.pausedResumeSessionToken !== null &&
-            state.latestRendererSessionToken !== null &&
-            state.pausedResumeSessionToken !== state.latestRendererSessionToken
-          ) {
-            tracePlayback("paused-snapshot-ignored-due-to-session-mismatch", {
-              pausedResumeSessionToken: state.pausedResumeSessionToken,
-              latestRendererSessionToken: state.latestRendererSessionToken,
-              selectedTrackIndex: state.selectedTrackIndex,
-              confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-            });
-          }
-          if (hasPausedSnapshot) {
-            tracePlayback("resume-from-paused-snapshot", {
-              tick: state.pausedResumeTick,
-              bar: state.pausedResumeBar,
-              selectedTrackIndex: state.selectedTrackIndex,
-              confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-            });
-          }
+            state.pausedResumeTick !== null &&
+            state.pausedResumeTrackIndex === state.selectedTrackIndex;
+          const manualTarget = getActiveManualNavigationTarget(state);
           const targetTick = hasPausedSnapshot
             ? state.pausedResumeTick
             : state.loopEnabled && state.loopStartTick !== null
               ? state.loopStartTick
-              : getActiveManualNavigationTarget(state)?.targetTick ?? null;
-          const targetBar = hasPausedSnapshot
-            ? state.pausedResumeBar
-            : state.loopEnabled && state.loopStartBar !== null
-              ? state.loopStartBar
-              : getActiveManualNavigationTarget(state)?.targetBar ?? null;
-          tracePlayback("resume-target-selected", {
-            source: hasPausedSnapshot
-              ? "paused-snapshot"
-              : state.loopEnabled && state.loopStartTick !== null
-                ? "loop-start"
-                : "manual-navigation",
-            targetTick,
-            targetBar,
-          });
-          tracePlayback("targetTick-derived-for-track-switch", {
-            targetTick,
-            targetBar,
-            selectedTrackIndex: state.selectedTrackIndex,
-          });
-          const requestId = state.nextPlaybackRequestId + 1;
-          state.nextPlaybackRequestId = requestId;
-          state.gpRenderer.setStartupTransactionId(requestId);
-          const readiness = {
-            hasRenderer: state.gpRenderer !== null,
-            rendererScoreLoaded: state.rendererScoreLoaded,
-            rendererRenderFinished: state.rendererRenderFinished,
-            rendererPlayerReady: state.rendererPlayerReady,
-            rendererFallbackReady: state.rendererFallbackReady,
-            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-            trackSwitchInProgress: state.trackSwitchInProgress,
-            requestedTrackIndex: state.requestedTrackIndex,
-          };
-          const playbackReadyBase =
-            readiness.hasRenderer &&
-            readiness.rendererScoreLoaded &&
-            readiness.rendererRenderFinished &&
-            readiness.confirmedTrackIndex !== null &&
-            !readiness.trackSwitchInProgress &&
-            readiness.requestedTrackIndex === null;
-          const playbackReadyPrimary =
-            playbackReadyBase &&
-            readiness.rendererPlayerReady &&
-            (!state.requiresSwitchedTrackPlaybackReady ||
-              (state.switchedTrackPlaybackReady &&
-                !state.switchedTrackSeekStillPending &&
-                state.pendingTrackSwitchSessionToken !== null &&
-                state.switchedTrackPlaybackReadySessionToken === state.pendingTrackSwitchSessionToken));
-
-          if (!playbackReadyPrimary) {
-            if (state.requiresSwitchedTrackPlaybackReady && !state.switchedTrackPlaybackReady) {
-              tracePlayback("play-blocked-waiting-for-switched-track-reload-complete", {
-                requestId,
-                selectedTrackIndex: state.selectedTrackIndex,
-                confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-                trackSwitchInProgress: readiness.trackSwitchInProgress,
-                requestedTrackIndex: readiness.requestedTrackIndex,
-              });
-            } else if (state.requiresSwitchedTrackPlaybackReady && state.switchedTrackSeekStillPending) {
-              tracePlayback("play-blocked-waiting-for-switched-track-reload-complete", {
-                requestId,
-                selectedTrackIndex: state.selectedTrackIndex,
-                reason: "switched-track-seek-still-pending",
-                pendingTrackSwitchSessionToken: state.pendingTrackSwitchSessionToken,
-              });
-            } else if (readiness.trackSwitchInProgress || readiness.requestedTrackIndex !== null) {
-              tracePlayback("play-blocked-track-switch-in-progress", {
-                requestId,
-                selectedTrackIndex: state.selectedTrackIndex,
-                ...readiness,
-              });
-            } else if (playbackReadyBase && !readiness.rendererPlayerReady) {
-              tracePlayback("play-blocked-awaiting-player-ready", {
-                requestId,
-                selectedTrackIndex: state.selectedTrackIndex,
-                ...readiness,
-              });
-            } else {
-              tracePlayback("play-blocked-not-ready", {
-                requestId,
-                selectedTrackIndex: state.selectedTrackIndex,
-                ...readiness,
-              });
-            }
-            return;
+              : manualTarget?.targetTick ?? state.selectedNavigationTick ?? null;
+          if (targetTick !== null && (state.playbackCurrentTick === null || Math.abs(state.playbackCurrentTick - targetTick) > 1)) {
+            state.gpRenderer.seekToTick(targetTick);
           }
-          tracePlayback("play-ready-primary", {
-            requestId,
-            selectedTrackIndex: state.selectedTrackIndex,
-            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-          });
-          const startPlaybackNow = (): void => {
-            if (!state.gpRenderer) {
-              return;
-            }
-            tracePlayback("play-dispatch", {
-              source: "onPlay",
-              requestId,
-              selectedTrackIndex: state.selectedTrackIndex,
-              confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-              targetTick,
-              targetBar,
-            });
-            logPlaybackPipeline("play-dispatch", { requestId, targetTick, targetBar });
-            tracePlayback("play-dispatch-now", { requestId, targetTick, targetBar });
-            state.playbackTransportActive = true;
-            state.manualNavigationVisualOverrideActive = false;
-            state.projectStatusMessage = null;
-            updateProjectStatusBanner(rootElement, "");
-            if (state.metronomeEnabled) {
-              startPlaybackMetronome(state);
-            } else {
-              stopPlaybackMetronome(state);
-            }
-            updateTransportControls(rootElement, state, "play-dispatch-now");
-            state.gpRenderer.play();
-          };
-          const requiresSeek = targetTick !== null && (state.playbackCurrentTick === null || Math.abs(state.playbackCurrentTick - targetTick) > 1);
-          tracePlayback("onPlay-enter", {
-            requestId,
-            selectedTrackIndex: state.selectedTrackIndex,
-            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-            pendingPlaybackStart: state.pendingPlaybackStart !== null,
-            playbackTransportActive: state.playbackTransportActive,
-            playbackIsPlaying: state.playbackIsPlaying,
-            targetTick,
-            targetBar,
-            requiresSeek,
-            countInEnabled: state.countInEnabled,
-            countInInProgress: state.countInInProgress,
-            loopEnabled: state.loopEnabled,
-            loopStartBar: state.loopStartBar,
-            loopEndBar: state.loopEndBar,
-          });
-          logPlaybackPipeline("play-request", { requestId, targetTick, targetBar, requiresSeek });
-          if (requiresSeek) {
-            tracePlayback("play-seek-required", { requestId, targetTick, targetBar });
-          }
-
-          const schedulePlaybackStart = (): void => {
-            if (!state.gpRenderer) {
-              return;
-            }
-            if (!state.pendingPlaybackStart) {
-              const startupTargetTick = targetTick ?? state.playbackCurrentTick ?? state.playbackCurrentBarStartTick ?? 0;
-              state.pendingPlaybackStart = {
-                requestId,
-                targetTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex,
-                targetTick: startupTargetTick,
-                targetBar,
-              };
-              const pendingStart = state.pendingPlaybackStart;
-              tracePlayback("pendingPlaybackStart-created", {
-                requestId,
-                targetTrackIndex: pendingStart.targetTrackIndex,
-                targetTick: pendingStart.targetTick,
-                targetBar,
-                reason: "startup-transaction-begin",
-              });
-              updateTransportControls(rootElement, state, "startup-transaction-begin");
-            }
-            if (!requiresSeek || targetTick === null) {
-              startPlaybackNow();
-              return;
-            }
-            const seekApplied = state.gpRenderer.seekToTick(targetTick);
-            logPlaybackPipeline("seek-dispatched", { requestId, targetTick, seekApplied });
-            if (!seekApplied) {
-              state.pendingPlaybackStart = null;
-              state.gpRenderer.setStartupTransactionId(null);
-              updateTransportControls(rootElement, state, "startup-transaction-seek-failed");
-              state.projectStatusMessage = "Could not seek to playback start.";
-              updateProjectStatusBanner(rootElement, state.projectStatusMessage);
-              return;
-            }
-            tracePlayback("play-dispatch-after-seek", {
-              requestId,
-              targetTick,
-              targetBar,
-            });
-          };
-
-          if (!state.countInEnabled) {
-            schedulePlaybackStart();
-            return;
-          }
-
-          const beatsPerBar = 4;
-          const beatDurationMs = Math.max(120, Math.round(60000 / resolveEffectiveTempoBpm(state)));
-          let beatsRemaining = beatsPerBar;
-          state.countInInProgress = true;
-          state.playbackTransportActive = false;
-
-          const runCountInBeat = (): void => {
-            if (!state.countInInProgress) {
-              return;
-            }
-            state.projectStatusMessage = `Count-in: ${beatsRemaining}`;
-            updateProjectStatusBanner(rootElement, state.projectStatusMessage);
-            playMetronomeClick(state, beatsRemaining === beatsPerBar);
-            if (beatsRemaining <= 1) {
-              state.pendingCountInTimerId = window.setTimeout(() => {
-                state.pendingCountInTimerId = null;
-                state.countInInProgress = false;
-                schedulePlaybackStart();
-              }, beatDurationMs);
-              return;
-            }
-            beatsRemaining -= 1;
-            state.pendingCountInTimerId = window.setTimeout(runCountInBeat, beatDurationMs);
-          };
-
-          runCountInBeat();
+          state.gpRenderer.play();
         },
         onPause: () => {
-          if (blockStartupInteraction("pause")) {
-            return;
-          }
           if (!state.gpRenderer) {
             state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             return;
           }
-
-          logPlaybackPipeline("pause-dispatch", {
-            selectedTrackIndex: state.selectedTrackIndex,
-          });
-          tracePlayback("pause-dispatch", {
-            selectedTrackIndex: state.selectedTrackIndex,
-            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-          });
-          tracePlayback("onPause", {
-            selectedTrackIndex: state.selectedTrackIndex,
-            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-            pendingPlaybackStart: state.pendingPlaybackStart !== null,
-            playbackTransportActive: state.playbackTransportActive,
-            playbackIsPlaying: state.playbackIsPlaying,
-          });
           state.gpRenderer.pause();
           finalizePausedTransportState("pause-runtime-dispatch");
         },
         onStop: () => {
-          if (blockStartupInteraction("stop")) {
-            return;
-          }
           if (!state.gpRenderer) {
             state.projectStatusMessage = "Playback is unavailable because renderer is not ready.";
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             return;
           }
-
-          logPlaybackPipeline("stop-dispatch", {
-            selectedTrackIndex: state.selectedTrackIndex,
-          });
-          tracePlayback("stop-dispatch", {
-            selectedTrackIndex: state.selectedTrackIndex,
-            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-          });
-          tracePlayback("onStop", {
-            selectedTrackIndex: state.selectedTrackIndex,
-            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-            pendingPlaybackStart: state.pendingPlaybackStart !== null,
-            playbackTransportActive: state.playbackTransportActive,
-            playbackIsPlaying: state.playbackIsPlaying,
-          });
-          const pendingStartup =
-            state.countInInProgress ||
-            state.pendingPlaybackStart !== null ||
-            (state.playbackTransportActive && state.playbackIsPlaying !== true && state.playbackCurrentTick === null);
-          if (pendingStartup) {
-            tracePlayback("startup-abort-requested", {
-              source: "onStop",
-            });
-            tracePlayback("pending-start-soft-cancel", {
-              selectedTrackIndex: state.selectedTrackIndex,
-              confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-              countInInProgress: state.countInInProgress,
-              pendingPlaybackStart: state.pendingPlaybackStart !== null,
-              playbackTransportActive: state.playbackTransportActive,
-              playbackIsPlaying: state.playbackIsPlaying,
-            });
-            hardCancelPlaybackPipeline("stop", { resetPosition: true });
-            finalizeStoppedTransportState("stop-pending-start-soft-cancel", {
-              resetPosition: true,
-              resetNavigationToFirstBar: true,
-            });
-            tracePlayback("stop-routed-to-startup-abort", {
-              source: "onStop",
-            });
-            tracePlayback("startup-abort-complete", {
-              source: "onStop",
-              pendingPlaybackStart: state.pendingPlaybackStart !== null,
-              playbackTransportActive: state.playbackTransportActive,
-            });
-            return;
-          }
-          hardCancelPlaybackPipeline("stop", { resetPosition: true });
-          tracePlayback("stop-routed-to-runtime-stop", {
-            source: "onStop",
-            playbackCurrentTick: state.playbackCurrentTick,
-            playbackIsPlaying: state.playbackIsPlaying,
-          });
           state.gpRenderer.stop();
           finalizeStoppedTransportState("stop-runtime-dispatch", {
             resetPosition: true,
@@ -4644,7 +4277,6 @@ export function startApp(rootElement: HTMLElement): void {
           ) {
             const pendingStart = state.pendingPlaybackStart;
             state.pendingPlaybackStart = null;
-            state.gpRenderer?.setStartupTransactionId(null);
             logPlaybackPipeline("seek-confirmed", {
               requestId: pendingStart.requestId,
               targetTick: pendingStart.targetTick,
@@ -4760,7 +4392,6 @@ export function startApp(rootElement: HTMLElement): void {
               updateTransportControls(rootElement, state, "runtime-not-playing-during-startup");
             } else {
               state.playbackTransportActive = false;
-              state.gpRenderer?.setStartupTransactionId(null);
               stopPlaybackMetronome(state);
             }
           }
