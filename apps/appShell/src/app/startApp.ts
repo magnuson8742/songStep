@@ -3542,6 +3542,10 @@ export function startApp(rootElement: HTMLElement): void {
             nextTrackIndex: trackIndex,
             preservedTick,
           });
+          traceTrackSwitch("ordinary-direct-switch-no-reload", {
+            nextTrackIndex: trackIndex,
+            preservedTick,
+          });
           state.gpRenderer?.selectTrack(trackIndex, preservedTick);
         },
         onBackToHome: () => {
@@ -3689,20 +3693,21 @@ export function startApp(rootElement: HTMLElement): void {
             return;
           }
           cancelCountIn(state, rootElement);
-          const hasPausedSnapshot =
-            state.hasExplicitPausedState &&
-            state.pausedResumeTick !== null &&
-            state.pausedResumeTrackIndex === state.selectedTrackIndex;
           const pendingCubeTick =
             state.pendingCubeNavigationTrackIndex === state.selectedTrackIndex ? state.pendingCubeNavigationTick : null;
-          const targetTick = hasPausedSnapshot
-            ? state.pausedResumeTick
-            : pendingCubeTick ??
-              state.selectedNavigationTick ??
-              state.desiredTrackSwitchTick ??
-              state.pausedResumeTick ??
-              state.playbackCurrentTick ??
-              0;
+          const selectedNavigationTickForTrack =
+            state.selectedNavigationTrackIndex === state.selectedTrackIndex ? state.selectedNavigationTick : null;
+          const pausedResumeTickForTrack =
+            state.pausedResumeTrackIndex === state.selectedTrackIndex ? state.pausedResumeTick : null;
+          const loopStartTick = state.loopEnabled && state.loopStartTick !== null ? state.loopStartTick : null;
+          const targetTick =
+            pendingCubeTick ??
+            selectedNavigationTickForTrack ??
+            state.desiredTrackSwitchTick ??
+            loopStartTick ??
+            pausedResumeTickForTrack ??
+            state.playbackCurrentTick ??
+            0;
           if (targetTick !== null && (state.playbackCurrentTick === null || Math.abs(state.playbackCurrentTick - targetTick) > 1)) {
             state.gpRenderer.seekToTick(targetTick);
           }

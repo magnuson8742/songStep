@@ -897,6 +897,7 @@ export async function createGpRenderer(
     awaitingCommit: boolean;
     observedTargetRenderStarted: boolean;
     observedTargetRenderFinished: boolean;
+    observedNonTargetLifecycle: boolean;
     commitEvidenceLogged: boolean;
     postRenderFinished: boolean;
     startedAtMs: number;
@@ -3600,6 +3601,9 @@ export async function createGpRenderer(
         renderedTrack &&
         renderedTrack.index !== directSwitchTargetIndex
       ) {
+        if (pendingDirectSwitchContext && pendingDirectSwitchContext.targetIndex === directSwitchTargetIndex) {
+          pendingDirectSwitchContext.observedNonTargetLifecycle = true;
+        }
         traceRenderer("track-switch-direct-ignore-non-target-renderStarted", {
           sessionToken,
           renderedTrackIndex: renderedTrack.index,
@@ -3665,6 +3669,9 @@ export async function createGpRenderer(
         directSwitchTargetIndex !== null &&
         renderFinishedTrackIndex !== directSwitchTargetIndex
       ) {
+        if (pendingDirectSwitchContext && pendingDirectSwitchContext.targetIndex === directSwitchTargetIndex) {
+          pendingDirectSwitchContext.observedNonTargetLifecycle = true;
+        }
         traceRenderer("track-switch-direct-ignore-non-target-renderFinished", {
           sessionToken,
           renderFinishedTrackIndex,
@@ -3747,14 +3754,23 @@ export async function createGpRenderer(
       const targetObservedByLifecycle =
         pendingContext?.targetIndex === directSwitchTargetIndex &&
         (pendingContext.observedTargetRenderFinished || pendingContext.observedTargetRenderStarted);
+      const targetObservedByRequestedTrack =
+        pendingContext?.targetIndex === directSwitchTargetIndex &&
+        requestedTrackIndex === directSwitchTargetIndex &&
+        pendingContext.observedNonTargetLifecycle === false;
       const postRenderBelongsToTarget =
         directSwitchTargetIndex !== null &&
-        (postRenderTrackIndex === directSwitchTargetIndex || targetObservedByLifecycle === true);
+        (postRenderTrackIndex === directSwitchTargetIndex ||
+          targetObservedByLifecycle === true ||
+          targetObservedByRequestedTrack === true);
       if (
         directSwitchInFlight &&
         directSwitchTargetIndex !== null &&
         !postRenderBelongsToTarget
       ) {
+        if (pendingContext && pendingContext.targetIndex === directSwitchTargetIndex) {
+          pendingContext.observedNonTargetLifecycle = true;
+        }
         traceRenderer("track-switch-direct-ignore-non-target-postRenderFinished", {
           sessionToken,
           postRenderTrackIndex,
@@ -3776,6 +3792,7 @@ export async function createGpRenderer(
           committedTrackIndex,
           directSwitchTargetIndex,
           targetObservedByLifecycle: targetObservedByLifecycle === true,
+          targetObservedByRequestedTrack: targetObservedByRequestedTrack === true,
         });
         tryFinalizePendingDirectSwitch(api, 0);
       }
@@ -4006,21 +4023,24 @@ export async function createGpRenderer(
     // Treat lifecycle observation as additional commit proof once target post-render completes.
     const targetObservedByLifecycle =
       pendingContext.observedTargetRenderFinished || pendingContext.observedTargetRenderStarted;
+    const targetObservedByRequestedTrack =
+      requestedTrackIndex === pendingContext.targetIndex && pendingContext.observedNonTargetLifecycle === false;
     if (targetObservedByLifecycle && !pendingContext.commitEvidenceLogged) {
       pendingContext.commitEvidenceLogged = true;
-      traceRenderer("direct-switch-commit-evidence", {
+      traceRenderer("ordinary-direct-switch-commit-evidence", {
         targetIndex: pendingContext.targetIndex,
         attempt,
         observedTargetRenderStarted: pendingContext.observedTargetRenderStarted,
         observedTargetRenderFinished: pendingContext.observedTargetRenderFinished,
         postRenderFinished: pendingContext.postRenderFinished,
+        observedNonTargetLifecycle: pendingContext.observedNonTargetLifecycle,
       });
     }
     const canFinalize =
       activeApi === api &&
       pendingContext.awaitingCommit &&
       pendingContext.postRenderFinished &&
-      (targetCommitted || targetObservedByLifecycle);
+      (targetCommitted || targetObservedByLifecycle || targetObservedByRequestedTrack);
     if (canFinalize) {
       traceRenderer("track-switch-direct-api-ready", {
         nextTrackIndex: pendingContext.targetIndex,
@@ -4067,6 +4087,11 @@ export async function createGpRenderer(
         elapsedMs,
         targetCommitted,
         targetObservedByLifecycle,
+        targetObservedByRequestedTrack,
+      });
+      traceRenderer("ordinary-direct-switch-finalized", {
+        targetIndex: pendingContext.targetIndex,
+        elapsedMs,
       });
       traceRenderer("track-switch-applied", {
         targetIndex: pendingContext.targetIndex,
@@ -4105,8 +4130,13 @@ export async function createGpRenderer(
         elapsedMs,
         targetCommitted,
         targetObservedByLifecycle,
+        targetObservedByRequestedTrack,
         postRenderFinished: pendingContext.postRenderFinished,
         committedTrackIndex,
+      });
+      traceRenderer("ordinary-direct-switch-timeout-real", {
+        nextTrackIndex: pendingContext.targetIndex,
+        elapsedMs,
       });
       hooks.onRenderError({
         message: "Direct track switch timed out before target commit.",
@@ -4255,6 +4285,7 @@ export async function createGpRenderer(
         awaitingCommit: true,
         observedTargetRenderStarted: false,
         observedTargetRenderFinished: false,
+        observedNonTargetLifecycle: false,
         commitEvidenceLogged: false,
         postRenderFinished: false,
         startedAtMs: Date.now(),
