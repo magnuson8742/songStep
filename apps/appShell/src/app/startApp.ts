@@ -2906,9 +2906,13 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingPlayDispatchStartedAtMs = null;
     state.lastPlaybackObservedAtMs = null;
     state.lastPlaybackObservedTick = null;
-    state.pendingDirectSwitchTrackIndex = null;
-    state.pendingDirectSwitchTargetTick = null;
-    state.pendingDirectSwitchSource = null;
+    if (state.pendingDirectSwitchTrackIndex !== null) {
+      traceTrackSwitch("pending-direct-switch-preserved-through-pause-stop", {
+        pendingDirectSwitchTrackIndex: state.pendingDirectSwitchTrackIndex,
+        pendingDirectSwitchSource: state.pendingDirectSwitchSource,
+        reason: "hard-cancel",
+      });
+    }
     state.lastTransportRerenderReason = null;
     stopPlaybackMetronome(state);
     state.manualNavigationVisualOverrideActive = false;
@@ -2954,9 +2958,13 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingPlayDispatchStartedAtMs = null;
     state.lastPlaybackObservedAtMs = null;
     state.lastPlaybackObservedTick = null;
-    state.pendingDirectSwitchTrackIndex = null;
-    state.pendingDirectSwitchTargetTick = null;
-    state.pendingDirectSwitchSource = null;
+    if (state.pendingDirectSwitchTrackIndex !== null) {
+      traceTrackSwitch("pending-direct-switch-preserved-through-pause-stop", {
+        pendingDirectSwitchTrackIndex: state.pendingDirectSwitchTrackIndex,
+        pendingDirectSwitchSource: state.pendingDirectSwitchSource,
+        reason: "stop-finalized",
+      });
+    }
     state.playbackIsPlaying = false;
     cancelCountIn(state, rootElement);
     stopPlaybackMetronome(state);
@@ -2998,9 +3006,13 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingPlayDispatchStartedAtMs = null;
     state.lastPlaybackObservedAtMs = null;
     state.lastPlaybackObservedTick = null;
-    state.pendingDirectSwitchTrackIndex = null;
-    state.pendingDirectSwitchTargetTick = null;
-    state.pendingDirectSwitchSource = null;
+    if (state.pendingDirectSwitchTrackIndex !== null) {
+      traceTrackSwitch("pending-direct-switch-preserved-through-pause-stop", {
+        pendingDirectSwitchTrackIndex: state.pendingDirectSwitchTrackIndex,
+        pendingDirectSwitchSource: state.pendingDirectSwitchSource,
+        reason: "pause-finalized",
+      });
+    }
     state.playbackIsPlaying = false;
     const pausedTickSnapshot =
       state.playbackCurrentTick ?? state.playbackCurrentBarStartTick ?? state.selectedNavigationTick ?? null;
@@ -3093,6 +3105,11 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingCubeNavigationTrackIndex = null;
     state.pendingCubeNavigationBar = null;
     state.pendingCubeNavigationTick = null;
+    if (state.pendingDirectSwitchTrackIndex !== null) {
+      traceTrackSwitch("pending-direct-switch-cleared-cleanup", {
+        source: "cleanupRenderer",
+      });
+    }
     state.pendingDirectSwitchTrackIndex = null;
     state.pendingDirectSwitchTargetTick = null;
     state.pendingDirectSwitchSource = null;
@@ -4336,6 +4353,11 @@ export function startApp(rootElement: HTMLElement): void {
             state.pendingDirectSwitchTrackIndex === trackIndex &&
             state.pendingDirectSwitchSource === "track-list"
           ) {
+            traceTrackSwitch("pending-direct-switch-cleared-authoritative", {
+              source: "track-list",
+              trackIndex,
+              tick: state.pendingDirectSwitchTargetTick,
+            });
             traceTrackSwitch("ordinary-direct-switch-app-confirmed", {
               trackIndex,
               targetTick: state.pendingDirectSwitchTargetTick,
@@ -4420,6 +4442,11 @@ export function startApp(rootElement: HTMLElement): void {
               state.pendingDirectSwitchTrackIndex === trackIndex &&
               state.pendingDirectSwitchSource === "cube-navigation"
             ) {
+              traceTrackSwitch("pending-direct-switch-cleared-authoritative", {
+                source: "cube-navigation",
+                trackIndex,
+                tick,
+              });
               traceTrackSwitch("cube-direct-switch-app-confirmed", {
                 trackIndex,
                 tick,
@@ -4729,6 +4756,11 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingCubeNavigationTrackIndex = null;
           state.pendingCubeNavigationBar = null;
           state.pendingCubeNavigationTick = null;
+          if (state.pendingDirectSwitchTrackIndex !== null) {
+            traceTrackSwitch("pending-direct-switch-cleared-cleanup", {
+              source: "onRuntimeNotice",
+            });
+          }
           state.pendingDirectSwitchTrackIndex = null;
           state.pendingDirectSwitchTargetTick = null;
           state.pendingDirectSwitchSource = null;
@@ -4906,6 +4938,11 @@ export function startApp(rootElement: HTMLElement): void {
             state.pendingTrackSwitchSessionToken = null;
             state.switchedTrackPlaybackReadySessionToken = null;
             state.switchedTrackSeekStillPending = false;
+            if (state.pendingDirectSwitchTrackIndex !== null) {
+              traceTrackSwitch("pending-direct-switch-cleared-cleanup", {
+                source: "onRenderError",
+              });
+            }
             state.pendingDirectSwitchTrackIndex = null;
             state.pendingDirectSwitchTargetTick = null;
             state.pendingDirectSwitchSource = null;
@@ -4961,6 +4998,11 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingCubeNavigationTrackIndex = null;
           state.pendingCubeNavigationBar = null;
           state.pendingCubeNavigationTick = null;
+          if (state.pendingDirectSwitchTrackIndex !== null) {
+            traceTrackSwitch("pending-direct-switch-cleared-cleanup", {
+              source: "onRenderError",
+            });
+          }
           state.pendingDirectSwitchTrackIndex = null;
           state.pendingDirectSwitchTargetTick = null;
           state.pendingDirectSwitchSource = null;
