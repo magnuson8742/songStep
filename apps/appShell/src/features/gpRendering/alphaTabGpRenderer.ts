@@ -3374,7 +3374,10 @@ export async function createGpRenderer(
         }
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
-          isPlaying: normalizedState === "playing",
+          isPlaying:
+            normalizedState === null
+              ? playbackRuntimeInfo.isPlaying
+              : normalizedState === "playing",
           playerStatePayloadShape,
         };
         emitPlaybackRuntimeInfo();
