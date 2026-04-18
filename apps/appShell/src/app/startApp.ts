@@ -1065,6 +1065,11 @@ function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLEl
   arrangementCells.forEach((cell) => {
     cell.classList.remove("isPlaybackCurrentBar");
   });
+  // Keep playback-only highlight off during idle browsing/selection to avoid
+  // a persistent "bar 1" overlay when users are not actively interacting with playback.
+  if (!isPlaybackInteractionActive(state)) {
+    return;
+  }
 
   const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
   const activeManualTarget = getActiveManualNavigationTarget(state);
@@ -1695,6 +1700,10 @@ function invalidatePlaybackBarAnchorRebuild(state: AppState): void {
 
 function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLElement): void {
   if (!ENABLE_CUSTOM_PLAYHEAD) {
+    hidePlaybackPlayhead(rootElement, state);
+    return;
+  }
+  if (!isPlaybackInteractionActive(state)) {
     hidePlaybackPlayhead(rootElement, state);
     return;
   }
@@ -3520,7 +3529,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingCubeNavigationTrackIndex = null;
           state.pendingCubeNavigationBar = null;
           state.pendingCubeNavigationTick = null;
-          resetNavigationSelectionToFirstBar(state, rootElement, "track-switch-left-list", trackIndex);
+          const preservedBarForSelection = state.desiredTrackSwitchBar ?? 1;
+          applyNavigationSelection(state, rootElement, preservedBarForSelection, preservedTick, trackIndex);
+          ensureNavigationSelectionIsValid(state, rootElement, "track-switch-left-list-preserve");
           state.manualNavigationVisualOverrideActive = false;
           updateTransportControls(rootElement, state, "track-selection-change");
 

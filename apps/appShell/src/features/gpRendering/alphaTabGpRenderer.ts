@@ -895,6 +895,8 @@ export async function createGpRenderer(
     resumeTick: number;
     wasPlaying: boolean;
     awaitingCommit: boolean;
+    observedTargetRenderStarted: boolean;
+    observedTargetRenderFinished: boolean;
     postRenderFinished: boolean;
     startedAtMs: number;
   } | null = null;
@@ -3615,6 +3617,9 @@ export async function createGpRenderer(
         renderedTrack &&
         renderedTrack.index === directSwitchTargetIndex
       ) {
+        if (pendingDirectSwitchContext && pendingDirectSwitchContext.targetIndex === directSwitchTargetIndex) {
+          pendingDirectSwitchContext.observedTargetRenderStarted = true;
+        }
         traceRenderer("track-switch-direct-target-renderStarted", {
           sessionToken,
           renderedTrackIndex: renderedTrack.index,
@@ -3665,6 +3670,15 @@ export async function createGpRenderer(
           directSwitchTargetIndex,
         });
         return;
+      }
+      if (
+        pendingDirectSwitchContext &&
+        directSwitchInFlight &&
+        directSwitchTargetIndex !== null &&
+        renderFinishedTrackIndex === directSwitchTargetIndex &&
+        pendingDirectSwitchContext.targetIndex === directSwitchTargetIndex
+      ) {
+        pendingDirectSwitchContext.observedTargetRenderFinished = true;
       }
 
       clearRenderTimeout();
@@ -3979,11 +3993,15 @@ export async function createGpRenderer(
     const elapsedMs = Date.now() - pendingContext.startedAtMs;
     const committedTrackIndex = api.tracks?.[0]?.index ?? null;
     const targetCommitted = committedTrackIndex === pendingContext.targetIndex;
+    // Android can emit target render lifecycle events before tracks[0].index catches up.
+    // Treat lifecycle observation as additional commit proof once target post-render completes.
+    const targetObservedByLifecycle =
+      pendingContext.observedTargetRenderFinished || pendingContext.observedTargetRenderStarted;
     const canFinalize =
       activeApi === api &&
       pendingContext.awaitingCommit &&
       pendingContext.postRenderFinished &&
-      targetCommitted;
+      (targetCommitted || targetObservedByLifecycle);
     if (canFinalize) {
       traceRenderer("track-switch-direct-api-ready", {
         nextTrackIndex: pendingContext.targetIndex,
@@ -4208,6 +4226,8 @@ export async function createGpRenderer(
         resumeTick,
         wasPlaying,
         awaitingCommit: true,
+        observedTargetRenderStarted: false,
+        observedTargetRenderFinished: false,
         postRenderFinished: false,
         startedAtMs: Date.now(),
       };
