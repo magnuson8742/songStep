@@ -3580,6 +3580,24 @@ export async function createGpRenderer(
       }
 
       const renderedTrack = api.tracks?.[0];
+      if (
+        directSwitchInFlight &&
+        directSwitchTargetIndex !== null &&
+        renderedTrack &&
+        renderedTrack.index !== directSwitchTargetIndex
+      ) {
+        traceRenderer("track-switch-direct-ignore-non-target-renderStarted", {
+          sessionToken,
+          renderedTrackIndex: renderedTrack.index,
+          directSwitchTargetIndex,
+        });
+        traceRenderer("track-switch-direct-ignore-non-target-active-track", {
+          sessionToken,
+          renderedTrackIndex: renderedTrack.index,
+          directSwitchTargetIndex,
+        });
+        return;
+      }
       if (renderedTrack) {
         confirmedActiveTrackIndex = renderedTrack.index;
         lastSuccessfulConfirmedTrackIndex = renderedTrack.index;
@@ -3607,6 +3625,19 @@ export async function createGpRenderer(
         renderCycleCounter,
       });
       if (sessionToken !== activeSessionToken) {
+        return;
+      }
+      const renderFinishedTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+      if (
+        directSwitchInFlight &&
+        directSwitchTargetIndex !== null &&
+        renderFinishedTrackIndex !== directSwitchTargetIndex
+      ) {
+        traceRenderer("track-switch-direct-ignore-non-target-renderFinished", {
+          sessionToken,
+          renderFinishedTrackIndex,
+          directSwitchTargetIndex,
+        });
         return;
       }
 
@@ -3668,6 +3699,19 @@ export async function createGpRenderer(
         return;
       }
       if (activeApi !== api) {
+        return;
+      }
+      const postRenderTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+      if (
+        directSwitchInFlight &&
+        directSwitchTargetIndex !== null &&
+        postRenderTrackIndex !== directSwitchTargetIndex
+      ) {
+        traceRenderer("track-switch-direct-ignore-non-target-postRenderFinished", {
+          sessionToken,
+          postRenderTrackIndex,
+          directSwitchTargetIndex,
+        });
         return;
       }
       const committedTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;

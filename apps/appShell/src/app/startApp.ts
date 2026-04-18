@@ -4373,6 +4373,7 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
         },
         onPlaybackRuntimeInfo: (info) => {
+          const previousRuntimeTick = state.playbackCurrentTick;
           state.playbackPositionLabel = info.positionLabel;
           state.playbackCurrentBar = info.currentBar;
           state.playbackCurrentTick = info.currentTick;
@@ -4390,7 +4391,13 @@ export function startApp(rootElement: HTMLElement): void {
             info.currentTick !== null &&
             (state.pendingPlayDispatchBaseTick === null ||
               Math.abs(info.currentTick - state.pendingPlayDispatchBaseTick) >= 1);
-          if (playObservedFromRuntime || playObservedFromPosition) {
+          const playObservedFromActiveMotion =
+            state.playbackTransportActive &&
+            info.currentTick !== null &&
+            previousRuntimeTick !== null &&
+            info.currentTick > previousRuntimeTick;
+          const playObservedThisUpdate = playObservedFromRuntime || playObservedFromPosition || playObservedFromActiveMotion;
+          if (playObservedThisUpdate) {
             const playUnlockSource = playObservedFromRuntime ? "runtime-isPlaying-true" : "runtime-tick-moved";
             if (state.pendingPlayDispatch || state.playbackTransportActive !== true) {
               tracePlayback(playObservedFromRuntime ? "play-observed-from-runtime" : "play-observed-from-position", {
@@ -4432,7 +4439,7 @@ export function startApp(rootElement: HTMLElement): void {
                 state.pendingPlayDispatch &&
                 state.pendingPlayDispatchStartedAtMs !== null &&
                 Date.now() - state.pendingPlayDispatchStartedAtMs < PLAY_DISPATCH_CONFIRM_TIMEOUT_MS;
-              if (!pendingPlayStartActive) {
+              if (!pendingPlayStartActive && !playObservedThisUpdate) {
                 if (state.pendingPlayDispatch && state.pendingPlayDispatchStartedAtMs !== null) {
                   tracePlayback("play-dispatch-timeout", {
                     selectedTrackIndex: state.selectedTrackIndex,
