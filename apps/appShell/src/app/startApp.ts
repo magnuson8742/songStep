@@ -162,6 +162,7 @@ interface AppState {
   pendingPlayDispatch: boolean;
   pendingPlayDispatchBaseTick: number | null;
   rendererRuntimeBlocked: boolean;
+  rendererSessionHadAuthoritativePlayerReady: boolean;
 }
 
 function triggerJsonDownload(fileName: string, payload: unknown): void {
@@ -400,7 +401,13 @@ function resolveTransportUiState(state: AppState): {
   canStop: boolean;
   playDisabledReason: string | null;
 } {
-  const runtimeSignalReady = state.rendererPlayerReady || state.rendererFallbackReady || state.rendererRuntimeWarm;
+  const authoritativeReady = state.rendererPlayerReady || state.rendererSessionHadAuthoritativePlayerReady;
+  const allowWarmReuseSignals =
+    state.rendererSessionHadAuthoritativePlayerReady ||
+    state.trackSwitchInProgress ||
+    state.requiresSwitchedTrackPlaybackReady;
+  const runtimeSignalReady =
+    authoritativeReady || (allowWarmReuseSignals && (state.rendererFallbackReady || state.rendererRuntimeWarm));
   const ready = state.gpRenderer !== null && runtimeSignalReady && !state.rendererRuntimeBlocked;
   if (!ready) {
     return {
@@ -2660,6 +2667,11 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
       state.pendingOverviewNavigationBar = null;
       state.pendingOverviewNavigationTrackIndex = null;
       state.pendingOverviewNavigationTick = null;
+      traceTrackSwitch("cube-navigation-seek", {
+        clickedTrackIndex,
+        targetBarNumber,
+        source: "arrangement-same-track",
+      });
       seekToBarAndApplyNavigationSelection(state, rootElement, clickedTrackIndex, targetBarNumber);
       return;
     }
@@ -2672,11 +2684,27 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
     state.pendingOverviewNavigationBar = targetBarNumber;
     state.pendingOverviewNavigationTrackIndex = clickedTrackIndex;
     state.pendingOverviewNavigationTick = targetTick;
+    traceTrackSwitch("cube-navigation-track-switch", {
+      clickedTrackIndex,
+      targetBarNumber,
+      targetTick,
+      source: "arrangement-cross-track",
+    });
+    traceTrackSwitch("track-switch-request", {
+      source: "cube-navigation",
+      nextTrackIndex: clickedTrackIndex,
+      targetTick,
+    });
     applyNavigationSelection(state, rootElement, targetBarNumber, targetTick, clickedTrackIndex);
     state.manualNavigationVisualOverrideActive = true;
     haltPlaybackTransportAfterSeek(state, rootElement);
     state.requestedTrackIndex = clickedTrackIndex;
     state.gpRenderer.selectTrack(clickedTrackIndex, targetTick);
+    traceTrackSwitch("track-switch-applied", {
+      source: "cube-navigation",
+      nextTrackIndex: clickedTrackIndex,
+      targetTick,
+    });
   });
 }
 
@@ -2788,6 +2816,7 @@ export function startApp(rootElement: HTMLElement): void {
     pendingPlayDispatch: false,
     pendingPlayDispatchBaseTick: null,
     rendererRuntimeBlocked: false,
+    rendererSessionHadAuthoritativePlayerReady: false,
   };
 
   const hardCancelPlaybackPipeline = (
@@ -2992,6 +3021,7 @@ export function startApp(rootElement: HTMLElement): void {
     state.rendererFallbackReady = false;
     state.rendererRuntimeWarm = false;
     state.rendererRuntimeBlocked = false;
+    state.rendererSessionHadAuthoritativePlayerReady = false;
     state.requiresSwitchedTrackPlaybackReady = false;
     state.switchedTrackPlaybackReady = false;
     state.pendingTrackSwitchSessionToken = null;
@@ -3449,7 +3479,17 @@ export function startApp(rootElement: HTMLElement): void {
             preservedTick,
             preservedBar: state.desiredTrackSwitchBar,
           });
+          traceTrackSwitch("track-switch-request", {
+            source: "track-list-select",
+            nextTrackIndex: trackIndex,
+            preservedTick,
+          });
           state.gpRenderer?.selectTrack(trackIndex, preservedTick);
+          traceTrackSwitch("track-switch-applied", {
+            source: "track-list-select",
+            nextTrackIndex: trackIndex,
+            preservedTick,
+          });
         },
         onBackToHome: () => {
           state.currentView = "home";
@@ -3580,13 +3620,23 @@ export function startApp(rootElement: HTMLElement): void {
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             return;
           }
-          if (state.rendererRuntimeBlocked || !(state.rendererPlayerReady || state.rendererFallbackReady || state.rendererRuntimeWarm)) {
+          const allowWarmReuseSignals =
+            state.rendererSessionHadAuthoritativePlayerReady ||
+            state.trackSwitchInProgress ||
+            state.requiresSwitchedTrackPlaybackReady;
+          const runtimeSignalReady =
+            state.rendererPlayerReady ||
+            state.rendererSessionHadAuthoritativePlayerReady ||
+            (allowWarmReuseSignals && (state.rendererFallbackReady || state.rendererRuntimeWarm));
+          if (state.rendererRuntimeBlocked || !runtimeSignalReady) {
             tracePlayback("play-rejected-not-ready", {
               selectedTrackIndex: state.selectedTrackIndex,
               rendererPlayerReady: state.rendererPlayerReady,
               rendererFallbackReady: state.rendererFallbackReady,
               rendererRuntimeWarm: state.rendererRuntimeWarm,
               rendererRuntimeBlocked: state.rendererRuntimeBlocked,
+              rendererSessionHadAuthoritativePlayerReady: state.rendererSessionHadAuthoritativePlayerReady,
+              allowWarmReuseSignals,
             });
             return;
           }
@@ -3848,6 +3898,26 @@ export function startApp(rootElement: HTMLElement): void {
           if (eventSessionToken !== null) {
             state.latestRendererSessionToken = eventSessionToken;
           }
+          const isSwitchedTrackLifecycleEvent = eventType.startsWith("switched-track-");
+          const hasActiveSwitchSession =
+            state.trackSwitchInProgress ||
+            state.requiresSwitchedTrackPlaybackReady ||
+            state.pendingTrackSwitchSessionToken !== null;
+          if (isSwitchedTrackLifecycleEvent && !hasActiveSwitchSession) {
+            traceTrackSwitch("switched-track-event-ignored-no-active-switch", {
+              eventType,
+              selectedTrackIndex: state.selectedTrackIndex,
+              requestedTrackIndex: state.requestedTrackIndex,
+              sessionToken: eventSessionToken,
+            });
+            appendSessionDebugEvent(state.sessionDebugLogger, {
+              ...event,
+              ignored: true,
+              ignoredReason: "no-active-switch-session",
+            });
+            updateTransportControls(rootElement, state, `render-lifecycle-ignored:${eventType}`);
+            return;
+          }
           if (eventType === "score-loaded") {
             state.rendererScoreLoaded = true;
             state.rendererRuntimeBlocked = false;
@@ -3865,6 +3935,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.rendererPlayerReady = true;
             state.rendererRuntimeWarm = true;
             state.rendererRuntimeBlocked = false;
+            state.rendererSessionHadAuthoritativePlayerReady = true;
             tracePlayback("player-runtime-ready", {
               source: "render-lifecycle:player-ready",
               sessionToken: eventSessionToken,
@@ -3874,6 +3945,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.rendererPlayerReady = true;
             state.rendererRuntimeWarm = true;
             state.rendererRuntimeBlocked = false;
+            state.rendererSessionHadAuthoritativePlayerReady = true;
             tracePlayback("player-runtime-ready", {
               source: "render-lifecycle:player-runtime-ready",
               sessionToken: eventSessionToken,
@@ -4119,6 +4191,11 @@ export function startApp(rootElement: HTMLElement): void {
               state.pendingOverviewNavigationTick,
               trackIndex,
             );
+            traceTrackSwitch("cube-navigation-seek", {
+              trackIndex,
+              tick,
+              source: "onProgrammaticSeekConfirmed",
+            });
             state.pendingOverviewNavigationBar = null;
             state.pendingOverviewNavigationTrackIndex = null;
             state.pendingOverviewNavigationTick = null;
