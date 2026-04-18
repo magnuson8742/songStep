@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use serde_json::json;
 use tauri::Manager;
 
 struct SessionDebugState {
@@ -58,17 +59,58 @@ fn resolve_session_debug_directory(app_handle: &tauri::AppHandle) -> Result<Path
 }
 
 fn initialize_session_debug_state(app_handle: &tauri::AppHandle) -> Result<SessionDebugState, String> {
-    let debug_directory = resolve_session_debug_directory(app_handle)?;
-    create_dir_all(&debug_directory).map_err(|error| format!("create debug directory failed: {error}"))?;
-    let file_path = build_session_debug_file_path(&debug_directory);
-    let startup_events = [
-        r#"{"type":"session-start"}"#,
-        r#"{"type":"backend-ready"}"#,
-    ];
-    for event in startup_events {
-        append_jsonl_line(&file_path, event)?;
+    let mut directory_candidates: Vec<PathBuf> = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        directory_candidates.push(PathBuf::from(r"C:\Programs\songStep\debug"));
     }
-    Ok(SessionDebugState { file_path })
+    let fallback_directory = resolve_session_debug_directory(app_handle)?;
+    if !directory_candidates.iter().any(|candidate| candidate == &fallback_directory) {
+        directory_candidates.push(fallback_directory);
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+    for debug_directory in directory_candidates {
+        if let Err(error) = create_dir_all(&debug_directory) {
+            failures.push(format!(
+                "create debug directory failed for {}: {error}",
+                debug_directory.to_string_lossy()
+            ));
+            continue;
+        }
+
+        let file_path = build_session_debug_file_path(&debug_directory);
+        let startup_events = [
+            json!({ "type": "session-start" }),
+            json!({
+                "type": "session-log-path",
+                "path": file_path.to_string_lossy().to_string(),
+            }),
+            json!({ "type": "backend-ready" }),
+        ];
+
+        let mut startup_write_failed = false;
+        for event in startup_events {
+            if let Err(error) = append_jsonl_line(&file_path, &event.to_string()) {
+                failures.push(format!(
+                    "write startup event failed for {}: {error}",
+                    file_path.to_string_lossy()
+                ));
+                startup_write_failed = true;
+                break;
+            }
+        }
+        if startup_write_failed {
+            continue;
+        }
+
+        return Ok(SessionDebugState { file_path });
+    }
+
+    Err(format!(
+        "session debug logger init failed for all candidates: {}",
+        failures.join(" | ")
+    ))
 }
 
 fn initialize_session_debug_mode(app_handle: &tauri::AppHandle) -> SessionDebugMode {

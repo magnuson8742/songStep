@@ -307,6 +307,7 @@ export interface GpScoreOverviewRuntimeInfo {
 }
 
 export interface GpRendererHooks {
+  onTraceEvent?: (channel: "renderer", eventName: string, payload: Record<string, unknown>) => void;
   onTracksLoaded: (tracks: GpTrackInfo[]) => void;
   onDebugInfo: (debugInfo: GpRenderDebugInfo) => void;
   onRenderLifecycle: (event: Record<string, unknown>) => void;
@@ -864,14 +865,20 @@ export async function createGpRenderer(
 ): Promise<GpRendererController> {
   const toTraceLine = (prefix: string, eventName: string, payload: Record<string, unknown>): string =>
     `${prefix} ${eventName} ${JSON.stringify(payload)}`;
+  const emitTraceEvent = (eventName: string, payload: Record<string, unknown>): void => {
+    hooks.onTraceEvent?.("renderer", eventName, payload);
+  };
   const traceRenderer = (eventName: string, payload: Record<string, unknown>): void => {
     console.info(toTraceLine("[songstep-renderer]", eventName, payload));
+    emitTraceEvent(eventName, payload);
   };
   const traceSeek = (eventName: string, payload: Record<string, unknown>): void => {
     console.info(toTraceLine("[songstep-seek]", eventName, payload));
+    emitTraceEvent(eventName, payload);
   };
   const tracePlayer = (eventName: string, payload: Record<string, unknown>): void => {
     console.info(toTraceLine("[songstep-player]", eventName, payload));
+    emitTraceEvent(eventName, payload);
   };
 
   traceRenderer("createGpRenderer-start", {

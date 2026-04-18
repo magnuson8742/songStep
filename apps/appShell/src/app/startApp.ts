@@ -207,6 +207,7 @@ interface SessionDebugLogger {
 }
 
 let reportSessionDebugAppendFailure: ((message: string) => void) | null = null;
+let activeSessionDebugLogger: SessionDebugLogger | null = null;
 
 async function createSessionDebugLogger(): Promise<SessionDebugLogger> {
   const filePath = await invoke<string>("get_session_debug_log_path");
@@ -224,6 +225,81 @@ function appendSessionDebugEvent(logger: SessionDebugLogger | null, event: Recor
     const message = error instanceof Error ? error.message : String(error);
     console.error("append_session_debug_event failed", error);
     reportSessionDebugAppendFailure?.(message);
+  });
+}
+
+type StructuredTraceChannel = "playback" | "track" | "renderer" | "pipeline";
+
+const highSignalTraceEvents: Record<StructuredTraceChannel, Set<string>> = {
+  playback: new Set([
+    "play-dispatch",
+    "play-target-source",
+    "play-observed-from-runtime",
+    "play-observed-from-position",
+    "pause-confirmed",
+    "stop-finalized",
+    "transport-state-change",
+    "transport-ready-evaluated",
+    "player-ready",
+    "player-runtime-ready",
+  ]),
+  track: new Set([
+    "track-switch-request",
+    "track-switch-applied",
+    "ordinary-direct-switch-app-confirmed",
+    "cube-direct-switch-app-confirmed",
+    "pending-direct-switch-cleared-authoritative",
+    "pending-direct-switch-cleared-cleanup",
+    "pending-direct-switch-preserved-through-pause-stop",
+    "cube-navigation-track-switch-request",
+    "cube-navigation-track-switch-confirmed",
+    "cube-navigation-seek-dispatched",
+    "cube-navigation-selection-applied",
+    "ordinary-direct-switch-commit-evidence",
+    "ordinary-direct-switch-finalized",
+    "ordinary-direct-switch-timeout-real",
+  ]),
+  renderer: new Set([
+    "render-error",
+    "runtime-notice",
+    "player-ready",
+    "player-runtime-ready",
+    "score-loaded",
+    "render-start",
+    "render-finish",
+    "render-enter",
+    "renderer-create-start",
+    "renderer-create-finish",
+    "renderer-created",
+    "renderer-destroy-start",
+    "renderer-destroy-finish",
+    "active-track-confirmed",
+    "ordinary-direct-switch-commit-evidence",
+    "ordinary-direct-switch-finalized",
+    "ordinary-direct-switch-timeout-real",
+    "track-switch-request",
+    "track-switch-applied",
+  ]),
+  pipeline: new Set([
+    "play-dispatch",
+    "play-cancelled",
+    "renderer-created",
+    "renderer-destroy",
+    "track-switch-start",
+  ]),
+};
+
+function appendStructuredTrace(channel: StructuredTraceChannel, eventName: string, payload: Record<string, unknown>): void {
+  const eventAllowList = highSignalTraceEvents[channel];
+  if (!eventAllowList?.has(eventName)) {
+    return;
+  }
+  appendSessionDebugEvent(activeSessionDebugLogger, {
+    type: "trace",
+    channel,
+    event: eventName,
+    timestamp: new Date().toISOString(),
+    ...payload,
   });
 }
 
@@ -391,18 +467,22 @@ function logPlaybackPipeline(eventType: string, payload: Record<string, unknown>
       ...payload,
     }),
   );
+  appendStructuredTrace("pipeline", eventType, payload);
 }
 
 function tracePlayback(eventName: string, payload: Record<string, unknown>): void {
   console.info(`[songstep-playback] ${eventName} ${JSON.stringify(payload)}`);
+  appendStructuredTrace("playback", eventName, payload);
 }
 
 function traceTrackSwitch(eventName: string, payload: Record<string, unknown>): void {
   console.info(`[songstep-track] ${eventName} ${JSON.stringify(payload)}`);
+  appendStructuredTrace("track", eventName, payload);
 }
 
 function traceRendererLifecycle(eventName: string, payload: Record<string, unknown>): void {
   console.info(`[songstep-renderer] ${eventName} ${JSON.stringify(payload)}`);
+  appendStructuredTrace("renderer", eventName, payload);
 }
 
 function resolvePlaybackReadiness(state: AppState): {
@@ -3160,6 +3240,7 @@ export function startApp(rootElement: HTMLElement): void {
   void createSessionDebugLogger()
     .then((logger) => {
       state.sessionDebugLogger = logger;
+      activeSessionDebugLogger = logger;
       state.sessionDebugLogPath = logger.filePath;
       appendSessionDebugEvent(logger, {
         type: "app-start",
@@ -3174,6 +3255,7 @@ export function startApp(rootElement: HTMLElement): void {
       const message = error instanceof Error ? error.message : String(error);
       state.projectStatusMessage = `Debug logger init failed: ${message}`;
       console.error("Debug logger init failed", error);
+      activeSessionDebugLogger = null;
     });
 
   window.addEventListener("error", (event) => {
@@ -3977,6 +4059,12 @@ export function startApp(rootElement: HTMLElement): void {
         projectCreateKey,
       });
       createGpRenderer(gpRenderHost, project.sourceFile, state.selectedTrackIndex, {
+        onTraceEvent: (channel, eventName, payload) => {
+          if (channel !== "renderer") {
+            return;
+          }
+          appendStructuredTrace("renderer", eventName, payload);
+        },
         onTracksLoaded: (tracks) => {
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "tracks-loaded",
