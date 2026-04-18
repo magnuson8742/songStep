@@ -6,6 +6,7 @@ interface AlphaTabApi {
   load: (scoreData: unknown, trackIndexes?: number[]) => boolean;
   score?: AlphaTabScore;
   tracks?: AlphaTabTrack[];
+  renderTracks?: (tracks: AlphaTabTrack[]) => void;
   changeTrackMute?: (tracks: AlphaTabTrack[], mute: boolean) => void;
   changeTrackSolo?: (tracks: AlphaTabTrack[], solo: boolean) => void;
   changeTrackVolume?: (tracks: AlphaTabTrack[], volume: number) => void;
@@ -17,6 +18,7 @@ interface AlphaTabApi {
   settings?: {
     display?: {
       scale?: number;
+      staveProfile?: string;
     };
     player?: Record<string, unknown>;
   };
@@ -29,6 +31,8 @@ interface AlphaTabApi {
     on: (handler: () => void) => void;
   };
   isReadyForPlayback?: boolean;
+  endTime?: number;
+  endTick?: number;
   playerState?: number | string | null;
   tickPosition?: number;
   playerStateChanged?: {
@@ -365,6 +369,11 @@ const BRAVURA_FONT_DIRECTORY = "/font/";
 const SONIVOX_SOUND_FONT_PATH = "/soundfont/sonivox.sf2";
 const ENABLE_LAZY_LOADING_DEFAULT = false;
 const USE_WORKERS = false;
+const ALPHATAB_WORKER_SCRIPT_CANDIDATES = [
+  "/node_modules/@coderline/alphatab/dist/alphaTab.worker.mjs",
+  "/node_modules/@coderline/alphatab/dist/alphaTab.worker.js",
+] as const;
+const ALPHATAB_WORKER_SCRIPT_PATH = ALPHATAB_WORKER_SCRIPT_CANDIDATES[0];
 const RENDER_TIMEOUT_MS = 5000;
 const HEAVY_TRACK_NOTE_THRESHOLD = 5000;
 const HEAVY_TRACK_BAR_THRESHOLD = 400;
@@ -492,6 +501,8 @@ interface BarBoundsSystemSummary {
 interface ReloadOptions {
   targetTick?: number | null;
 }
+
+type PlayerPhase = "idle" | "starting" | "playing" | "paused" | "stopped" | "invalid" | "recreating";
 
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -730,6 +741,7 @@ function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StavePr
       fontDirectory: BRAVURA_FONT_DIRECTORY,
       enableLazyLoading,
       useWorkers: USE_WORKERS,
+      scriptFile: ALPHATAB_WORKER_SCRIPT_PATH,
     },
     display: {
       staveProfile,
@@ -741,8 +753,14 @@ function buildAlphaTabSettings(enableLazyLoading: boolean, staveProfile: StavePr
   };
 
   const unsafeSettings = settings as unknown as {
+    core?: Record<string, unknown>;
     player?: Record<string, unknown>;
     display?: Record<string, unknown>;
+  };
+  unsafeSettings.core = {
+    ...(unsafeSettings.core ?? {}),
+    scriptFile: ALPHATAB_WORKER_SCRIPT_PATH,
+    workerScriptFile: ALPHATAB_WORKER_SCRIPT_PATH,
   };
   unsafeSettings.player = {
     ...(unsafeSettings.player ?? {}),
@@ -829,6 +847,11 @@ function waitForAnimationFrame(): Promise<void> {
   });
 }
 
+function hasRenderableHostSize(container: HTMLElement): boolean {
+  const rect = container.getBoundingClientRect();
+  return container.clientWidth > 0 && rect.width > 0 && rect.height > 0;
+}
+
 export async function createGpRenderer(
   container: HTMLElement,
   sourceFile: SourceFileData,
@@ -836,6 +859,23 @@ export async function createGpRenderer(
   hooks: GpRendererHooks,
   initialZoomPercent = 100,
 ): Promise<GpRendererController> {
+  const toTraceLine = (prefix: string, eventName: string, payload: Record<string, unknown>): string =>
+    `${prefix} ${eventName} ${JSON.stringify(payload)}`;
+  const traceRenderer = (eventName: string, payload: Record<string, unknown>): void => {
+    console.info(toTraceLine("[songstep-renderer]", eventName, payload));
+  };
+  const traceSeek = (eventName: string, payload: Record<string, unknown>): void => {
+    console.info(toTraceLine("[songstep-seek]", eventName, payload));
+  };
+  const tracePlayer = (eventName: string, payload: Record<string, unknown>): void => {
+    console.info(toTraceLine("[songstep-player]", eventName, payload));
+  };
+
+  traceRenderer("createGpRenderer-start", {
+    selectedTrackIndex,
+    initialZoomPercent,
+  });
+
   const sourceBytes = base64ToBytes(sourceFile.contentBase64);
 
   let activeApi: AlphaTabApi | null = null;
@@ -843,6 +883,9 @@ export async function createGpRenderer(
   let requestedTrackIndex = selectedTrackIndex;
   let confirmedActiveTrackIndex = selectedTrackIndex;
   let lastSuccessfulConfirmedTrackIndex: number | null = selectedTrackIndex;
+  let directSwitchInFlight = false;
+  let directSwitchTargetIndex: number | null = null;
+  let directSwitchPreviousIndex: number | null = null;
 
   let rendererBusy = false;
   let pendingRequestedTrackIndex: number | null = null;
@@ -891,7 +934,6 @@ export async function createGpRenderer(
   let inPlaceZoomPlaybackContext: InPlaceZoomPlaybackContext | null = null;
   let inPlaceZoomTokenCounter = 0;
   let pendingProgrammaticSeek: PendingProgrammaticSeek | null = null;
-  let pendingPlayAfterProgrammaticSeek = false;
   let renderAttemptCounter = 0;
   let activeRenderAttemptId: string | null = null;
   let lastBarBoundsExtractionDiagnostics: BarBoundsExtractionDiagnostics | null = null;
@@ -902,6 +944,13 @@ export async function createGpRenderer(
   let masterVolume = 80;
   let masterBalance = 0;
   let hasLoggedMixerApplySuccess = false;
+  let lastLoggedPlayerBar: number | null = null;
+  let lastLoggedPlayerBeatInBar: number | null = null;
+  let lastLoggedPlayerState: "playing" | "paused" | "stopped" | null = null;
+  let playerPhase: PlayerPhase = "idle";
+  let hasStartIntent = false;
+  let startIntentBaseTick: number | null = null;
+  let startConfirmationTimeoutId: number | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -967,6 +1016,77 @@ export async function createGpRenderer(
     playbackCapabilityMessage = message;
   };
 
+  const emitRuntimeNotice = (message: string): void => {
+    traceRenderer("runtime-notice", {
+      message,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+      rendererBusy,
+      zoomRerenderInFlight,
+    });
+    hooks.onRuntimeNotice(message);
+  };
+
+  const setPlayerPhase = (nextPhase: PlayerPhase, reason: string): void => {
+    if (playerPhase === nextPhase) {
+      return;
+    }
+    const previousPhase = playerPhase;
+    playerPhase = nextPhase;
+    tracePlayer("player-phase-change", {
+      previousPhase,
+      nextPhase,
+      reason,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
+  };
+
+  const clearStartConfirmationTimeout = (): void => {
+    if (startConfirmationTimeoutId !== null) {
+      window.clearTimeout(startConfirmationTimeoutId);
+      startConfirmationTimeoutId = null;
+    }
+  };
+
+  const clearStartIntent = (reason: string): void => {
+    const hadStartIntent = hasStartIntent;
+    clearStartConfirmationTimeout();
+    hasStartIntent = false;
+    startIntentBaseTick = null;
+    if (hadStartIntent) {
+      tracePlayer("start-intent-cleared", {
+        reason,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+    }
+  };
+
+  const confirmRuntimeStart = (reason: string, currentTick: number | null = null): void => {
+    if (!hasStartIntent && playerPhase !== "starting") {
+      return;
+    }
+    clearStartIntent("runtime-start-confirmed");
+    setPlayerPhase("playing", reason);
+    tracePlayer("start-confirmed", {
+      reason,
+      currentTick,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
+    emitRenderLifecycle("startup-confirmed", {
+      reason,
+      currentTick,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+    });
+  };
   const summarizeError = (error: unknown): Record<string, unknown> => {
     if (error instanceof Error) {
       return {
@@ -1002,6 +1122,33 @@ export async function createGpRenderer(
     });
   };
 
+  const probeAlphaTabWorkerPath = async (): Promise<void> => {
+    for (const workerCandidatePath of ALPHATAB_WORKER_SCRIPT_CANDIDATES) {
+      try {
+        const response = await fetch(workerCandidatePath, {
+          method: "HEAD",
+          cache: "no-store",
+        });
+        if (response.ok) {
+          traceRenderer("alphaTab-worker-path-resolved", {
+            workerCandidatePath,
+            status: response.status,
+          });
+          return;
+        }
+      } catch {
+        // Try next candidate path.
+      }
+    }
+    traceRenderer("alphaTab-worker-path-failed", {
+      workerCandidates: ALPHATAB_WORKER_SCRIPT_CANDIDATES,
+    });
+    emitRenderLifecycle("player-runtime-not-ready-worker-missing", {
+      workerCandidates: ALPHATAB_WORKER_SCRIPT_CANDIDATES,
+    });
+  };
+  void probeAlphaTabWorkerPath();
+
   const resetPlaybackRuntimeInfo = (): void => {
     playbackRuntimeInfo = {
       isPlaying: null,
@@ -1017,6 +1164,7 @@ export async function createGpRenderer(
     tickBarRanges = [];
     tickLookupSourcePath = null;
     playbackScrollLockSnapshot = null;
+    clearStartIntent("reset-playback-runtime-info");
     emitPlaybackRuntimeInfo();
   };
 
@@ -2816,7 +2964,20 @@ export async function createGpRenderer(
   };
 
   const seekToTick = (tick: number): boolean => {
+    traceSeek("seekToTick-called", {
+      tick,
+      activeSessionToken,
+      requestedTrackIndex,
+      confirmedActiveTrackIndex,
+      rendererBusy,
+      zoomRerenderInFlight,
+      hasActiveApi: activeApi !== null,
+    });
     if (!activeApi || !Number.isFinite(tick)) {
+      traceSeek("seekToTick-ignored", {
+        reason: !activeApi ? "no-active-api" : "invalid-tick",
+        tick,
+      });
       return false;
     }
     const api = activeApi;
@@ -2856,6 +3017,10 @@ export async function createGpRenderer(
       didApplyTick = true;
     }
     if (!didApplyTick) {
+      traceSeek("seekToTick-ignored", {
+        reason: "no-seek-api",
+        tick,
+      });
       return false;
     }
     pendingProgrammaticSeek = {
@@ -2864,6 +3029,13 @@ export async function createGpRenderer(
       sessionToken: activeSessionToken,
       retryCount: 0,
     };
+    traceSeek("pendingProgrammaticSeek-set", {
+      tick,
+      trackIndex: confirmedActiveTrackIndex,
+      sessionToken: activeSessionToken,
+      retryCount: 0,
+      requestedTrackIndex,
+    });
 
     const currentBarFromTick = resolveCurrentBarFromTick(tick);
     playbackRuntimeInfo = {
@@ -2947,6 +3119,14 @@ export async function createGpRenderer(
       if (sessionToken !== activeSessionToken || !rendererBusy) {
         return;
       }
+      traceRenderer("render-timeout", {
+        sessionToken,
+        activeSessionToken,
+        timedOutTrackIndex,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        rendererBusy,
+      });
 
       renderTimeoutHit = true;
       lastRendererErrorStage = "renderFinished-timeout";
@@ -2970,6 +3150,13 @@ export async function createGpRenderer(
         lastRenderFinishedAtIso,
         renderTimeoutHit,
       });
+      if (isHotTrackSwitch) {
+        emitRenderLifecycle("switched-track-reload-failed", {
+          sessionToken,
+          nextTrackIndex: timedOutTrackIndex,
+          stage: "renderFinished-timeout",
+        });
+      }
       hooks.onRenderError({
         message: `Track ${timedOutTrackIndex + 1} timed out while rendering.`,
         details: {
@@ -2992,10 +3179,50 @@ export async function createGpRenderer(
   };
 
   const switchTrackByReload = async (nextTrackIndex: number, options?: ReloadOptions): Promise<void> => {
+    const hasWarmRuntime = activeApi !== null;
+    const isHotTrackSwitch = hasWarmRuntime && renderCycleCounter > 0 && nextTrackIndex !== confirmedActiveTrackIndex;
+    if (isHotTrackSwitch) {
+      traceRenderer("hot-track-switch-path-enter", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+      emitRenderLifecycle("switched-track-reload-start", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+      emitRenderLifecycle("hot-track-switch-full-reload-required", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+        reason: "renderer-recreate-required-by-current-switchTrackByReload-flow",
+      });
+      traceRenderer("hot-track-switch-full-reload-required", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+    } else if (hasWarmRuntime) {
+      emitRenderLifecycle("hot-track-switch-runtime-reused", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+        reason: "same-track-or-non-switch-update",
+      });
+      traceRenderer("hot-track-switch-runtime-reused", {
+        nextTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+    }
+    setPlayerPhase("recreating", "switchTrackByReload-start");
+    traceRenderer("switchTrackByReload-start", {
+      nextTrackIndex,
+      targetTick: options?.targetTick ?? null,
+      activeSessionToken,
+      rendererBusy,
+      pendingRequestedTrackIndex,
+      zoomRerenderInFlight,
+    });
     inPlaceZoomPlaybackContext = null;
     pendingZoomPercent = null;
     pendingProgrammaticSeek = null;
-    pendingPlayAfterProgrammaticSeek = false;
+    clearStartIntent("switchTrackByReload-start");
     requestedTrackIndex = nextTrackIndex;
     const renderPlan = buildRenderPlan(nextTrackIndex);
     currentRenderMode = renderPlan.mode;
@@ -3028,11 +3255,15 @@ export async function createGpRenderer(
             totalNotes: scoreTrackSignature.totalNotes,
             firstNonEmptyBarIndex: scoreTrackSignature.firstNonEmptyBarIndex,
           }
-        : { reason: "track-not-found-in-lastLoadedScoreTracks" },
+        : { reason: "track-selection-unresolved" },
     });
 
     if (rendererBusy) {
       pendingRequestedTrackIndex = nextTrackIndex;
+      traceRenderer("switchTrackByReload-queued", {
+        nextTrackIndex,
+        activeSessionToken,
+      });
       emitDebugInfo();
       return;
     }
@@ -3055,9 +3286,56 @@ export async function createGpRenderer(
 
     const sessionToken = activeSessionToken + 1;
     activeSessionToken = sessionToken;
+    if (renderCycleCounter === 1) {
+      traceRenderer("initial-track-load-start", {
+        sessionToken,
+        nextTrackIndex,
+      });
+    }
     const sessionTargetTick = options?.targetTick ?? null;
     let sessionTargetTickApplied = false;
+    let sessionPostRenderFinishedCompleted = false;
+    let sessionSwitchedTrackPlaybackReadyEmitted = false;
     pendingScrollSnapshot = captureRenderViewportScroll();
+
+    const maybeEmitSwitchedTrackPlaybackReady = (stage: string): void => {
+      if (!isHotTrackSwitch || sessionSwitchedTrackPlaybackReadyEmitted) {
+        return;
+      }
+      const requestedTrackCleared =
+        requestedTrackIndex === confirmedActiveTrackIndex && pendingRequestedTrackIndex === null;
+      const pendingSeekCleared =
+        pendingProgrammaticSeek === null || pendingProgrammaticSeek.sessionToken !== sessionToken;
+      const safeForPlaybackStart =
+        sessionToken === activeSessionToken &&
+        sessionPostRenderFinishedCompleted &&
+        requestedTrackCleared &&
+        pendingSeekCleared &&
+        activeApi === api &&
+        playerPhase !== "recreating";
+      if (!safeForPlaybackStart) {
+        return;
+      }
+      sessionSwitchedTrackPlaybackReadyEmitted = true;
+      traceRenderer("hot-track-switch-playback-ready", {
+        sessionToken,
+        stage,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+      emitRenderLifecycle("switched-track-reload-complete-playable", {
+        sessionToken,
+        stage,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+      emitRenderLifecycle("switched-track-playback-ready", {
+        sessionToken,
+        stage,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+    };
 
     destroyActiveRenderer();
     clearRenderHost(container);
@@ -3070,15 +3348,58 @@ export async function createGpRenderer(
       return;
     }
 
+    if (!hasRenderableHostSize(container)) {
+      traceRenderer("renderer-host-not-ready", {
+        sessionToken,
+        nextTrackIndex,
+        clientWidth: container.clientWidth,
+      });
+      await waitForAnimationFrame();
+      await new Promise<void>((resolve) => {
+        window.setTimeout(() => resolve(), 40);
+      });
+      if (!hasRenderableHostSize(container)) {
+        traceRenderer("renderer-host-not-ready", {
+          sessionToken,
+          nextTrackIndex,
+          clientWidth: container.clientWidth,
+          deferred: true,
+        });
+      } else {
+        traceRenderer("renderer-host-ready", {
+          sessionToken,
+          nextTrackIndex,
+          clientWidth: container.clientWidth,
+        });
+      }
+    } else {
+      traceRenderer("renderer-host-ready", {
+        sessionToken,
+        nextTrackIndex,
+        clientWidth: container.clientWidth,
+      });
+    }
+
     const api = createAlphaTabApi(container, renderPlan, zoomPercent);
     applyPlaybackSpeedPercentToApi(api, playbackSpeedPercent);
     activeApi = api;
     applyMixerStateToApi(api, "renderer-created");
     const playbackAvailable = isPlaybackApiAvailable(api);
+    traceRenderer("api-created", {
+      sessionToken,
+      nextTrackIndex,
+      playbackAvailable,
+      renderMode: renderPlan.mode,
+      isPercussion: renderPlan.isPercussion,
+    });
     if (!playbackAvailable) {
       setPlaybackCapabilityMessage("Playback is unavailable in this runtime.");
     } else {
       setPlaybackCapabilityMessage(null);
+      emitRenderLifecycle("playback-runtime-ready-fallback", {
+        sessionToken,
+        reason: "playback-api-available",
+      });
     }
 
     if (playbackAvailable) {
@@ -3093,6 +3414,31 @@ export async function createGpRenderer(
         }
 
         const normalizedState = normalizePlaybackState(statePayload);
+        if (normalizedState !== lastLoggedPlayerState) {
+          tracePlayer("player-state-changed", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+            normalizedState,
+          });
+          lastLoggedPlayerState = normalizedState;
+        }
+        if (normalizedState === "playing") {
+          confirmRuntimeStart("player-state-changed", playbackRuntimeInfo.currentTick);
+          tracePlayer("startup-confirmed-by-state", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+          });
+        } else if (normalizedState === "paused") {
+          clearStartIntent("player-state-changed-paused");
+          setPlayerPhase("paused", "player-state-changed");
+        } else if (normalizedState === "stopped") {
+          clearStartIntent("player-state-changed-stopped");
+          setPlayerPhase("stopped", "player-state-changed");
+        }
         const playerStatePayloadShape = describePayloadShape(statePayload);
         if (normalizedState === "playing") {
           playbackScrollLockSnapshot = captureRenderViewportScroll();
@@ -3133,13 +3479,38 @@ export async function createGpRenderer(
             playbackRuntimeInfo.isPlaying === true || normalizePlaybackState(api.playerState) === "playing";
           const tickDelta = Math.abs(currentTick - pendingProgrammaticSeek.tick);
           if (tickDelta <= 1) {
+            traceSeek("pendingProgrammaticSeek-confirmed", {
+              sessionToken,
+              activeSessionToken,
+              requestedTrackIndex,
+              confirmedActiveTrackIndex,
+              tick: pendingProgrammaticSeek.tick,
+              currentTick,
+              tickDelta,
+              retryCount: pendingProgrammaticSeek.retryCount,
+            });
             hooks.onProgrammaticSeekConfirmed(confirmedActiveTrackIndex, pendingProgrammaticSeek.tick);
             pendingProgrammaticSeek = null;
-            if (pendingPlayAfterProgrammaticSeek && isPlaybackApiAvailable(api)) {
-              pendingPlayAfterProgrammaticSeek = false;
-              api.play?.();
-            }
+            emitRenderLifecycle("switched-track-reload-seek-cleared", {
+              sessionToken,
+              trackIndex: confirmedActiveTrackIndex,
+            });
+            emitRenderLifecycle("switched-track-seek-cleared", {
+              sessionToken,
+              trackIndex: confirmedActiveTrackIndex,
+            });
+            maybeEmitSwitchedTrackPlaybackReady("player-position-pending-seek-cleared");
           } else if (pendingProgrammaticSeek.retryCount < 2 && api.isReadyForPlayback !== false) {
+            traceSeek("pendingProgrammaticSeek-retry", {
+              sessionToken,
+              activeSessionToken,
+              requestedTrackIndex,
+              confirmedActiveTrackIndex,
+              targetTick: pendingProgrammaticSeek.tick,
+              currentTick,
+              tickDelta,
+              nextRetryCount: pendingProgrammaticSeek.retryCount + 1,
+            });
             pendingProgrammaticSeek.retryCount += 1;
             const retryTick = pendingProgrammaticSeek.tick;
             const retryCountSnapshot = pendingProgrammaticSeek.retryCount;
@@ -3167,7 +3538,6 @@ export async function createGpRenderer(
         if (playbackScrollLockSnapshot) {
           restoreRenderViewportScroll(playbackScrollLockSnapshot);
         }
-
         playbackRuntimeInfo = {
           ...playbackRuntimeInfo,
           positionLabel: extractPositionLabelFromPayload(positionPayload),
@@ -3178,10 +3548,91 @@ export async function createGpRenderer(
           currentBarSourcePath: currentBarFromTick.sourcePath,
           playerPositionPayloadShape,
         };
+        const beatInBar =
+          currentTick === null ||
+          currentBarFromTick.currentBarStartTick === null ||
+          currentBarFromTick.currentBarEndTickExclusive === null ||
+          currentBarFromTick.currentBarEndTickExclusive <= currentBarFromTick.currentBarStartTick
+            ? null
+            : Math.max(
+                0,
+                Math.min(
+                  3,
+                  Math.floor(
+                    ((currentTick - currentBarFromTick.currentBarStartTick) /
+                      (currentBarFromTick.currentBarEndTickExclusive - currentBarFromTick.currentBarStartTick)) *
+                      4,
+                  ),
+                ),
+              );
+        const shouldTracePosition =
+          currentBarFromTick.currentBar !== lastLoggedPlayerBar ||
+          beatInBar !== lastLoggedPlayerBeatInBar ||
+          pendingProgrammaticSeek !== null;
+        const normalizedPlayerState = normalizePlaybackState(api.playerState);
+        const playbackStateLooksPlaying = normalizedPlayerState === "playing";
+        const playbackProgressLooksPlaying =
+          currentTick !== null && (startIntentBaseTick === null || Math.abs(currentTick - startIntentBaseTick) >= 1);
+        if (
+          hasStartIntent &&
+          (playbackStateLooksPlaying || playbackProgressLooksPlaying)
+        ) {
+          confirmRuntimeStart("player-position-changed-progress", currentTick);
+          tracePlayer("startup-confirmed-by-progress", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+            currentTick,
+            startIntentBaseTick,
+            normalizedPlayerState,
+            playbackProgressLooksPlaying,
+          });
+        }
+        if (shouldTracePosition) {
+          tracePlayer("player-position-changed", {
+            sessionToken,
+            activeSessionToken,
+            requestedTrackIndex,
+            confirmedActiveTrackIndex,
+            currentTick,
+            currentBar: currentBarFromTick.currentBar,
+            beatInBar,
+            pendingProgrammaticSeek:
+              pendingProgrammaticSeek === null
+                ? null
+                : {
+                    tick: pendingProgrammaticSeek.tick,
+                    retryCount: pendingProgrammaticSeek.retryCount,
+                    trackIndex: pendingProgrammaticSeek.trackIndex,
+                    sessionToken: pendingProgrammaticSeek.sessionToken,
+                  },
+          });
+          lastLoggedPlayerBar = currentBarFromTick.currentBar;
+          lastLoggedPlayerBeatInBar = beatInBar;
+        }
+        maybeEmitSwitchedTrackPlaybackReady("player-position-changed");
         emitPlaybackRuntimeInfo();
       });
 
       api.playerReady?.on(() => {
+        traceRenderer("player-ready", {
+          sessionToken,
+          activeSessionToken,
+          requestedTrackIndex,
+          confirmedActiveTrackIndex,
+          hasPendingProgrammaticSeek: pendingProgrammaticSeek !== null,
+        });
+        traceRenderer("playback-ready", {
+          isReadyForPlayback: api.isReadyForPlayback === true,
+          endTimeMs: typeof api.endTime === "number" ? api.endTime : null,
+          endTick: typeof api.endTick === "number" ? api.endTick : null,
+        });
+        emitRenderLifecycle("player-ready", { sessionToken });
+        emitRenderLifecycle("player-runtime-ready", {
+          sessionToken,
+          source: "player-ready",
+        });
         if (
           !pendingProgrammaticSeek ||
           pendingProgrammaticSeek.sessionToken !== sessionToken ||
@@ -3194,6 +3645,15 @@ export async function createGpRenderer(
     }
 
     api.scoreLoaded.on((score) => {
+      traceRenderer("score-loaded", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        scoreTrackCount: score.tracks?.length ?? 0,
+        masterBarCount: score.masterBars?.length ?? 0,
+      });
+      emitRenderLifecycle("score-loaded", { sessionToken });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3221,6 +3681,13 @@ export async function createGpRenderer(
     });
 
     api.renderStarted?.on(() => {
+      traceRenderer("renderStarted", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        renderCycleCounter,
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3229,6 +3696,14 @@ export async function createGpRenderer(
       if (renderedTrack) {
         confirmedActiveTrackIndex = renderedTrack.index;
         lastSuccessfulConfirmedTrackIndex = renderedTrack.index;
+        traceRenderer("active-track-confirmed", {
+          sessionToken,
+          trackIndex: renderedTrack.index,
+        });
+        emitRenderLifecycle("active-track-confirmed", {
+          sessionToken,
+          trackIndex: renderedTrack.index,
+        });
         hooks.onActiveTrackConfirmed(renderedTrack.index);
       }
 
@@ -3237,6 +3712,13 @@ export async function createGpRenderer(
     });
 
     api.renderFinished?.on(() => {
+      traceRenderer("renderFinished", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        renderCycleCounter,
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3259,6 +3741,18 @@ export async function createGpRenderer(
         lastRenderFinishedAtIso,
         barBoundsExtraction: lastBarBoundsExtractionDiagnostics,
       });
+      if (isHotTrackSwitch) {
+        emitRenderLifecycle("switched-track-reload-render-finished", {
+          sessionToken,
+          trackIndex: confirmedActiveTrackIndex,
+        });
+      }
+      if (renderCycleCounter === 1) {
+        traceRenderer("initial-track-load-finished", {
+          sessionToken,
+          confirmedActiveTrackIndex,
+        });
+      }
 
       const queuedTrackIndex = pendingRequestedTrackIndex;
       pendingRequestedTrackIndex = null;
@@ -3275,6 +3769,14 @@ export async function createGpRenderer(
     });
 
     api.postRenderFinished?.on(() => {
+      traceRenderer("postRenderFinished", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        sessionTargetTick,
+        sessionTargetTickApplied,
+      });
       if (sessionToken !== activeSessionToken) {
         return;
       }
@@ -3282,11 +3784,24 @@ export async function createGpRenderer(
         return;
       }
       const committedTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+      if (isHotTrackSwitch) {
+        emitRenderLifecycle("switched-track-reload-post-render-finished", {
+          sessionToken,
+          trackIndex: committedTrackIndex,
+        });
+      }
+      sessionPostRenderFinishedCompleted = true;
       hooks.onTrackRenderCommitted(committedTrackIndex);
       if (!sessionTargetTickApplied && sessionTargetTick !== null) {
         sessionTargetTickApplied = true;
         seekToTick(sessionTargetTick);
+        emitRenderLifecycle("switched-track-seek-pending", {
+          sessionToken,
+          trackIndex: committedTrackIndex,
+          targetTick: sessionTargetTick,
+        });
       }
+      maybeEmitSwitchedTrackPlaybackReady("post-render-finished");
       if (!inPlaceZoomPlaybackContext) {
         return;
       }
@@ -3311,13 +3826,65 @@ export async function createGpRenderer(
 
       const started = api.play?.() === true;
       if (!started) {
-        hooks.onRuntimeNotice("Playback could not resume after zoom rerender.");
+        emitRuntimeNotice("Playback could not resume after zoom rerender.");
       }
     });
 
     api.error?.on((error) => {
+      traceRenderer("error-handler", {
+        sessionToken,
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        error: summarizeError(error),
+      });
       if (sessionToken !== activeSessionToken) {
         return;
+      }
+      if (directSwitchInFlight) {
+        const scoreTracks = api.score?.tracks ?? [];
+        const rollbackTrack =
+          directSwitchPreviousIndex !== null &&
+          directSwitchPreviousIndex >= 0 &&
+          directSwitchPreviousIndex < scoreTracks.length
+            ? (scoreTracks[directSwitchPreviousIndex] ?? null)
+            : null;
+        if (rollbackTrack && typeof api.renderTracks === "function") {
+          try {
+            api.renderTracks([rollbackTrack]);
+            confirmedActiveTrackIndex = rollbackTrack.index;
+            requestedTrackIndex = rollbackTrack.index;
+            lastSuccessfulConfirmedTrackIndex = rollbackTrack.index;
+            traceRenderer("track-switch-render-error-rollback", {
+              targetIndex: directSwitchTargetIndex,
+              prevIndex: rollbackTrack.index,
+            });
+            emitDebugInfo();
+            const failedTarget = directSwitchTargetIndex;
+            directSwitchInFlight = false;
+            directSwitchTargetIndex = null;
+            directSwitchPreviousIndex = null;
+            hooks.onRenderError({
+              message: "Direct track switch failed and was rolled back.",
+              details: {
+                stage: "direct-switch-error-rolled-back",
+                targetTrackIndex: failedTarget,
+                rollbackTrackIndex: rollbackTrack.index,
+                rawError: summarizeError(error),
+              },
+            });
+            return;
+          } catch (rollbackError) {
+            traceRenderer("track-switch-direct-failed", {
+              nextTrackIndex: directSwitchTargetIndex,
+              reason: "rollback-throw",
+              error: summarizeError(rollbackError),
+            });
+          }
+        }
+        directSwitchInFlight = false;
+        directSwitchTargetIndex = null;
+        directSwitchPreviousIndex = null;
       }
 
       clearRenderTimeout();
@@ -3344,6 +3911,13 @@ export async function createGpRenderer(
         rawError: summarizeError(error),
       };
       emitRenderLifecycle("render-error", errorDetails);
+      if (isHotTrackSwitch) {
+        emitRenderLifecycle("switched-track-reload-failed", {
+          sessionToken,
+          nextTrackIndex,
+          stage: "error-event",
+        });
+      }
       hooks.onRenderError({
         message: "alphaTab failed to render this GP file.",
         details: errorDetails,
@@ -3360,6 +3934,11 @@ export async function createGpRenderer(
     });
 
     lastRendererErrorStage = "load-start";
+    traceRenderer("score-load-start", {
+      sessionToken,
+      nextTrackIndex,
+      sourceBytesLength: sourceBytes.length,
+    });
     const loadWasStarted = api.load(sourceBytes, [nextTrackIndex]);
     if (!loadWasStarted) {
       clearRenderTimeout();
@@ -3385,6 +3964,13 @@ export async function createGpRenderer(
         lastRenderFinishedAtIso,
         renderTimeoutHit,
       });
+      if (isHotTrackSwitch) {
+        emitRenderLifecycle("switched-track-reload-failed", {
+          sessionToken,
+          nextTrackIndex,
+          stage: "load",
+        });
+      }
       const queuedTrackIndex = pendingRequestedTrackIndex;
       pendingRequestedTrackIndex = null;
       if (queuedTrackIndex !== null) {
@@ -3396,26 +3982,248 @@ export async function createGpRenderer(
     }
 
     scheduleRenderTimeout(sessionToken, nextTrackIndex);
+    traceRenderer("switchTrackByReload-finish", {
+      nextTrackIndex,
+      sessionToken,
+      rendererBusy,
+    });
+    if (playerPhase === "recreating") {
+      setPlayerPhase("idle", "switchTrackByReload-finish");
+    }
     emitDebugInfo();
   };
 
   await switchTrackByReload(selectedTrackIndex);
 
+  const switchTrackDirect = (nextTrackIndex: number, targetTick?: number | null): void => {
+    const api = activeApi;
+    if (!api) {
+      return;
+    }
+    traceRenderer("track-switch-request", {
+      targetIndex: nextTrackIndex,
+      prevIndex: confirmedActiveTrackIndex,
+    });
+    directSwitchInFlight = true;
+    directSwitchTargetIndex = nextTrackIndex;
+    directSwitchPreviousIndex = confirmedActiveTrackIndex;
+    const score = api.score;
+    if (!score || !Array.isArray(score.tracks)) {
+      traceRenderer("track-switch-invalid-index", {
+        targetIndex: nextTrackIndex,
+        prevIndex: confirmedActiveTrackIndex,
+        scoreTrackCount: 0,
+      });
+      return;
+    }
+    const scoreTracks = score.tracks;
+    if (nextTrackIndex < 0 || nextTrackIndex >= scoreTracks.length) {
+      traceRenderer("track-switch-invalid-index", {
+        targetIndex: nextTrackIndex,
+        prevIndex: confirmedActiveTrackIndex,
+        scoreTrackCount: scoreTracks.length,
+      });
+      return;
+    }
+    let nextTrack = scoreTracks[nextTrackIndex] ?? null;
+    if (!nextTrack) {
+      traceRenderer("track-switch-track-undefined", {
+        targetIndex: nextTrackIndex,
+        prevIndex: confirmedActiveTrackIndex,
+      });
+      return;
+    }
+    if (nextTrack.index !== nextTrackIndex) {
+      const mappedTrack = scoreTracks.find((track) => track.index === nextTrackIndex) ?? null;
+      if (!mappedTrack) {
+        traceRenderer("track-switch-invalid-index", {
+          targetIndex: nextTrackIndex,
+          prevIndex: confirmedActiveTrackIndex,
+          scoreTrackCount: scoreTracks.length,
+          reason: "track-index-position-mismatch",
+        });
+        return;
+      }
+      nextTrack = mappedTrack;
+    }
+    if (!Array.isArray(nextTrack.staves) || nextTrack.staves.length === 0) {
+      traceRenderer("track-switch-track-invalid-staves", {
+        targetIndex: nextTrackIndex,
+        prevIndex: confirmedActiveTrackIndex,
+        trackIndex: nextTrack.index,
+      });
+      return;
+    }
+    traceRenderer("track-switch-validated", {
+      targetIndex: nextTrackIndex,
+      isPercussion: nextTrack.isPercussion === true,
+      staveCount: nextTrack.staves.length,
+    });
+    const resumeTick = Number.isFinite(targetTick)
+      ? (targetTick as number)
+      : (playbackRuntimeInfo.currentTick ?? api.tickPosition ?? 0);
+    const wasPlaying =
+      playbackRuntimeInfo.isPlaying === true || normalizePlaybackState(api.playerState) === "playing";
+    traceRenderer("track-switch-direct-start", {
+      nextTrackIndex,
+      confirmedActiveTrackIndex,
+      requestedTrackIndex,
+      wasPlaying,
+      resumeTick,
+    });
+    const directTrackPercussion = nextTrack.isPercussion === true;
+    currentRenderMode = directTrackPercussion ? "percussion-default" : "string-tab";
+    heavyTrackDetected = false;
+    heavyTrackReason = null;
+    isPercussionTrack = directTrackPercussion;
+    effectiveStaveProfile = "Default";
+    traceRenderer("track-switch-direct-mode-resolved", {
+      nextTrackIndex,
+      renderMode: currentRenderMode,
+      isPercussion: isPercussionTrack,
+      effectiveStaveProfile,
+      heavyTrackDetected,
+      heavyTrackReason,
+    });
+    if (api.settings?.display) {
+      api.settings.display.staveProfile = effectiveStaveProfile;
+      api.updateSettings?.();
+      if (isPercussionTrack) {
+        traceRenderer("track-switch-direct-percussion-config-applied", {
+          nextTrackIndex,
+          renderMode: currentRenderMode,
+          effectiveStaveProfile,
+        });
+      }
+    }
+    requestedTrackIndex = nextTrackIndex;
+    pendingRequestedTrackIndex = null;
+    pendingProgrammaticSeek = null;
+    try {
+      if (typeof api.renderTracks !== "function") {
+        traceRenderer("track-switch-direct-failed", {
+          nextTrackIndex,
+          reason: "renderTracks-unavailable",
+        });
+        directSwitchInFlight = false;
+        directSwitchTargetIndex = null;
+        directSwitchPreviousIndex = null;
+        return;
+      }
+      traceRenderer("track-switch-renderTracks-called", {
+        targetIndex: nextTrackIndex,
+      });
+      api.renderTracks([nextTrack]);
+      const finishDirectSwitch = (attempt: number): void => {
+        if (!activeApi || activeApi !== api) {
+          traceRenderer("track-switch-direct-api-not-ready", {
+            nextTrackIndex,
+            attempt,
+            hasActiveApi: activeApi !== null,
+            activeApiMatchesSwitchApi: activeApi === api,
+          });
+          if (attempt >= 12) {
+            traceRenderer("track-switch-direct-failed", {
+              nextTrackIndex,
+              reason: "api-not-ready-timeout",
+              attempt,
+            });
+            return;
+          }
+          window.setTimeout(() => finishDirectSwitch(attempt + 1), 16);
+          return;
+        }
+        traceRenderer("track-switch-direct-api-ready", {
+          nextTrackIndex,
+          attempt,
+          activeSessionToken,
+        });
+        confirmedActiveTrackIndex = nextTrackIndex;
+        lastSuccessfulConfirmedTrackIndex = nextTrackIndex;
+        requestedTrackIndex = nextTrackIndex;
+        emitRenderLifecycle("active-track-confirmed", {
+          activeSessionToken,
+          trackIndex: nextTrackIndex,
+        });
+        hooks.onActiveTrackConfirmed(nextTrackIndex);
+        hooks.onTrackRenderCommitted(nextTrackIndex);
+        if (Number.isFinite(resumeTick)) {
+          const didRestoreSeek = seekToTick(resumeTick);
+          if (didRestoreSeek) {
+            traceRenderer("track-switch-direct-seek-restored", {
+              nextTrackIndex,
+              resumeTick,
+            });
+          }
+        }
+        if (wasPlaying && isPlaybackApiAvailable(api) && typeof api.play === "function") {
+          const runtimeState = normalizePlaybackState(api.playerState);
+          if (runtimeState !== "playing") {
+            api.play?.();
+          }
+          traceRenderer("track-switch-direct-playback-restored", {
+            nextTrackIndex,
+            resumeTick,
+            runtimeState: normalizePlaybackState(api.playerState),
+          });
+        }
+        traceRenderer("track-switch-direct-applied", {
+          nextTrackIndex,
+          confirmedActiveTrackIndex,
+          resumeTick,
+        });
+        traceRenderer("track-switch-applied", {
+          targetIndex: nextTrackIndex,
+        });
+        directSwitchInFlight = false;
+        directSwitchTargetIndex = null;
+        directSwitchPreviousIndex = null;
+        emitDebugInfo();
+      };
+      finishDirectSwitch(0);
+    } catch (error) {
+      const previousTrackPosition =
+        confirmedActiveTrackIndex >= 0 && confirmedActiveTrackIndex < scoreTracks.length
+          ? confirmedActiveTrackIndex
+          : null;
+      const previousTrack =
+        previousTrackPosition === null ? null : (scoreTracks[previousTrackPosition] ?? null);
+      if (previousTrack && typeof api.renderTracks === "function") {
+        try {
+          api.renderTracks([previousTrack]);
+          traceRenderer("track-switch-render-error-rollback", {
+            targetIndex: nextTrackIndex,
+            prevIndex: previousTrack.index,
+          });
+        } catch {
+          // Controlled escalation to app-level error handling below.
+        }
+      }
+      directSwitchInFlight = false;
+      directSwitchTargetIndex = null;
+      directSwitchPreviousIndex = null;
+      traceRenderer("track-switch-direct-failed", {
+        nextTrackIndex,
+        reason: "direct-switch-throw",
+        error: summarizeError(error),
+      });
+      hooks.onRenderError({
+        message: error instanceof Error ? error.message : "Could not switch GP track.",
+        details: {
+          attemptId: activeRenderAttemptId,
+          stage: "selectTrackDirect",
+          error: summarizeError(error),
+          renderCycleCounter,
+          lastRendererErrorStage,
+          nextTrackIndex,
+        },
+      });
+    }
+  };
+
   return {
     selectTrack: (trackIndex: number, targetTick?: number | null) => {
-      void switchTrackByReload(trackIndex, { targetTick: targetTick ?? null }).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : "Could not switch GP track.";
-        hooks.onRenderError({
-          message,
-          details: {
-            attemptId: activeRenderAttemptId,
-            stage: "selectTrack",
-            error: summarizeError(error),
-            renderCycleCounter,
-            lastRendererErrorStage,
-          },
-        });
-      });
+      switchTrackDirect(trackIndex, targetTick ?? null);
     },
     setZoom: (nextZoomPercent: number) => {
       const normalizedZoom = Math.max(50, Math.min(200, Math.round(nextZoomPercent)));
@@ -3559,52 +4367,67 @@ export async function createGpRenderer(
       return applyMixerStateToApi(activeApi, "applyMixerState");
     },
     play: () => {
-      if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
-        return;
-      }
-
-      if (
-        pendingProgrammaticSeek &&
-        pendingProgrammaticSeek.sessionToken === activeSessionToken &&
-        pendingProgrammaticSeek.trackIndex === confirmedActiveTrackIndex
-      ) {
-        pendingPlayAfterProgrammaticSeek = true;
-        console.debug("[alphaTabGpRenderer] queued play after pending seek", {
-          tick: pendingProgrammaticSeek.tick,
-          trackIndex: pendingProgrammaticSeek.trackIndex,
+      tracePlayer("play-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
+      if (!activeApi || !isPlaybackApiAvailable(activeApi) || activeApi.isReadyForPlayback !== true) {
+        tracePlayer("play-rejected-not-ready", {
+          hasActiveApi: activeApi !== null,
+          isReadyForPlayback: activeApi?.isReadyForPlayback ?? null,
         });
+        emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
-
       playbackScrollLockSnapshot = captureRenderViewportScroll();
-      const playbackApi = activeApi as AlphaTabApi & { play: () => boolean };
-      playbackApi.play();
+      (activeApi as AlphaTabApi & { play: () => boolean }).play();
     },
     pause: () => {
+      tracePlayer("pause-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
-
       playbackScrollLockSnapshot = null;
-      pendingPlayAfterProgrammaticSeek = false;
-      const playbackApi = activeApi as AlphaTabApi & { pause: () => void };
-      playbackApi.pause();
+      (activeApi as AlphaTabApi & { pause: () => void }).pause();
+      emitRenderLifecycle("pause-confirmed", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
     },
     stop: () => {
+      tracePlayer("stop-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
-        hooks.onRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
+        emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
-
       playbackScrollLockSnapshot = null;
       pendingProgrammaticSeek = null;
-      pendingPlayAfterProgrammaticSeek = false;
-      const playbackApi = activeApi as AlphaTabApi & { stop: () => void };
-      playbackApi.stop();
+      (activeApi as AlphaTabApi & { stop: () => void }).stop();
+      emitRenderLifecycle("stop-confirmed", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+      });
     },
     destroy: () => {
+      traceRenderer("destroy-called", {
+        activeSessionToken,
+        requestedTrackIndex,
+        confirmedActiveTrackIndex,
+        rendererBusy,
+        zoomRerenderInFlight,
+      });
       activeSessionToken += 1;
       clearRenderTimeout();
       rendererBusy = false;
@@ -3613,7 +4436,6 @@ export async function createGpRenderer(
       pendingZoomPercent = null;
       inPlaceZoomPlaybackContext = null;
       pendingProgrammaticSeek = null;
-      pendingPlayAfterProgrammaticSeek = false;
       playbackScrollLockSnapshot = null;
       destroyActiveRenderer();
       clearRenderHost(container);
