@@ -158,7 +158,7 @@ interface AppState {
   projectRendererCreateKey: string | null;
   lastTransportUiState: "not-ready" | "idle-ready" | "playing-confirmed" | "paused-confirmed" | null;
   lastTransportControlSnapshot: string | null;
-  startupInteractionLocked: boolean;
+  pendingTransportCommand: "pause" | "stop" | null;
 }
 
 function triggerJsonDownload(fileName: string, payload: unknown): void {
@@ -449,7 +449,6 @@ function resolveTransportUiState(state: AppState): {
 function updateTransportControls(rootElement: HTMLElement, state: AppState, reason: string): void {
   const transportUi = resolveTransportUiState(state);
   const uiStateChanged = state.lastTransportUiState !== transportUi.uiState;
-  state.startupInteractionLocked = false;
   const transportSnapshot = `${transportUi.uiState}|${transportUi.canPlay ? "1" : "0"}|${transportUi.canPause ? "1" : "0"}|${transportUi.canStop ? "1" : "0"}|${transportUi.playDisabledReason ?? "-"}`;
   if (state.lastTransportControlSnapshot !== transportSnapshot) {
     tracePlayback("transport-ready-evaluated", {
@@ -2527,10 +2526,6 @@ function setupNotationBarNavigation(rootElement: HTMLElement, state: AppState): 
   }
 
   renderHost.addEventListener("click", (event) => {
-    if (state.startupInteractionLocked) {
-      tracePlayback("interaction-blocked", { area: "notation-bar-click", reason: "startup-pending" });
-      return;
-    }
     if (!state.gpRenderer || state.playbackBarAnchors.length === 0) {
       return;
     }
@@ -2603,10 +2598,6 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
   }
 
   rowsContainer.addEventListener("click", (event) => {
-    if (state.startupInteractionLocked) {
-      tracePlayback("interaction-blocked", { area: "arrangement-bar-click", reason: "startup-pending" });
-      return;
-    }
     if (!state.gpRenderer) {
       return;
     }
@@ -2773,7 +2764,7 @@ export function startApp(rootElement: HTMLElement): void {
     projectRendererCreateKey: null,
     lastTransportUiState: null,
     lastTransportControlSnapshot: null,
-    startupInteractionLocked: false,
+    pendingTransportCommand: null,
   };
 
   const hardCancelPlaybackPipeline = (
@@ -2800,6 +2791,7 @@ export function startApp(rootElement: HTMLElement): void {
     cancelCountIn(state, rootElement);
     state.playbackTransportActive = false;
     state.countInInProgress = false;
+    state.pendingTransportCommand = null;
     stopPlaybackMetronome(state);
     state.manualNavigationVisualOverrideActive = false;
     resetPlaybackVisualState(state, rootElement);
@@ -2838,6 +2830,7 @@ export function startApp(rootElement: HTMLElement): void {
     clearPausedResumeSnapshot(`stop-finalized:${reason}`);
     state.playbackTransportActive = false;
     state.countInInProgress = false;
+    state.pendingTransportCommand = null;
     state.playbackIsPlaying = false;
     cancelCountIn(state, rootElement);
     stopPlaybackMetronome(state);
@@ -2873,6 +2866,7 @@ export function startApp(rootElement: HTMLElement): void {
     };
     state.playbackTransportActive = false;
     state.countInInProgress = false;
+    state.pendingTransportCommand = null;
     state.playbackIsPlaying = false;
     const pausedTickSnapshot =
       state.playbackCurrentTick ?? state.playbackCurrentBarStartTick ?? state.selectedNavigationTick ?? null;
@@ -2953,6 +2947,7 @@ export function startApp(rootElement: HTMLElement): void {
     if (hasActivePlaybackPipeline) {
       hardCancelPlaybackPipeline("renderer-cleanup");
     }
+    state.pendingTransportCommand = null;
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
     state.pendingOverviewNavigationTick = null;
@@ -3279,18 +3274,6 @@ export function startApp(rootElement: HTMLElement): void {
         state.sessionDebugBannerShown = true;
       }
       const transportUi = resolveTransportUiState(state);
-      state.startupInteractionLocked = false;
-      const blockStartupInteraction = (action: string): boolean => {
-        if (!state.startupInteractionLocked) {
-          return false;
-        }
-        tracePlayback("interaction-blocked", {
-          action,
-          reason: "startup-pending",
-          uiState: transportUi.uiState,
-        });
-        return true;
-      };
 
       renderProjectScreen(rootElement, state.currentProject, {
         statusMessage: state.projectStatusMessage,
@@ -3317,7 +3300,6 @@ export function startApp(rootElement: HTMLElement): void {
         canPlay: transportUi.canPlay,
         canPause: transportUi.canPause,
         canStop: transportUi.canStop,
-        startupInteractionLocked: state.startupInteractionLocked,
         countInEnabled: state.countInEnabled,
         metronomeEnabled: state.metronomeEnabled,
         loopEnabled: state.loopEnabled,
@@ -3352,9 +3334,6 @@ export function startApp(rootElement: HTMLElement): void {
           : state.tabZoomPercent > MIN_TAB_ZOOM_PERCENT,
         isBottomDockCollapsed: state.isBottomDockCollapsed,
         onTrackSelectionChange: (trackIndex: number) => {
-          if (blockStartupInteraction("track-select")) {
-            return;
-          }
           traceTrackSwitch("onTrackSelectionChange-enter", {
             previousTrackIndex: state.selectedTrackIndex,
             nextTrackIndex: trackIndex,
@@ -3485,9 +3464,6 @@ export function startApp(rootElement: HTMLElement): void {
           void exportAnchorDebugSnapshot();
         },
         onToggleTrackMute: (trackIndex) => {
-          if (blockStartupInteraction("toggle-track-mute")) {
-            return;
-          }
           const isMuted = state.mutedTrackIndexes.includes(trackIndex);
           state.mutedTrackIndexes = isMuted
             ? state.mutedTrackIndexes.filter((value) => value !== trackIndex)
@@ -3498,9 +3474,6 @@ export function startApp(rootElement: HTMLElement): void {
           updateTrackControlVisualState(state, rootElement);
         },
         onToggleTrackSolo: (trackIndex) => {
-          if (blockStartupInteraction("toggle-track-solo")) {
-            return;
-          }
           const isSolo = state.soloTrackIndexes.includes(trackIndex);
           state.soloTrackIndexes = isSolo
             ? state.soloTrackIndexes.filter((value) => value !== trackIndex)
@@ -3511,51 +3484,30 @@ export function startApp(rootElement: HTMLElement): void {
           updateTrackControlVisualState(state, rootElement);
         },
         onTrackVolumeChange: (trackIndex, volume) => {
-          if (blockStartupInteraction("track-volume-change")) {
-            return;
-          }
           state.trackVolumeByIndex[trackIndex] = volume;
           state.gpRenderer?.setTrackVolume(trackIndex, volume);
           applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onMasterVolumeChange: (volume) => {
-          if (blockStartupInteraction("master-volume-change")) {
-            return;
-          }
           state.masterVolume = volume;
           state.gpRenderer?.setMasterVolume(volume);
           applyMixerStateToRenderer(state);
           updateTrackControlVisualState(state, rootElement);
         },
         onMoveLoopStartLeft: () => {
-          if (blockStartupInteraction("move-loop-start-left")) {
-            return;
-          }
           moveLoopBoundaryByBars(state, rootElement, "start", -1);
         },
         onMoveLoopStartRight: () => {
-          if (blockStartupInteraction("move-loop-start-right")) {
-            return;
-          }
           moveLoopBoundaryByBars(state, rootElement, "start", 1);
         },
         onMoveLoopEndLeft: () => {
-          if (blockStartupInteraction("move-loop-end-left")) {
-            return;
-          }
           moveLoopBoundaryByBars(state, rootElement, "end", -1);
         },
         onMoveLoopEndRight: () => {
-          if (blockStartupInteraction("move-loop-end-right")) {
-            return;
-          }
           moveLoopBoundaryByBars(state, rootElement, "end", 1);
         },
         onZoomIn: () => {
-          if (blockStartupInteraction("zoom-in")) {
-            return;
-          }
           const isMobile = isMobileViewport();
           const nextZoomPercent = isMobile
             ? MOBILE_ZOOM_PRESETS[Math.max(0, getMobileZoomStepIndex(state.tabZoomPercent) - 1)]
@@ -3568,9 +3520,6 @@ export function startApp(rootElement: HTMLElement): void {
           render();
         },
         onZoomOut: () => {
-          if (blockStartupInteraction("zoom-out")) {
-            return;
-          }
           const isMobile = isMobileViewport();
           const nextZoomPercent = isMobile
             ? MOBILE_ZOOM_PRESETS[Math.min(MOBILE_ZOOM_PRESETS.length - 1, getMobileZoomStepIndex(state.tabZoomPercent) + 1)]
@@ -3628,8 +3577,8 @@ export function startApp(rootElement: HTMLElement): void {
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             return;
           }
+          state.pendingTransportCommand = "pause";
           state.gpRenderer.pause();
-          finalizePausedTransportState("pause-runtime-dispatch");
         },
         onStop: () => {
           if (!state.gpRenderer) {
@@ -3637,16 +3586,10 @@ export function startApp(rootElement: HTMLElement): void {
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             return;
           }
+          state.pendingTransportCommand = "stop";
           state.gpRenderer.stop();
-          finalizeStoppedTransportState("stop-runtime-dispatch", {
-            resetPosition: true,
-            resetNavigationToFirstBar: true,
-          });
         },
         onToggleLoop: () => {
-          if (blockStartupInteraction("toggle-loop")) {
-            return;
-          }
           if (state.loopEnabled) {
             clearLoopState(state);
             state.projectStatusMessage = "Loop mode disabled.";
@@ -3659,16 +3602,10 @@ export function startApp(rootElement: HTMLElement): void {
           updateProjectStatusBanner(rootElement, state.projectStatusMessage);
         },
         onToggleCountIn: () => {
-          if (blockStartupInteraction("toggle-count-in")) {
-            return;
-          }
           state.countInEnabled = !state.countInEnabled;
           updateCountInToggleVisual(state, rootElement);
         },
         onToggleMetronome: () => {
-          if (blockStartupInteraction("toggle-metronome")) {
-            return;
-          }
           state.metronomeEnabled = !state.metronomeEnabled;
           if (state.metronomeEnabled && state.playbackTransportActive && !state.countInInProgress) {
             startPlaybackMetronome(state);
@@ -3679,9 +3616,6 @@ export function startApp(rootElement: HTMLElement): void {
           updateMetronomeToggleVisual(state, rootElement);
         },
         onDecreasePlaybackSpeed: () => {
-          if (blockStartupInteraction("decrease-playback-speed")) {
-            return;
-          }
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(
             state.playbackSpeedPercent - PLAYBACK_SPEED_BUTTON_STEP_PERCENT,
           );
@@ -3692,9 +3626,6 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onIncreasePlaybackSpeed: () => {
-          if (blockStartupInteraction("increase-playback-speed")) {
-            return;
-          }
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(
             state.playbackSpeedPercent + PLAYBACK_SPEED_BUTTON_STEP_PERCENT,
           );
@@ -3705,9 +3636,6 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onSetPlaybackSpeedPercent: (speedPercent: number) => {
-          if (blockStartupInteraction("set-playback-speed")) {
-            return;
-          }
           state.playbackSpeedPercent = clampPlaybackSpeedPercent(speedPercent);
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
@@ -3716,9 +3644,6 @@ export function startApp(rootElement: HTMLElement): void {
           }
         },
         onResetPlaybackSpeed: () => {
-          if (blockStartupInteraction("reset-playback-speed")) {
-            return;
-          }
           state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
           state.gpRenderer?.setPlaybackSpeedPercent(state.playbackSpeedPercent);
           updatePlaybackSpeedVisual(state, rootElement);
@@ -3901,32 +3826,6 @@ export function startApp(rootElement: HTMLElement): void {
               sessionToken: eventSessionToken,
               selectedTrackIndex: state.selectedTrackIndex,
             });
-          } else if (eventType === "pause-confirmed") {
-            const eventConfirmedTrackIndex =
-              typeof event.confirmedActiveTrackIndex === "number" && Number.isFinite(event.confirmedActiveTrackIndex)
-                ? event.confirmedActiveTrackIndex
-                : null;
-            if (state.trackSwitchInProgress) {
-              tracePlayback("paused-confirmed-state-rejected", {
-                reason: "track-switch-in-progress",
-                eventConfirmedTrackIndex,
-                selectedTrackIndex: state.selectedTrackIndex,
-              });
-            } else if (eventConfirmedTrackIndex !== null && eventConfirmedTrackIndex !== state.selectedTrackIndex) {
-              tracePlayback("paused-confirmed-state-rejected", {
-                reason: "track-mismatch",
-                eventConfirmedTrackIndex,
-                selectedTrackIndex: state.selectedTrackIndex,
-              });
-            } else {
-              tracePlayback("paused-confirmed-state-entered", {
-                eventConfirmedTrackIndex,
-                selectedTrackIndex: state.selectedTrackIndex,
-              });
-              finalizePausedTransportState("render-lifecycle-pause-confirmed");
-            }
-          } else if (eventType === "stop-confirmed") {
-            finalizeStoppedTransportState("render-lifecycle-stop-confirmed");
           } else if (eventType === "playback-runtime-ready-fallback") {
             state.rendererFallbackReady = true;
             state.rendererRuntimeWarm = true;
@@ -4218,8 +4117,22 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackIsPlaying = info.isPlaying;
           }
           if (info.isPlaying === false) {
-            state.playbackTransportActive = false;
-            stopPlaybackMetronome(state);
+            if (state.pendingTransportCommand === "pause") {
+              finalizePausedTransportState("runtime-confirmed-pause");
+              state.pendingTransportCommand = null;
+            } else if (state.pendingTransportCommand === "stop") {
+              finalizeStoppedTransportState("runtime-confirmed-stop", {
+                resetPosition: true,
+                resetNavigationToFirstBar: true,
+              });
+              state.pendingTransportCommand = null;
+            } else {
+              state.playbackTransportActive = false;
+              stopPlaybackMetronome(state);
+            }
+          }
+          if (info.isPlaying === true) {
+            state.pendingTransportCommand = null;
           }
           state.playbackPositionLabel = info.positionLabel;
           state.playbackCurrentBar = info.currentBar;
@@ -4325,6 +4238,7 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentTick = null;
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
+          state.pendingTransportCommand = null;
           state.playbackTransportActive = false;
           state.countInInProgress = false;
           cancelCountIn(state, rootElement);
@@ -4390,8 +4304,7 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackCurrentBar = null;
             state.playbackCurrentTick = null;
             state.playbackCurrentBarStartTick = null;
-          state.playbackCurrentBarEndTickExclusive = null;
-          state.playbackTransportActive = false;
+            state.playbackCurrentBarEndTickExclusive = null;
           }
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
