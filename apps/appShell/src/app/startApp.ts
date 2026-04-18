@@ -1029,37 +1029,6 @@ function nudgeRenderedSectionLabels(rootElement: HTMLElement, state: AppState): 
   });
 }
 
-function getActiveManualNavigationTarget(state: AppState): { targetTrackIndex: number; targetBar: number; targetTick: number } | null {
-  const confirmedTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
-  if (
-    state.pendingOverviewNavigationBar !== null &&
-    state.pendingOverviewNavigationBar > 0 &&
-    state.pendingOverviewNavigationTrackIndex === confirmedTrackIndex &&
-    state.pendingOverviewNavigationTick !== null
-  ) {
-    return {
-      targetTrackIndex: confirmedTrackIndex,
-      targetBar: state.pendingOverviewNavigationBar,
-      targetTick: state.pendingOverviewNavigationTick,
-    };
-  }
-
-  if (
-    state.selectedNavigationBar !== null &&
-    state.selectedNavigationBar > 0 &&
-    state.selectedNavigationTrackIndex === confirmedTrackIndex &&
-    state.selectedNavigationTick !== null
-  ) {
-    return {
-      targetTrackIndex: confirmedTrackIndex,
-      targetBar: state.selectedNavigationBar,
-      targetTick: state.selectedNavigationTick,
-    };
-  }
-
-  return null;
-}
-
 function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLElement): void {
   const arrangementCells = rootElement.querySelectorAll<HTMLElement>("[data-arrangement-bar-index]");
   let removedPlaybackHighlight = false;
@@ -2732,7 +2701,7 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
     state.pendingOverviewNavigationTick = null;
-    traceTrackSwitch("cube-navigation-track-switch", {
+    traceTrackSwitch("cube-navigation-track-switch-request", {
       clickedTrackIndex,
       targetBarNumber,
       targetTick,
@@ -3569,6 +3538,10 @@ export function startApp(rootElement: HTMLElement): void {
             nextTrackIndex: trackIndex,
             preservedTick,
           });
+          traceTrackSwitch("ordinary-track-switch-direct", {
+            nextTrackIndex: trackIndex,
+            preservedTick,
+          });
           state.gpRenderer?.selectTrack(trackIndex, preservedTick);
         },
         onBackToHome: () => {
@@ -3720,12 +3693,16 @@ export function startApp(rootElement: HTMLElement): void {
             state.hasExplicitPausedState &&
             state.pausedResumeTick !== null &&
             state.pausedResumeTrackIndex === state.selectedTrackIndex;
-          const manualTarget = getActiveManualNavigationTarget(state);
+          const pendingCubeTick =
+            state.pendingCubeNavigationTrackIndex === state.selectedTrackIndex ? state.pendingCubeNavigationTick : null;
           const targetTick = hasPausedSnapshot
             ? state.pausedResumeTick
-            : state.loopEnabled && state.loopStartTick !== null
-              ? state.loopStartTick
-              : manualTarget?.targetTick ?? state.selectedNavigationTick ?? null;
+            : pendingCubeTick ??
+              state.selectedNavigationTick ??
+              state.desiredTrackSwitchTick ??
+              state.pausedResumeTick ??
+              state.playbackCurrentTick ??
+              0;
           if (targetTick !== null && (state.playbackCurrentTick === null || Math.abs(state.playbackCurrentTick - targetTick) > 1)) {
             state.gpRenderer.seekToTick(targetTick);
           }
@@ -4315,6 +4292,11 @@ export function startApp(rootElement: HTMLElement): void {
               state.pendingCubeNavigationTick,
               trackIndex,
             );
+            traceTrackSwitch("cube-navigation-selection-applied", {
+              trackIndex,
+              targetBar: state.pendingCubeNavigationBar,
+              targetTick: state.pendingCubeNavigationTick,
+            });
             traceTrackSwitch("cube-navigation-seek", {
               trackIndex,
               tick,
@@ -4675,11 +4657,29 @@ export function startApp(rootElement: HTMLElement): void {
             const targetBarRange = state.gpRenderer?.getBarTickRange(pendingBarNumber) ?? null;
             state.playbackCurrentBarStartTick = targetBarRange?.startTick ?? state.pendingOverviewNavigationTick;
             state.playbackCurrentBarEndTickExclusive = targetBarRange?.endTickExclusive ?? null;
+          } else if (hasPendingCubeNavigationForTrack && state.pendingCubeNavigationTick !== null) {
+            state.playbackCurrentBar = state.pendingCubeNavigationBar;
+            state.playbackCurrentTick = state.pendingCubeNavigationTick;
+            const targetBarRange =
+              state.pendingCubeNavigationBar === null ? null : (state.gpRenderer?.getBarTickRange(state.pendingCubeNavigationBar) ?? null);
+            state.playbackCurrentBarStartTick = targetBarRange?.startTick ?? state.pendingCubeNavigationTick;
+            state.playbackCurrentBarEndTickExclusive = targetBarRange?.endTickExclusive ?? null;
+            traceTrackSwitch("cube-navigation-track-switch-confirmed", {
+              trackIndex,
+              targetBar: state.pendingCubeNavigationBar,
+              targetTick: state.pendingCubeNavigationTick,
+            });
           } else {
-            state.playbackCurrentBar = null;
-            state.playbackCurrentTick = null;
-            state.playbackCurrentBarStartTick = null;
-            state.playbackCurrentBarEndTickExclusive = null;
+            const hasMeaningfulPlaybackTick =
+              state.playbackCurrentBar !== null &&
+              state.playbackCurrentBar > 0 &&
+              state.playbackCurrentTick !== null;
+            if (!hasMeaningfulPlaybackTick) {
+              state.playbackCurrentBar = null;
+              state.playbackCurrentTick = null;
+              state.playbackCurrentBarStartTick = null;
+              state.playbackCurrentBarEndTickExclusive = null;
+            }
           }
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
@@ -4692,8 +4692,39 @@ export function startApp(rootElement: HTMLElement): void {
           state.currentBarSourcePath = null;
           state.requestedTrackIndex = null;
           state.selectionFired = false;
-          if (!isPendingOverviewTrackSwitch && !hasPendingCubeNavigationForTrack) {
-            resetNavigationSelectionToFirstBar(state, rootElement, "active-track-confirmed-default", trackIndex);
+          const hasDesiredTrackSwitchTarget =
+            state.desiredTrackSwitchBar !== null && state.desiredTrackSwitchTick !== null;
+          const hasSelectedNavigationTarget =
+            state.selectedNavigationBar !== null &&
+            state.selectedNavigationBar > 0 &&
+            state.selectedNavigationTick !== null;
+          const hasMeaningfulPlaybackTarget =
+            state.playbackCurrentBar !== null &&
+            state.playbackCurrentBar > 0 &&
+            state.playbackCurrentTick !== null;
+          const shouldResetToFirstBarFallback =
+            !isPendingOverviewTrackSwitch &&
+            !hasPendingCubeNavigationForTrack &&
+            !hasDesiredTrackSwitchTarget &&
+            !hasSelectedNavigationTarget &&
+            !hasMeaningfulPlaybackTarget &&
+            state.clickCounter === 0 &&
+            previousSelectedTrackIndex === trackIndex;
+          if (shouldResetToFirstBarFallback) {
+            traceTrackSwitch("active-track-confirmed-reset-to-first-fallback", {
+              trackIndex,
+              reason: "cold-initial-open-without-selection",
+            });
+            resetNavigationSelectionToFirstBar(state, rootElement, "active-track-confirmed-fallback", trackIndex);
+          } else {
+            traceTrackSwitch("active-track-confirmed-preserved-selection", {
+              trackIndex,
+              isPendingOverviewTrackSwitch,
+              hasPendingCubeNavigationForTrack,
+              hasDesiredTrackSwitchTarget,
+              hasSelectedNavigationTarget,
+              hasMeaningfulPlaybackTarget,
+            });
           }
           ensureNavigationSelectionIsValid(state, rootElement, "active-track-confirmed");
           if (state.currentProject) {
@@ -4732,6 +4763,11 @@ export function startApp(rootElement: HTMLElement): void {
             previousTrackIndex !== null &&
             state.gpRenderer !== null
           ) {
+            traceTrackSwitch("render-error-rollback-force-reload", {
+              targetIndex: state.requestedTrackIndex,
+              previousTrackIndex,
+              errorStage,
+            });
             traceTrackSwitch("track-switch-render-error-rollback", {
               targetIndex: state.requestedTrackIndex,
               prevIndex: previousTrackIndex,
@@ -4752,6 +4788,12 @@ export function startApp(rootElement: HTMLElement): void {
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             updateTransportControls(rootElement, state, "track-switch-render-error-rollback");
             return;
+          }
+          if (state.requestedTrackIndex !== null && errorStage !== "direct-switch-commit-timeout-real") {
+            traceTrackSwitch("ordinary-track-switch-no-reload", {
+              requestedTrackIndex: state.requestedTrackIndex,
+              errorStage,
+            });
           }
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "render-error",
