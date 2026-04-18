@@ -131,13 +131,6 @@ interface AppState {
   masterVolume: number;
   mutedTrackIndexes: number[];
   soloTrackIndexes: number[];
-  pendingPlaybackStart: {
-    requestId: number;
-    targetTrackIndex: number;
-    targetTick: number;
-    targetBar: number | null;
-  } | null;
-  nextPlaybackRequestId: number;
   bottomDockHeightPx: number;
   isBottomDockCollapsed: boolean;
   tabZoomPercent: number;
@@ -163,7 +156,7 @@ interface AppState {
   coldBootStartedAtMs: number | null;
   projectRendererCreateInFlight: boolean;
   projectRendererCreateKey: string | null;
-  lastTransportUiState: "not-ready" | "idle-ready" | "pending-start" | "playing-confirmed" | "paused-confirmed" | null;
+  lastTransportUiState: "not-ready" | "idle-ready" | "playing-confirmed" | "paused-confirmed" | null;
   lastTransportControlSnapshot: string | null;
   startupInteractionLocked: boolean;
 }
@@ -2107,7 +2100,6 @@ function haltPlaybackTransportAfterSeek(state: AppState, rootElement: HTMLElemen
   state.playbackIsPlaying = false;
   state.playbackFollowTargetFound = false;
   state.playbackFollowSource = "seek-paused";
-  state.pendingPlaybackStart = null;
   updatePlaybackFollowDiagnostics(rootElement, false, "seek-paused");
   resetPlaybackFollowBaselineAfterSeek(state);
 }
@@ -2754,8 +2746,6 @@ export function startApp(rootElement: HTMLElement): void {
     masterVolume: 80,
     mutedTrackIndexes: [],
     soloTrackIndexes: [],
-    pendingPlaybackStart: null,
-    nextPlaybackRequestId: 0,
     bottomDockHeightPx: DEFAULT_BOTTOM_DOCK_HEIGHT_PX,
     isBottomDockCollapsed: false,
     tabZoomPercent: resolveInitialTabZoomPercent(),
@@ -2791,7 +2781,6 @@ export function startApp(rootElement: HTMLElement): void {
     options?: { stopRenderer?: boolean; resetPosition?: boolean },
   ): void => {
     const beforeSnapshot = {
-      pendingPlaybackStart: state.pendingPlaybackStart !== null,
       playbackTransportActive: state.playbackTransportActive,
       countInInProgress: state.countInInProgress,
       playbackIsPlaying: state.playbackIsPlaying,
@@ -2804,19 +2793,11 @@ export function startApp(rootElement: HTMLElement): void {
     });
     logPlaybackPipeline("play-cancelled", {
       reason,
-      hadPendingPlaybackStart: state.pendingPlaybackStart !== null,
       playbackTransportActive: state.playbackTransportActive,
       countInInProgress: state.countInInProgress,
       playbackIsPlaying: state.playbackIsPlaying,
     });
     cancelCountIn(state, rootElement);
-    if (state.pendingPlaybackStart) {
-      logPlaybackPipeline("play-cancelled", {
-        reason,
-        requestId: state.pendingPlaybackStart.requestId,
-      });
-    }
-    state.pendingPlaybackStart = null;
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     stopPlaybackMetronome(state);
@@ -2837,7 +2818,6 @@ export function startApp(rootElement: HTMLElement): void {
     tracePlayback("hard-cancel-exit", {
       reason,
       options: options ?? null,
-      pendingPlaybackStart: state.pendingPlaybackStart !== null,
       playbackTransportActive: state.playbackTransportActive,
       countInInProgress: state.countInInProgress,
       playbackIsPlaying: state.playbackIsPlaying,
@@ -2845,96 +2825,16 @@ export function startApp(rootElement: HTMLElement): void {
     });
   };
 
-  const clearPendingStartupState = (reason: string): void => {
-    const hadPendingPlaybackStart = state.pendingPlaybackStart !== null;
-    const hadCountInInProgress = state.countInInProgress;
-    const hadPlaybackTransportActive = state.playbackTransportActive;
-    state.pendingPlaybackStart = null;
-    state.playbackTransportActive = false;
-    state.countInInProgress = false;
-    cancelCountIn(state, rootElement);
-    stopPlaybackMetronome(state);
-    tracePlayback("pending-start-cleared", {
-      reason,
-      hadPendingPlaybackStart,
-      hadCountInInProgress,
-      hadPlaybackTransportActive,
-    });
-    tracePlayback("pending-seek-cleared", {
-      reason,
-      pendingPlaybackStart: state.pendingPlaybackStart !== null,
-    });
-    updateTransportControls(rootElement, state, `pending-start-cleared:${reason}`);
-    if (!state.startupInteractionLocked) {
-      tracePlayback("startup-lock-released", {
-        reason,
-      });
-    }
-    const nextTransportUi = resolveTransportUiState(state);
-    if (nextTransportUi.uiState === "idle-ready") {
-      tracePlayback("transport-returned-idle-ready", {
-        reason,
-      });
-    }
-  };
-
-  const syncStartupConfirmedState = (reason: string): void => {
-    const hadPendingPlaybackStart = state.pendingPlaybackStart !== null;
-    state.pendingPlaybackStart = null;
-    clearPausedResumeSnapshot(`startup-confirmed:${reason}`);
-    state.playbackTransportActive = true;
-    state.countInInProgress = false;
-    cancelCountIn(state, rootElement);
-    if (state.playbackIsPlaying !== true) {
-      state.playbackIsPlaying = true;
-    }
-    tracePlayback("startup-confirmed-app-sync", {
-      reason,
-      hadPendingPlaybackStart,
-      playbackCurrentTick: state.playbackCurrentTick,
-      playbackCurrentBar: state.playbackCurrentBar,
-    });
-    if (hadPendingPlaybackStart) {
-      tracePlayback("pending-start-cleared-on-success", {
-        reason,
-      });
-    }
-    updateTransportControls(rootElement, state, `startup-confirmed:${reason}`);
-    const promotedUi = resolveTransportUiState(state);
-    if (promotedUi.uiState === "playing-confirmed") {
-      tracePlayback("transport-promoted-to-playing-confirmed", {
-        reason,
-      });
-    }
-    if (promotedUi.canPause) {
-      tracePlayback("pause-enabled-after-confirmation", {
-        reason,
-      });
-    }
-    if (promotedUi.canStop) {
-      tracePlayback("stop-enabled-after-confirmation", {
-        reason,
-      });
-    }
-    if (!state.startupInteractionLocked) {
-      tracePlayback("startup-lock-released-on-success", {
-        reason,
-      });
-    }
-  };
-
   const finalizeStoppedTransportState = (
     reason: string,
     options?: { resetPosition?: boolean; resetNavigationToFirstBar?: boolean },
   ): void => {
     const before = {
-      pendingPlaybackStart: state.pendingPlaybackStart !== null,
       playbackTransportActive: state.playbackTransportActive,
       countInInProgress: state.countInInProgress,
       playbackIsPlaying: state.playbackIsPlaying,
       playbackCurrentTick: state.playbackCurrentTick,
     };
-    state.pendingPlaybackStart = null;
     clearPausedResumeSnapshot(`stop-finalized:${reason}`);
     state.playbackTransportActive = false;
     state.countInInProgress = false;
@@ -2955,7 +2855,6 @@ export function startApp(rootElement: HTMLElement): void {
       reason,
       before,
       after: {
-        pendingPlaybackStart: state.pendingPlaybackStart !== null,
         playbackTransportActive: state.playbackTransportActive,
         countInInProgress: state.countInInProgress,
         playbackIsPlaying: state.playbackIsPlaying,
@@ -2966,14 +2865,12 @@ export function startApp(rootElement: HTMLElement): void {
 
   const finalizePausedTransportState = (reason: string): void => {
     const before = {
-      pendingPlaybackStart: state.pendingPlaybackStart !== null,
       playbackTransportActive: state.playbackTransportActive,
       countInInProgress: state.countInInProgress,
       playbackIsPlaying: state.playbackIsPlaying,
       playbackCurrentTick: state.playbackCurrentTick,
       playbackCurrentBar: state.playbackCurrentBar,
     };
-    state.pendingPlaybackStart = null;
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     state.playbackIsPlaying = false;
@@ -3006,7 +2903,6 @@ export function startApp(rootElement: HTMLElement): void {
       reason,
       before,
       after: {
-        pendingPlaybackStart: state.pendingPlaybackStart !== null,
         playbackTransportActive: state.playbackTransportActive,
         countInInProgress: state.countInInProgress,
         playbackIsPlaying: state.playbackIsPlaying,
@@ -3038,7 +2934,6 @@ export function startApp(rootElement: HTMLElement): void {
 
   const cleanupRenderer = (): void => {
     const hasActivePlaybackPipeline =
-      state.pendingPlaybackStart !== null ||
       state.playbackTransportActive ||
       state.countInInProgress ||
       state.playbackIsPlaying === true;
@@ -3276,7 +3171,6 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
           state.countInEnabled = false;
           state.countInInProgress = false;
-          state.pendingPlaybackStart = null;
           state.pendingCountInTimerId = null;
           state.metronomeEnabled = false;
           state.selectedNavigationBar = 1;
@@ -3354,7 +3248,6 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackSpeedPercent = DEFAULT_PLAYBACK_SPEED_PERCENT;
             state.countInEnabled = false;
             state.countInInProgress = false;
-            state.pendingPlaybackStart = null;
             state.pendingCountInTimerId = null;
             state.metronomeEnabled = false;
             stopPlaybackMetronome(state);
@@ -3469,7 +3362,6 @@ export function startApp(rootElement: HTMLElement): void {
             playbackCurrentTick: state.playbackCurrentTick,
             playbackCurrentBar: state.playbackCurrentBar,
             playbackTransportActive: state.playbackTransportActive,
-            pendingPlaybackStart: state.pendingPlaybackStart !== null,
           });
           traceTrackSwitch("track-switch-direct-start", {
             previousTrackIndex: state.selectedTrackIndex,
@@ -3480,7 +3372,6 @@ export function startApp(rootElement: HTMLElement): void {
             requestedTrackIndex: trackIndex,
             playbackTransportActive: state.playbackTransportActive,
             countInInProgress: state.countInInProgress,
-            pendingPlaybackStart: state.pendingPlaybackStart !== null,
           });
           appendSessionDebugEvent(state.sessionDebugLogger, {
             type: "track-select-requested",
@@ -4010,8 +3901,6 @@ export function startApp(rootElement: HTMLElement): void {
               sessionToken: eventSessionToken,
               selectedTrackIndex: state.selectedTrackIndex,
             });
-          } else if (eventType === "startup-confirmed") {
-            syncStartupConfirmedState("render-lifecycle-startup-confirmed");
           } else if (eventType === "pause-confirmed") {
             const eventConfirmedTrackIndex =
               typeof event.confirmedActiveTrackIndex === "number" && Number.isFinite(event.confirmedActiveTrackIndex)
@@ -4263,50 +4152,6 @@ export function startApp(rootElement: HTMLElement): void {
             trackIndex,
             tick,
           });
-          tracePlayback("onProgrammaticSeekConfirmed-enter", {
-            trackIndex,
-            tick,
-            pendingPlaybackStart: state.pendingPlaybackStart,
-            selectedTrackIndex: state.selectedTrackIndex,
-            confirmedTrackIndex: state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? null,
-          });
-          if (
-            state.pendingPlaybackStart &&
-            state.pendingPlaybackStart.targetTrackIndex === trackIndex &&
-            Math.abs(state.pendingPlaybackStart.targetTick - tick) <= 1
-          ) {
-            const pendingStart = state.pendingPlaybackStart;
-            state.pendingPlaybackStart = null;
-            logPlaybackPipeline("seek-confirmed", {
-              requestId: pendingStart.requestId,
-              targetTick: pendingStart.targetTick,
-              confirmedTick: tick,
-            });
-            state.playbackTransportActive = true;
-            state.manualNavigationVisualOverrideActive = false;
-            state.projectStatusMessage = null;
-            updateProjectStatusBanner(rootElement, "");
-            if (state.metronomeEnabled) {
-              startPlaybackMetronome(state);
-            } else {
-              stopPlaybackMetronome(state);
-            }
-            updateTransportControls(rootElement, state, "seek-confirmed-play-dispatch");
-            logPlaybackPipeline("play-dispatch", {
-              requestId: pendingStart.requestId,
-              targetTick: pendingStart.targetTick,
-              targetBar: pendingStart.targetBar,
-            });
-            tracePlayback("play-dispatch", {
-              source: "onProgrammaticSeekConfirmed",
-              requestId: pendingStart.requestId,
-              targetTick: pendingStart.targetTick,
-              targetBar: pendingStart.targetBar,
-              trackIndex,
-            });
-            state.gpRenderer?.play();
-          }
-
           if (
             state.pendingOverviewNavigationBar !== null &&
             state.pendingOverviewNavigationTrackIndex === trackIndex &&
@@ -4369,31 +4214,12 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
         },
         onPlaybackRuntimeInfo: (info) => {
-          const previousPlaybackIsPlaying = state.playbackIsPlaying;
           if (typeof info.isPlaying === "boolean") {
             state.playbackIsPlaying = info.isPlaying;
           }
-          if (info.isPlaying === true) {
-            syncStartupConfirmedState("runtime-is-playing");
-          }
           if (info.isPlaying === false) {
-            const startupWasPending =
-              state.pendingPlaybackStart !== null ||
-              state.countInInProgress ||
-              (state.playbackTransportActive && previousPlaybackIsPlaying !== true);
-            if (startupWasPending) {
-              tracePlayback("startup-pending", {
-                reason: "runtime-not-playing-during-startup",
-                previousPlaybackIsPlaying,
-                pendingPlaybackStart: state.pendingPlaybackStart !== null,
-                countInInProgress: state.countInInProgress,
-                playbackTransportActive: state.playbackTransportActive,
-              });
-              updateTransportControls(rootElement, state, "runtime-not-playing-during-startup");
-            } else {
-              state.playbackTransportActive = false;
-              stopPlaybackMetronome(state);
-            }
+            state.playbackTransportActive = false;
+            stopPlaybackMetronome(state);
           }
           state.playbackPositionLabel = info.positionLabel;
           state.playbackCurrentBar = info.currentBar;
@@ -4499,8 +4325,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentTick = null;
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
-          clearPendingStartupState("runtime-notice");
           state.playbackTransportActive = false;
+          state.countInInProgress = false;
+          cancelCountIn(state, rootElement);
+          stopPlaybackMetronome(state);
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
           state.lastPlaybackFollowRowIndex = null;

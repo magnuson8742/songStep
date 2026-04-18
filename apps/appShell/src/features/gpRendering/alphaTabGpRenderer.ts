@@ -502,8 +502,6 @@ interface ReloadOptions {
   targetTick?: number | null;
 }
 
-type PlayerPhase = "idle" | "starting" | "playing" | "paused" | "stopped" | "invalid" | "recreating";
-
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -947,10 +945,6 @@ export async function createGpRenderer(
   let lastLoggedPlayerBar: number | null = null;
   let lastLoggedPlayerBeatInBar: number | null = null;
   let lastLoggedPlayerState: "playing" | "paused" | "stopped" | null = null;
-  let playerPhase: PlayerPhase = "idle";
-  let hasStartIntent = false;
-  let startIntentBaseTick: number | null = null;
-  let startConfirmationTimeoutId: number | null = null;
 
   const emitDebugInfo = (): void => {
     const scoreTracks = activeApi?.score?.tracks ?? lastLoadedScoreTracks;
@@ -1028,65 +1022,6 @@ export async function createGpRenderer(
     hooks.onRuntimeNotice(message);
   };
 
-  const setPlayerPhase = (nextPhase: PlayerPhase, reason: string): void => {
-    if (playerPhase === nextPhase) {
-      return;
-    }
-    const previousPhase = playerPhase;
-    playerPhase = nextPhase;
-    tracePlayer("player-phase-change", {
-      previousPhase,
-      nextPhase,
-      reason,
-      activeSessionToken,
-      requestedTrackIndex,
-      confirmedActiveTrackIndex,
-    });
-  };
-
-  const clearStartConfirmationTimeout = (): void => {
-    if (startConfirmationTimeoutId !== null) {
-      window.clearTimeout(startConfirmationTimeoutId);
-      startConfirmationTimeoutId = null;
-    }
-  };
-
-  const clearStartIntent = (reason: string): void => {
-    const hadStartIntent = hasStartIntent;
-    clearStartConfirmationTimeout();
-    hasStartIntent = false;
-    startIntentBaseTick = null;
-    if (hadStartIntent) {
-      tracePlayer("start-intent-cleared", {
-        reason,
-        activeSessionToken,
-        requestedTrackIndex,
-        confirmedActiveTrackIndex,
-      });
-    }
-  };
-
-  const confirmRuntimeStart = (reason: string, currentTick: number | null = null): void => {
-    if (!hasStartIntent && playerPhase !== "starting") {
-      return;
-    }
-    clearStartIntent("runtime-start-confirmed");
-    setPlayerPhase("playing", reason);
-    tracePlayer("start-confirmed", {
-      reason,
-      currentTick,
-      activeSessionToken,
-      requestedTrackIndex,
-      confirmedActiveTrackIndex,
-    });
-    emitRenderLifecycle("startup-confirmed", {
-      reason,
-      currentTick,
-      activeSessionToken,
-      requestedTrackIndex,
-      confirmedActiveTrackIndex,
-    });
-  };
   const summarizeError = (error: unknown): Record<string, unknown> => {
     if (error instanceof Error) {
       return {
@@ -1164,7 +1099,6 @@ export async function createGpRenderer(
     tickBarRanges = [];
     tickLookupSourcePath = null;
     playbackScrollLockSnapshot = null;
-    clearStartIntent("reset-playback-runtime-info");
     emitPlaybackRuntimeInfo();
   };
 
@@ -3214,7 +3148,6 @@ export async function createGpRenderer(
         confirmedActiveTrackIndex,
       });
     }
-    setPlayerPhase("recreating", "switchTrackByReload-start");
     traceRenderer("switchTrackByReload-start", {
       nextTrackIndex,
       targetTick: options?.targetTick ?? null,
@@ -3226,7 +3159,6 @@ export async function createGpRenderer(
     inPlaceZoomPlaybackContext = null;
     pendingZoomPercent = null;
     pendingProgrammaticSeek = null;
-    clearStartIntent("switchTrackByReload-start");
     requestedTrackIndex = nextTrackIndex;
     const renderPlan = buildRenderPlan(nextTrackIndex);
     currentRenderMode = renderPlan.mode;
@@ -3315,8 +3247,7 @@ export async function createGpRenderer(
         sessionPostRenderFinishedCompleted &&
         requestedTrackCleared &&
         pendingSeekCleared &&
-        activeApi === api &&
-        playerPhase !== "recreating";
+        activeApi === api;
       if (!safeForPlaybackStart) {
         return;
       }
@@ -3427,21 +3358,6 @@ export async function createGpRenderer(
             normalizedState,
           });
           lastLoggedPlayerState = normalizedState;
-        }
-        if (normalizedState === "playing") {
-          confirmRuntimeStart("player-state-changed", playbackRuntimeInfo.currentTick);
-          tracePlayer("startup-confirmed-by-state", {
-            sessionToken,
-            activeSessionToken,
-            requestedTrackIndex,
-            confirmedActiveTrackIndex,
-          });
-        } else if (normalizedState === "paused") {
-          clearStartIntent("player-state-changed-paused");
-          setPlayerPhase("paused", "player-state-changed");
-        } else if (normalizedState === "stopped") {
-          clearStartIntent("player-state-changed-stopped");
-          setPlayerPhase("stopped", "player-state-changed");
         }
         const playerStatePayloadShape = describePayloadShape(statePayload);
         if (normalizedState === "playing") {
@@ -3573,26 +3489,6 @@ export async function createGpRenderer(
           currentBarFromTick.currentBar !== lastLoggedPlayerBar ||
           beatInBar !== lastLoggedPlayerBeatInBar ||
           pendingProgrammaticSeek !== null;
-        const normalizedPlayerState = normalizePlaybackState(api.playerState);
-        const playbackStateLooksPlaying = normalizedPlayerState === "playing";
-        const playbackProgressLooksPlaying =
-          currentTick !== null && (startIntentBaseTick === null || Math.abs(currentTick - startIntentBaseTick) >= 1);
-        if (
-          hasStartIntent &&
-          (playbackStateLooksPlaying || playbackProgressLooksPlaying)
-        ) {
-          confirmRuntimeStart("player-position-changed-progress", currentTick);
-          tracePlayer("startup-confirmed-by-progress", {
-            sessionToken,
-            activeSessionToken,
-            requestedTrackIndex,
-            confirmedActiveTrackIndex,
-            currentTick,
-            startIntentBaseTick,
-            normalizedPlayerState,
-            playbackProgressLooksPlaying,
-          });
-        }
         if (shouldTracePosition) {
           tracePlayer("player-position-changed", {
             sessionToken,
@@ -3991,9 +3887,6 @@ export async function createGpRenderer(
       sessionToken,
       rendererBusy,
     });
-    if (playerPhase === "recreating") {
-      setPlayerPhase("idle", "switchTrackByReload-finish");
-    }
     emitDebugInfo();
   };
 
@@ -4371,58 +4264,25 @@ export async function createGpRenderer(
       return applyMixerStateToApi(activeApi, "applyMixerState");
     },
     play: () => {
-      tracePlayer("play-called", {
-        activeSessionToken,
-        requestedTrackIndex,
-        confirmedActiveTrackIndex,
-      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi) || activeApi.isReadyForPlayback !== true) {
-        tracePlayer("play-rejected-not-ready", {
-          hasActiveApi: activeApi !== null,
-          isReadyForPlayback: activeApi?.isReadyForPlayback ?? null,
-        });
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
-      playbackScrollLockSnapshot = captureRenderViewportScroll();
       (activeApi as AlphaTabApi & { play: () => boolean }).play();
     },
     pause: () => {
-      tracePlayer("pause-called", {
-        activeSessionToken,
-        requestedTrackIndex,
-        confirmedActiveTrackIndex,
-      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
-      playbackScrollLockSnapshot = null;
       (activeApi as AlphaTabApi & { pause: () => void }).pause();
-      emitRenderLifecycle("pause-confirmed", {
-        activeSessionToken,
-        requestedTrackIndex,
-        confirmedActiveTrackIndex,
-      });
     },
     stop: () => {
-      tracePlayer("stop-called", {
-        activeSessionToken,
-        requestedTrackIndex,
-        confirmedActiveTrackIndex,
-      });
       if (!activeApi || !isPlaybackApiAvailable(activeApi)) {
         emitRuntimeNotice(playbackCapabilityMessage ?? "Playback is unavailable in this runtime.");
         return;
       }
-      playbackScrollLockSnapshot = null;
-      pendingProgrammaticSeek = null;
       (activeApi as AlphaTabApi & { stop: () => void }).stop();
-      emitRenderLifecycle("stop-confirmed", {
-        activeSessionToken,
-        requestedTrackIndex,
-        confirmedActiveTrackIndex,
-      });
     },
     destroy: () => {
       traceRenderer("destroy-called", {
