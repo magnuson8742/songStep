@@ -4113,6 +4113,14 @@ export function startApp(rootElement: HTMLElement): void {
           hidePlaybackPlayhead(rootElement, state);
         },
         onPlaybackRuntimeInfo: (info) => {
+          state.playbackPositionLabel = info.positionLabel;
+          state.playbackCurrentBar = info.currentBar;
+          state.playbackCurrentTick = info.currentTick;
+          state.playbackCurrentBarStartTick = info.currentBarStartTick;
+          state.playbackCurrentBarEndTickExclusive = info.currentBarEndTickExclusive;
+          state.playerPositionPayloadShape = info.playerPositionPayloadShape;
+          state.playerStatePayloadShape = info.playerStatePayloadShape;
+          state.currentBarSourcePath = info.currentBarSourcePath;
           if (typeof info.isPlaying === "boolean") {
             state.playbackIsPlaying = info.isPlaying;
           }
@@ -4126,6 +4134,7 @@ export function startApp(rootElement: HTMLElement): void {
                 resetNavigationToFirstBar: true,
               });
               state.pendingTransportCommand = null;
+              return;
             } else {
               state.playbackTransportActive = false;
               stopPlaybackMetronome(state);
@@ -4134,14 +4143,6 @@ export function startApp(rootElement: HTMLElement): void {
           if (info.isPlaying === true) {
             state.pendingTransportCommand = null;
           }
-          state.playbackPositionLabel = info.positionLabel;
-          state.playbackCurrentBar = info.currentBar;
-          state.playbackCurrentTick = info.currentTick;
-          state.playbackCurrentBarStartTick = info.currentBarStartTick;
-          state.playbackCurrentBarEndTickExclusive = info.currentBarEndTickExclusive;
-          state.playerPositionPayloadShape = info.playerPositionPayloadShape;
-          state.playerStatePayloadShape = info.playerStatePayloadShape;
-          state.currentBarSourcePath = info.currentBarSourcePath;
           if (
             state.loopEnabled &&
             state.loopStartTick !== null &&
