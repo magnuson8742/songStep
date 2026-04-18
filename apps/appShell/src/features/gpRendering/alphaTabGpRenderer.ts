@@ -3955,7 +3955,7 @@ export async function createGpRenderer(
       wasPlaying,
       resumeTick,
     });
-    const directTrackPercussion = nextTrack.isPercussion === true;
+    const directTrackPercussion = isPercussionTrackFromRuntime(nextTrack);
     currentRenderMode = directTrackPercussion ? "percussion-default" : "string-tab";
     heavyTrackDetected = false;
     heavyTrackReason = null;

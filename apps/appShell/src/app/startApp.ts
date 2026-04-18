@@ -4222,6 +4222,19 @@ export function startApp(rootElement: HTMLElement): void {
           applyMixerStateToRenderer(state);
           nudgeRenderedSectionLabels(rootElement, state);
           updateLoopHandlesVisual(state, rootElement);
+          if (
+            state.pendingCubeNavigationTrackIndex === trackIndex &&
+            state.pendingCubeNavigationTick !== null &&
+            state.gpRenderer !== null
+          ) {
+            const didSeekPendingCubeTick = state.gpRenderer.seekToTick(state.pendingCubeNavigationTick);
+            traceTrackSwitch("cube-navigation-seek-dispatched", {
+              trackIndex,
+              targetTick: state.pendingCubeNavigationTick,
+              didSeekPendingCubeTick,
+              source: "onTrackRenderCommitted",
+            });
+          }
           state.trackSwitchInProgress = false;
           state.rendererRenderFinished = true;
           if (state.requiresSwitchedTrackPlaybackReady && !state.switchedTrackPlaybackReady) {
@@ -4374,7 +4387,6 @@ export function startApp(rootElement: HTMLElement): void {
           const playObservedFromRuntime = info.isPlaying === true;
           const playObservedFromPosition =
             state.pendingPlayDispatch &&
-            info.isPlaying !== false &&
             info.currentTick !== null &&
             (state.pendingPlayDispatchBaseTick === null ||
               Math.abs(info.currentTick - state.pendingPlayDispatchBaseTick) >= 1);
@@ -4615,9 +4627,6 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackCurrentTick = null;
             state.playbackCurrentBarStartTick = null;
             state.playbackCurrentBarEndTickExclusive = null;
-          }
-          if (hasPendingCubeNavigationForTrack) {
-            state.gpRenderer?.seekToTick(state.pendingCubeNavigationTick as number);
           }
           state.playbackFollowTargetFound = false;
           state.playbackFollowSource = null;
