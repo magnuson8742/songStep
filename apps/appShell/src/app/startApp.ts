@@ -118,6 +118,9 @@ interface AppState {
   pendingCubeNavigationTrackIndex: number | null;
   pendingCubeNavigationBar: number | null;
   pendingCubeNavigationTick: number | null;
+  pendingDirectSwitchTrackIndex: number | null;
+  pendingDirectSwitchTargetTick: number | null;
+  pendingDirectSwitchSource: "track-list" | "cube-navigation" | null;
   loopEnabled: boolean;
   loopStartBar: number | null;
   loopStartTick: number | null;
@@ -443,6 +446,24 @@ function resolveTransportUiState(state: AppState): {
       canPause: false,
       canStop: false,
       playDisabledReason: "not-ready",
+    };
+  }
+  if (state.pendingDirectSwitchTrackIndex !== null) {
+    if (state.playbackIsPlaying === true || state.playbackTransportActive) {
+      return {
+        uiState: "playing-confirmed",
+        canPlay: false,
+        canPause: true,
+        canStop: true,
+        playDisabledReason: "pending-track-switch",
+      };
+    }
+    return {
+      uiState: "not-ready",
+      canPlay: false,
+      canPause: false,
+      canStop: false,
+      playDisabledReason: "pending-track-switch",
     };
   }
 
@@ -2698,6 +2719,10 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
     state.pendingCubeNavigationTrackIndex = clickedTrackIndex;
     state.pendingCubeNavigationBar = targetBarNumber;
     state.pendingCubeNavigationTick = targetTick;
+    state.pendingDirectSwitchTrackIndex = clickedTrackIndex;
+    state.pendingDirectSwitchTargetTick = targetTick;
+    state.pendingDirectSwitchSource = "cube-navigation";
+    state.trackSwitchInProgress = true;
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
     state.pendingOverviewNavigationTick = null;
@@ -2793,6 +2818,9 @@ export function startApp(rootElement: HTMLElement): void {
     pendingCubeNavigationTrackIndex: null,
     pendingCubeNavigationBar: null,
     pendingCubeNavigationTick: null,
+    pendingDirectSwitchTrackIndex: null,
+    pendingDirectSwitchTargetTick: null,
+    pendingDirectSwitchSource: null,
     loopEnabled: false,
     loopStartBar: null,
     loopStartTick: null,
@@ -2878,6 +2906,9 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingPlayDispatchStartedAtMs = null;
     state.lastPlaybackObservedAtMs = null;
     state.lastPlaybackObservedTick = null;
+    state.pendingDirectSwitchTrackIndex = null;
+    state.pendingDirectSwitchTargetTick = null;
+    state.pendingDirectSwitchSource = null;
     state.lastTransportRerenderReason = null;
     stopPlaybackMetronome(state);
     state.manualNavigationVisualOverrideActive = false;
@@ -2923,6 +2954,9 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingPlayDispatchStartedAtMs = null;
     state.lastPlaybackObservedAtMs = null;
     state.lastPlaybackObservedTick = null;
+    state.pendingDirectSwitchTrackIndex = null;
+    state.pendingDirectSwitchTargetTick = null;
+    state.pendingDirectSwitchSource = null;
     state.playbackIsPlaying = false;
     cancelCountIn(state, rootElement);
     stopPlaybackMetronome(state);
@@ -2964,6 +2998,9 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingPlayDispatchStartedAtMs = null;
     state.lastPlaybackObservedAtMs = null;
     state.lastPlaybackObservedTick = null;
+    state.pendingDirectSwitchTrackIndex = null;
+    state.pendingDirectSwitchTargetTick = null;
+    state.pendingDirectSwitchSource = null;
     state.playbackIsPlaying = false;
     const pausedTickSnapshot =
       state.playbackCurrentTick ?? state.playbackCurrentBarStartTick ?? state.selectedNavigationTick ?? null;
@@ -3056,6 +3093,9 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingCubeNavigationTrackIndex = null;
     state.pendingCubeNavigationBar = null;
     state.pendingCubeNavigationTick = null;
+    state.pendingDirectSwitchTrackIndex = null;
+    state.pendingDirectSwitchTargetTick = null;
+    state.pendingDirectSwitchSource = null;
     state.desiredTrackSwitchTick = null;
     state.desiredTrackSwitchBar = null;
     state.desiredTrackSwitchSourceTrackIndex = null;
@@ -3492,7 +3532,10 @@ export function startApp(rootElement: HTMLElement): void {
           state.clickCounter += 1;
           state.lastClickTimestampIso = new Date().toISOString();
           state.selectionFired = true;
-          state.trackSwitchInProgress = false;
+          state.pendingDirectSwitchTrackIndex = trackIndex;
+          state.pendingDirectSwitchTargetTick = preservedTick;
+          state.pendingDirectSwitchSource = "track-list";
+          state.trackSwitchInProgress = true;
           state.trackSwitchStartedAtMs = Date.now();
           state.requiresSwitchedTrackPlaybackReady = false;
           state.switchedTrackPlaybackReady = false;
@@ -3698,6 +3741,15 @@ export function startApp(rootElement: HTMLElement): void {
               readinessSource: readiness.source,
               authoritativeReady: readiness.authoritativeReady,
               switchedTrackGateSatisfied: readiness.switchedTrackGateSatisfied,
+            });
+            return;
+          }
+          if (state.pendingDirectSwitchTrackIndex !== null) {
+            tracePlayback("play-blocked-pending-track-switch", {
+              selectedTrackIndex: state.selectedTrackIndex,
+              pendingDirectSwitchTrackIndex: state.pendingDirectSwitchTrackIndex,
+              pendingDirectSwitchTargetTick: state.pendingDirectSwitchTargetTick,
+              pendingDirectSwitchSource: state.pendingDirectSwitchSource,
             });
             return;
           }
@@ -4280,6 +4332,18 @@ export function startApp(rootElement: HTMLElement): void {
               source: "onTrackRenderCommitted",
             });
           }
+          if (
+            state.pendingDirectSwitchTrackIndex === trackIndex &&
+            state.pendingDirectSwitchSource === "track-list"
+          ) {
+            traceTrackSwitch("ordinary-direct-switch-app-confirmed", {
+              trackIndex,
+              targetTick: state.pendingDirectSwitchTargetTick,
+            });
+            state.pendingDirectSwitchTrackIndex = null;
+            state.pendingDirectSwitchTargetTick = null;
+            state.pendingDirectSwitchSource = null;
+          }
           state.trackSwitchInProgress = false;
           state.rendererRenderFinished = true;
           if (state.requiresSwitchedTrackPlaybackReady && !state.switchedTrackPlaybackReady) {
@@ -4352,6 +4416,19 @@ export function startApp(rootElement: HTMLElement): void {
               trackIndex,
               targetTick: state.pendingCubeNavigationTick,
             });
+            if (
+              state.pendingDirectSwitchTrackIndex === trackIndex &&
+              state.pendingDirectSwitchSource === "cube-navigation"
+            ) {
+              traceTrackSwitch("cube-direct-switch-app-confirmed", {
+                trackIndex,
+                tick,
+                pendingDirectSwitchTargetTick: state.pendingDirectSwitchTargetTick,
+              });
+              state.pendingDirectSwitchTrackIndex = null;
+              state.pendingDirectSwitchTargetTick = null;
+              state.pendingDirectSwitchSource = null;
+            }
             state.pendingCubeNavigationTrackIndex = null;
             state.pendingCubeNavigationBar = null;
             state.pendingCubeNavigationTick = null;
@@ -4652,6 +4729,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingCubeNavigationTrackIndex = null;
           state.pendingCubeNavigationBar = null;
           state.pendingCubeNavigationTick = null;
+          state.pendingDirectSwitchTrackIndex = null;
+          state.pendingDirectSwitchTargetTick = null;
+          state.pendingDirectSwitchSource = null;
           state.manualNavigationVisualOverrideActive = false;
           state.trackSwitchInProgress = false;
           state.requiresSwitchedTrackPlaybackReady = false;
@@ -4826,6 +4906,9 @@ export function startApp(rootElement: HTMLElement): void {
             state.pendingTrackSwitchSessionToken = null;
             state.switchedTrackPlaybackReadySessionToken = null;
             state.switchedTrackSeekStillPending = false;
+            state.pendingDirectSwitchTrackIndex = null;
+            state.pendingDirectSwitchTargetTick = null;
+            state.pendingDirectSwitchSource = null;
             state.gpRenderer.selectTrack(previousTrackIndex, rollbackTick ?? 0, {
               forceReload: true,
               source: "render-error-rollback",
@@ -4878,6 +4961,9 @@ export function startApp(rootElement: HTMLElement): void {
           state.pendingCubeNavigationTrackIndex = null;
           state.pendingCubeNavigationBar = null;
           state.pendingCubeNavigationTick = null;
+          state.pendingDirectSwitchTrackIndex = null;
+          state.pendingDirectSwitchTargetTick = null;
+          state.pendingDirectSwitchSource = null;
           state.manualNavigationVisualOverrideActive = false;
           state.playbackTransportActive = false;
           state.desiredTrackSwitchTick = null;
