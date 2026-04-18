@@ -22,6 +22,9 @@ export interface ProjectScreenActions {
   playbackSpeedPercent: number;
   effectiveTempoBpm: number | null;
   playbackIsPlaying: boolean | null;
+  canPlay: boolean;
+  canPause: boolean;
+  canStop: boolean;
   countInEnabled: boolean;
   metronomeEnabled: boolean;
   loopEnabled: boolean;
@@ -145,13 +148,13 @@ function renderTrackStrip(
 
       const compactLabel = getCompactTrackDisplayLabel(track);
       return `
-        <article class="${activeClass}" data-track-item-index="${track.index}" role="button" tabindex="0" aria-label="Select track ${track.name}">
+        <article class="${activeClass}" data-track-item-index="${track.index}" role="button" tabindex="0" aria-disabled="false" aria-label="Select track ${track.name}">
           <div class="trackControlRow trackControlRowCompact" aria-label="Track controls for ${track.name}">
             <span class="trackNameCompact" title="${track.name}">${compactLabel}</span>
-            <button class="secondaryButton trackControlButton ${soloTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-solo" data-track-index="${track.index}">S</button>
-            <button class="secondaryButton trackControlButton ${mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}">M</button>
+            <button class="secondaryButton trackControlButton ${soloTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-solo" data-track-index="${track.index}" >S</button>
+            <button class="secondaryButton trackControlButton ${mutedTrackIndexes.includes(track.index) ? "isTrackToggleOn" : ""}" type="button" data-stop-track-select="true" data-track-action="toggle-mute" data-track-index="${track.index}" >M</button>
             <label class="trackControlLabel trackControlLabelCompact">
-              <input class="trackControlRange" type="range" min="0" max="100" value="${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}" data-stop-track-select="true" data-track-action="set-volume" data-track-volume-index="${track.index}" />
+              <input class="trackControlRange" type="range" min="0" max="100" value="${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}" data-stop-track-select="true" data-track-action="set-volume" data-track-volume-index="${track.index}"  />
               <span class="trackControlValue" data-track-volume-value="${track.index}">${trackVolumeByIndex[track.index] ?? DEFAULT_TRACK_VOLUME}</span>
             </label>
           </div>
@@ -236,9 +239,9 @@ export function renderProjectScreen(
             <p class="appSubtitle">Source: ${actions.sourceFileName}</p>
           </div>
           <div class="playerTransport">
-            <button class="primaryButton" type="button" data-action="play">Play</button>
-            <button class="secondaryButton" type="button" data-action="pause">Pause</button>
-            <button class="secondaryButton" type="button" data-action="stop">Stop</button>
+            <button class="primaryButton" type="button" data-action="play" ${actions.canPlay ? "" : "disabled"}>Play</button>
+            <button class="secondaryButton" type="button" data-action="pause" ${actions.canPause ? "" : "disabled"}>Pause</button>
+            <button class="secondaryButton" type="button" data-action="stop" ${actions.canStop ? "" : "disabled"}>Stop</button>
           </div>
           <div class="playerCountInControls">
             <button
@@ -246,6 +249,7 @@ export function renderProjectScreen(
               type="button"
               data-action="toggle-count-in"
               data-count-in-toggle-button="true"
+              
             >
               Count-in
             </button>
@@ -256,12 +260,13 @@ export function renderProjectScreen(
               type="button"
               data-action="toggle-metronome"
               data-metronome-toggle-button="true"
+              
             >
               Metronome
             </button>
           </div>
           <div class="playerLoopControls">
-            <button class="${actions.loopEnabled ? "primaryButton" : "secondaryButton"}" type="button" data-action="toggle-loop" data-loop-toggle-button="true">Loop</button>
+            <button class="${actions.loopEnabled ? "primaryButton" : "secondaryButton"}" type="button" data-action="toggle-loop" data-loop-toggle-button="true" >Loop</button>
             <button class="secondaryButton playerLoopAdjustButton" type="button" data-action="move-loop-start-left" ${actions.canMoveLoopStartLeft ? "" : "disabled"}>A−</button>
             <button class="secondaryButton playerLoopAdjustButton" type="button" data-action="move-loop-start-right" ${actions.canMoveLoopStartRight ? "" : "disabled"}>A+</button>
             <span class="playerLoopLabel" data-loop-start-label="true">A: ${renderDebugValue(actions.loopStartBar)}</span>
@@ -270,7 +275,7 @@ export function renderProjectScreen(
             <span class="playerLoopLabel" data-loop-end-label="true">B: ${renderDebugValue(actions.loopEndBar)}</span>
           </div>
           <div class="playerSpeedControls" aria-label="Playback speed controls">
-            <button class="secondaryButton playerSpeedButton" type="button" data-action="decrease-playback-speed" aria-label="Decrease playback speed">−</button>
+            <button class="secondaryButton playerSpeedButton" type="button" data-action="decrease-playback-speed" aria-label="Decrease playback speed" >−</button>
             <input
               class="playerSpeedSlider"
               type="range"
@@ -280,8 +285,9 @@ export function renderProjectScreen(
               value="${actions.playbackSpeedPercent}"
               data-action="set-playback-speed"
               aria-label="Playback speed percent"
+              
             />
-            <button class="secondaryButton playerSpeedButton" type="button" data-action="increase-playback-speed" aria-label="Increase playback speed">+</button>
+            <button class="secondaryButton playerSpeedButton" type="button" data-action="increase-playback-speed" aria-label="Increase playback speed" >+</button>
             <div class="playerSpeedReadout">
               <span class="playerSpeedPercent" data-playback-speed-percent="true">${actions.playbackSpeedPercent}%</span>
               <span class="playerSpeedBpm" data-playback-speed-bpm="true">${actions.effectiveTempoBpm === null ? "-" : `${actions.effectiveTempoBpm} BPM`}</span>
@@ -363,7 +369,7 @@ export function renderProjectScreen(
               <div class="trackControlRow trackControlRowCompact masterTrackControlRow">
                 <span class="trackNameCompact">Master</span>
                 <label class="trackControlLabel trackControlLabelCompact">
-                  <input class="trackControlRange" type="range" min="0" max="100" value="${actions.masterVolume}" data-stop-track-select="true" data-master-action="set-volume" />
+                  <input class="trackControlRange" type="range" min="0" max="100" value="${actions.masterVolume}" data-stop-track-select="true" data-master-action="set-volume"  />
                   <span class="trackControlValue" data-master-volume-value="true">${actions.masterVolume}</span>
                 </label>
               </div>
@@ -379,7 +385,7 @@ export function renderProjectScreen(
           <div class="playerDockCollapsedMaster">
             <span class="trackNameCompact">Master</span>
             <label class="trackControlLabel trackControlLabelCompact">
-              <input class="trackControlRange" type="range" min="0" max="100" value="${actions.masterVolume}" data-stop-track-select="true" data-master-action="set-volume" />
+              <input class="trackControlRange" type="range" min="0" max="100" value="${actions.masterVolume}" data-stop-track-select="true" data-master-action="set-volume"  />
               <span class="trackControlValue" data-master-volume-value="true">${actions.masterVolume}</span>
             </label>
             <button class="secondaryButton playerDockToggleButton" type="button" data-action="expand-bottom-dock">Expand</button>
