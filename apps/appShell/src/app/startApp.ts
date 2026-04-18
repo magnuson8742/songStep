@@ -167,6 +167,8 @@ interface AppState {
   pendingPlayDispatch: boolean;
   pendingPlayDispatchBaseTick: number | null;
   pendingPlayDispatchStartedAtMs: number | null;
+  lastPlaybackObservedAtMs: number | null;
+  lastPlaybackObservedTick: number | null;
   rendererRuntimeBlocked: boolean;
   rendererSessionHadAuthoritativePlayerReady: boolean;
 }
@@ -2858,6 +2860,8 @@ export function startApp(rootElement: HTMLElement): void {
     pendingPlayDispatch: false,
     pendingPlayDispatchBaseTick: null,
     pendingPlayDispatchStartedAtMs: null,
+    lastPlaybackObservedAtMs: null,
+    lastPlaybackObservedTick: null,
     rendererRuntimeBlocked: false,
     rendererSessionHadAuthoritativePlayerReady: false,
   };
@@ -2890,6 +2894,8 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingPlayDispatch = false;
     state.pendingPlayDispatchBaseTick = null;
     state.pendingPlayDispatchStartedAtMs = null;
+    state.lastPlaybackObservedAtMs = null;
+    state.lastPlaybackObservedTick = null;
     state.lastTransportRerenderReason = null;
     stopPlaybackMetronome(state);
     state.manualNavigationVisualOverrideActive = false;
@@ -2933,6 +2939,8 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingPlayDispatch = false;
     state.pendingPlayDispatchBaseTick = null;
     state.pendingPlayDispatchStartedAtMs = null;
+    state.lastPlaybackObservedAtMs = null;
+    state.lastPlaybackObservedTick = null;
     state.playbackIsPlaying = false;
     cancelCountIn(state, rootElement);
     stopPlaybackMetronome(state);
@@ -2972,6 +2980,8 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingPlayDispatch = false;
     state.pendingPlayDispatchBaseTick = null;
     state.pendingPlayDispatchStartedAtMs = null;
+    state.lastPlaybackObservedAtMs = null;
+    state.lastPlaybackObservedTick = null;
     state.playbackIsPlaying = false;
     const pausedTickSnapshot =
       state.playbackCurrentTick ?? state.playbackCurrentBarStartTick ?? state.selectedNavigationTick ?? null;
@@ -3056,6 +3066,8 @@ export function startApp(rootElement: HTMLElement): void {
     state.pendingPlayDispatch = false;
     state.pendingPlayDispatchBaseTick = null;
     state.pendingPlayDispatchStartedAtMs = null;
+    state.lastPlaybackObservedAtMs = null;
+    state.lastPlaybackObservedTick = null;
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
     state.pendingOverviewNavigationTick = null;
@@ -3539,11 +3551,6 @@ export function startApp(rootElement: HTMLElement): void {
             preservedTick,
           });
           state.gpRenderer?.selectTrack(trackIndex, preservedTick);
-          traceTrackSwitch("track-switch-applied", {
-            source: "track-list-select",
-            nextTrackIndex: trackIndex,
-            preservedTick,
-          });
         },
         onBackToHome: () => {
           state.currentView = "home";
@@ -3703,6 +3710,7 @@ export function startApp(rootElement: HTMLElement): void {
           if (targetTick !== null && (state.playbackCurrentTick === null || Math.abs(state.playbackCurrentTick - targetTick) > 1)) {
             state.gpRenderer.seekToTick(targetTick);
           }
+          clearPausedResumeSnapshot("play-dispatch-resume");
           state.pendingTransportCommand = null;
           state.pendingPlayDispatch = true;
           state.pendingPlayDispatchBaseTick = state.playbackCurrentTick;
@@ -4397,6 +4405,10 @@ export function startApp(rootElement: HTMLElement): void {
             previousRuntimeTick !== null &&
             info.currentTick > previousRuntimeTick;
           const playObservedThisUpdate = playObservedFromRuntime || playObservedFromPosition || playObservedFromActiveMotion;
+          if (playObservedThisUpdate || info.isPlaying === true) {
+            state.lastPlaybackObservedAtMs = Date.now();
+            state.lastPlaybackObservedTick = info.currentTick;
+          }
           if (playObservedThisUpdate) {
             const playUnlockSource = playObservedFromRuntime ? "runtime-isPlaying-true" : "runtime-tick-moved";
             if (state.pendingPlayDispatch || state.playbackTransportActive !== true) {
@@ -4439,7 +4451,20 @@ export function startApp(rootElement: HTMLElement): void {
                 state.pendingPlayDispatch &&
                 state.pendingPlayDispatchStartedAtMs !== null &&
                 Date.now() - state.pendingPlayDispatchStartedAtMs < PLAY_DISPATCH_CONFIRM_TIMEOUT_MS;
-              if (!pendingPlayStartActive && !playObservedThisUpdate) {
+              const playbackInactivityExpired =
+                state.lastPlaybackObservedAtMs !== null && Date.now() - state.lastPlaybackObservedAtMs > 750;
+              const noForwardTickProgressSinceLastObserved =
+                info.currentTick === null ||
+                state.lastPlaybackObservedTick === null ||
+                info.currentTick <= state.lastPlaybackObservedTick;
+              if (
+                !pendingPlayStartActive &&
+                !playObservedThisUpdate &&
+                !state.pendingPlayDispatch &&
+                state.playbackTransportActive &&
+                playbackInactivityExpired &&
+                noForwardTickProgressSinceLastObserved
+              ) {
                 if (state.pendingPlayDispatch && state.pendingPlayDispatchStartedAtMs !== null) {
                   tracePlayback("play-dispatch-timeout", {
                     selectedTrackIndex: state.selectedTrackIndex,
@@ -4452,6 +4477,8 @@ export function startApp(rootElement: HTMLElement): void {
                 state.pendingPlayDispatch = false;
                 state.pendingPlayDispatchBaseTick = null;
                 state.pendingPlayDispatchStartedAtMs = null;
+                state.lastPlaybackObservedAtMs = null;
+                state.lastPlaybackObservedTick = null;
                 stopPlaybackMetronome(state);
               }
             }

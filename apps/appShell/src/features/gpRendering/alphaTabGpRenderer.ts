@@ -382,6 +382,7 @@ const RENDER_TIMEOUT_MS = 5000;
 const HEAVY_TRACK_NOTE_THRESHOLD = 5000;
 const HEAVY_TRACK_BAR_THRESHOLD = 400;
 const GLOBAL_HIGHLIGHT_Y_OFFSET_PX = 6;
+const DIRECT_SWITCH_COMMIT_TIMEOUT_MS = 1500;
 
 type RenderMode =
   | "string-tab"
@@ -888,6 +889,16 @@ export async function createGpRenderer(
   let directSwitchInFlight = false;
   let directSwitchTargetIndex: number | null = null;
   let directSwitchPreviousIndex: number | null = null;
+  let pendingDirectSwitchContext: {
+    attemptId: number;
+    targetIndex: number;
+    resumeTick: number;
+    wasPlaying: boolean;
+    awaitingCommit: boolean;
+    postRenderFinished: boolean;
+    startedAtMs: number;
+  } | null = null;
+  let directSwitchAttemptCounter = 0;
 
   let rendererBusy = false;
   let pendingRequestedTrackIndex: number | null = null;
@@ -3715,6 +3726,15 @@ export async function createGpRenderer(
         return;
       }
       const committedTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+      if (
+        pendingDirectSwitchContext &&
+        directSwitchInFlight &&
+        directSwitchTargetIndex !== null &&
+        committedTrackIndex === directSwitchTargetIndex &&
+        pendingDirectSwitchContext.targetIndex === directSwitchTargetIndex
+      ) {
+        pendingDirectSwitchContext.postRenderFinished = true;
+      }
       if (isHotTrackSwitch) {
         emitRenderLifecycle("switched-track-reload-post-render-finished", {
           sessionToken,
@@ -3792,6 +3812,7 @@ export async function createGpRenderer(
             });
             emitDebugInfo();
             const failedTarget = directSwitchTargetIndex;
+            pendingDirectSwitchContext = null;
             directSwitchInFlight = false;
             directSwitchTargetIndex = null;
             directSwitchPreviousIndex = null;
@@ -3813,6 +3834,7 @@ export async function createGpRenderer(
             });
           }
         }
+        pendingDirectSwitchContext = null;
         directSwitchInFlight = false;
         directSwitchTargetIndex = null;
         directSwitchPreviousIndex = null;
@@ -3922,6 +3944,90 @@ export async function createGpRenderer(
   };
 
   await switchTrackByReload(selectedTrackIndex);
+
+  const tryFinalizePendingDirectSwitch = (api: AlphaTabApi, attempt: number): void => {
+    const pendingContext = pendingDirectSwitchContext;
+    if (!pendingContext || !directSwitchInFlight || directSwitchTargetIndex === null) {
+      return;
+    }
+    if (pendingContext.targetIndex !== directSwitchTargetIndex) {
+      return;
+    }
+    const elapsedMs = Date.now() - pendingContext.startedAtMs;
+    const committedTrackIndex = api.tracks?.[0]?.index ?? null;
+    const targetCommitted = committedTrackIndex === pendingContext.targetIndex;
+    const canFinalize =
+      activeApi === api &&
+      pendingContext.awaitingCommit &&
+      pendingContext.postRenderFinished &&
+      targetCommitted;
+    if (canFinalize) {
+      traceRenderer("track-switch-direct-api-ready", {
+        nextTrackIndex: pendingContext.targetIndex,
+        attempt,
+        activeSessionToken,
+      });
+      confirmedActiveTrackIndex = pendingContext.targetIndex;
+      lastSuccessfulConfirmedTrackIndex = pendingContext.targetIndex;
+      requestedTrackIndex = pendingContext.targetIndex;
+      emitRenderLifecycle("active-track-confirmed", {
+        activeSessionToken,
+        trackIndex: pendingContext.targetIndex,
+      });
+      hooks.onActiveTrackConfirmed(pendingContext.targetIndex);
+      hooks.onTrackRenderCommitted(pendingContext.targetIndex);
+      if (Number.isFinite(pendingContext.resumeTick)) {
+        const didRestoreSeek = seekToTick(pendingContext.resumeTick);
+        if (didRestoreSeek) {
+          traceRenderer("track-switch-direct-seek-restored", {
+            nextTrackIndex: pendingContext.targetIndex,
+            resumeTick: pendingContext.resumeTick,
+          });
+        }
+      }
+      if (pendingContext.wasPlaying && isPlaybackApiAvailable(api) && typeof api.play === "function") {
+        const runtimeState = normalizePlaybackState(api.playerState);
+        if (runtimeState !== "playing") {
+          api.play?.();
+        }
+        traceRenderer("track-switch-direct-playback-restored", {
+          nextTrackIndex: pendingContext.targetIndex,
+          resumeTick: pendingContext.resumeTick,
+          runtimeState: normalizePlaybackState(api.playerState),
+        });
+      }
+      traceRenderer("track-switch-direct-applied", {
+        nextTrackIndex: pendingContext.targetIndex,
+        confirmedActiveTrackIndex,
+        resumeTick: pendingContext.resumeTick,
+      });
+      traceRenderer("track-switch-applied", {
+        targetIndex: pendingContext.targetIndex,
+      });
+      pendingDirectSwitchContext = null;
+      directSwitchInFlight = false;
+      directSwitchTargetIndex = null;
+      directSwitchPreviousIndex = null;
+      emitDebugInfo();
+      return;
+    }
+    if (elapsedMs > DIRECT_SWITCH_COMMIT_TIMEOUT_MS) {
+      traceRenderer("track-switch-direct-failed", {
+        nextTrackIndex: pendingContext.targetIndex,
+        reason: "target-track-not-committed-timeout",
+        attempt,
+        elapsedMs,
+        postRenderFinished: pendingContext.postRenderFinished,
+        committedTrackIndex,
+      });
+      pendingDirectSwitchContext = null;
+      directSwitchInFlight = false;
+      directSwitchTargetIndex = null;
+      directSwitchPreviousIndex = null;
+      return;
+    }
+    window.setTimeout(() => tryFinalizePendingDirectSwitch(api, attempt + 1), 16);
+  };
 
   const switchTrackDirect = (nextTrackIndex: number, targetTick?: number | null): void => {
     const api = activeApi;
@@ -4033,6 +4139,7 @@ export async function createGpRenderer(
           nextTrackIndex,
           reason: "renderTracks-unavailable",
         });
+        pendingDirectSwitchContext = null;
         directSwitchInFlight = false;
         directSwitchTargetIndex = null;
         directSwitchPreviousIndex = null;
@@ -4042,73 +4149,17 @@ export async function createGpRenderer(
         targetIndex: nextTrackIndex,
       });
       api.renderTracks([nextTrack]);
-      const finishDirectSwitch = (attempt: number): void => {
-        if (!activeApi || activeApi !== api) {
-          traceRenderer("track-switch-direct-api-not-ready", {
-            nextTrackIndex,
-            attempt,
-            hasActiveApi: activeApi !== null,
-            activeApiMatchesSwitchApi: activeApi === api,
-          });
-          if (attempt >= 12) {
-            traceRenderer("track-switch-direct-failed", {
-              nextTrackIndex,
-              reason: "api-not-ready-timeout",
-              attempt,
-            });
-            return;
-          }
-          window.setTimeout(() => finishDirectSwitch(attempt + 1), 16);
-          return;
-        }
-        traceRenderer("track-switch-direct-api-ready", {
-          nextTrackIndex,
-          attempt,
-          activeSessionToken,
-        });
-        confirmedActiveTrackIndex = nextTrackIndex;
-        lastSuccessfulConfirmedTrackIndex = nextTrackIndex;
-        requestedTrackIndex = nextTrackIndex;
-        emitRenderLifecycle("active-track-confirmed", {
-          activeSessionToken,
-          trackIndex: nextTrackIndex,
-        });
-        hooks.onActiveTrackConfirmed(nextTrackIndex);
-        hooks.onTrackRenderCommitted(nextTrackIndex);
-        if (Number.isFinite(resumeTick)) {
-          const didRestoreSeek = seekToTick(resumeTick);
-          if (didRestoreSeek) {
-            traceRenderer("track-switch-direct-seek-restored", {
-              nextTrackIndex,
-              resumeTick,
-            });
-          }
-        }
-        if (wasPlaying && isPlaybackApiAvailable(api) && typeof api.play === "function") {
-          const runtimeState = normalizePlaybackState(api.playerState);
-          if (runtimeState !== "playing") {
-            api.play?.();
-          }
-          traceRenderer("track-switch-direct-playback-restored", {
-            nextTrackIndex,
-            resumeTick,
-            runtimeState: normalizePlaybackState(api.playerState),
-          });
-        }
-        traceRenderer("track-switch-direct-applied", {
-          nextTrackIndex,
-          confirmedActiveTrackIndex,
-          resumeTick,
-        });
-        traceRenderer("track-switch-applied", {
-          targetIndex: nextTrackIndex,
-        });
-        directSwitchInFlight = false;
-        directSwitchTargetIndex = null;
-        directSwitchPreviousIndex = null;
-        emitDebugInfo();
+      directSwitchAttemptCounter += 1;
+      pendingDirectSwitchContext = {
+        attemptId: directSwitchAttemptCounter,
+        targetIndex: nextTrackIndex,
+        resumeTick,
+        wasPlaying,
+        awaitingCommit: true,
+        postRenderFinished: false,
+        startedAtMs: Date.now(),
       };
-      finishDirectSwitch(0);
+      tryFinalizePendingDirectSwitch(api, 0);
     } catch (error) {
       const previousTrackPosition =
         confirmedActiveTrackIndex >= 0 && confirmedActiveTrackIndex < scoreTracks.length
@@ -4127,6 +4178,7 @@ export async function createGpRenderer(
           // Controlled escalation to app-level error handling below.
         }
       }
+      pendingDirectSwitchContext = null;
       directSwitchInFlight = false;
       directSwitchTargetIndex = null;
       directSwitchPreviousIndex = null;
