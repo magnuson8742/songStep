@@ -3609,6 +3609,21 @@ export async function createGpRenderer(
         });
         return;
       }
+      if (
+        directSwitchInFlight &&
+        directSwitchTargetIndex !== null &&
+        renderedTrack &&
+        renderedTrack.index === directSwitchTargetIndex
+      ) {
+        traceRenderer("track-switch-direct-target-renderStarted", {
+          sessionToken,
+          renderedTrackIndex: renderedTrack.index,
+          directSwitchTargetIndex,
+        });
+        lastRendererErrorStage = "renderStarted";
+        emitDebugInfo();
+        return;
+      }
       if (renderedTrack) {
         confirmedActiveTrackIndex = renderedTrack.index;
         lastSuccessfulConfirmedTrackIndex = renderedTrack.index;
@@ -3734,6 +3749,12 @@ export async function createGpRenderer(
         pendingDirectSwitchContext.targetIndex === directSwitchTargetIndex
       ) {
         pendingDirectSwitchContext.postRenderFinished = true;
+        traceRenderer("track-switch-direct-target-postRenderFinished", {
+          sessionToken,
+          committedTrackIndex,
+          directSwitchTargetIndex,
+        });
+        tryFinalizePendingDirectSwitch(api, 0);
       }
       if (isHotTrackSwitch) {
         emitRenderLifecycle("switched-track-reload-post-render-finished", {
@@ -3742,7 +3763,9 @@ export async function createGpRenderer(
         });
       }
       sessionPostRenderFinishedCompleted = true;
-      hooks.onTrackRenderCommitted(committedTrackIndex);
+      if (!directSwitchInFlight) {
+        hooks.onTrackRenderCommitted(committedTrackIndex);
+      }
       if (!sessionTargetTickApplied && sessionTargetTick !== null) {
         sessionTargetTickApplied = true;
         seekToTick(sessionTargetTick);
@@ -3945,7 +3968,7 @@ export async function createGpRenderer(
 
   await switchTrackByReload(selectedTrackIndex);
 
-  const tryFinalizePendingDirectSwitch = (api: AlphaTabApi, attempt: number): void => {
+  function tryFinalizePendingDirectSwitch(api: AlphaTabApi, attempt: number): void {
     const pendingContext = pendingDirectSwitchContext;
     if (!pendingContext || !directSwitchInFlight || directSwitchTargetIndex === null) {
       return;
@@ -4012,6 +4035,26 @@ export async function createGpRenderer(
       return;
     }
     if (elapsedMs > DIRECT_SWITCH_COMMIT_TIMEOUT_MS) {
+      const previousTrackIndex = directSwitchPreviousIndex;
+      const scoreTracks = api.score?.tracks ?? [];
+      const rollbackTrack =
+        previousTrackIndex !== null &&
+        previousTrackIndex >= 0 &&
+        previousTrackIndex < scoreTracks.length
+          ? (scoreTracks[previousTrackIndex] ?? null)
+          : null;
+      if (rollbackTrack && typeof api.renderTracks === "function") {
+        try {
+          api.renderTracks([rollbackTrack]);
+          traceRenderer("track-switch-render-error-rollback", {
+            targetIndex: pendingContext.targetIndex,
+            prevIndex: rollbackTrack.index,
+            reason: "direct-switch-commit-timeout",
+          });
+        } catch {
+          // Rollback best effort; continue with controlled error report below.
+        }
+      }
       traceRenderer("track-switch-direct-failed", {
         nextTrackIndex: pendingContext.targetIndex,
         reason: "target-track-not-committed-timeout",
@@ -4020,6 +4063,15 @@ export async function createGpRenderer(
         postRenderFinished: pendingContext.postRenderFinished,
         committedTrackIndex,
       });
+      hooks.onRenderError({
+        message: "Direct track switch timed out before target commit.",
+        details: {
+          stage: "direct-switch-commit-timeout",
+          targetTrackIndex: pendingContext.targetIndex,
+          previousTrackIndex,
+          elapsedMs,
+        },
+      });
       pendingDirectSwitchContext = null;
       directSwitchInFlight = false;
       directSwitchTargetIndex = null;
@@ -4027,7 +4079,7 @@ export async function createGpRenderer(
       return;
     }
     window.setTimeout(() => tryFinalizePendingDirectSwitch(api, attempt + 1), 16);
-  };
+  }
 
   const switchTrackDirect = (nextTrackIndex: number, targetTick?: number | null): void => {
     const api = activeApi;
