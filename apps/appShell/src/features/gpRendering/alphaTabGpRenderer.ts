@@ -897,6 +897,7 @@ export async function createGpRenderer(
     awaitingCommit: boolean;
     observedTargetRenderStarted: boolean;
     observedTargetRenderFinished: boolean;
+    commitEvidenceLogged: boolean;
     postRenderFinished: boolean;
     startedAtMs: number;
   } | null = null;
@@ -3742,10 +3743,17 @@ export async function createGpRenderer(
         return;
       }
       const postRenderTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
+      const pendingContext = pendingDirectSwitchContext;
+      const targetObservedByLifecycle =
+        pendingContext?.targetIndex === directSwitchTargetIndex &&
+        (pendingContext.observedTargetRenderFinished || pendingContext.observedTargetRenderStarted);
+      const postRenderBelongsToTarget =
+        directSwitchTargetIndex !== null &&
+        (postRenderTrackIndex === directSwitchTargetIndex || targetObservedByLifecycle === true);
       if (
         directSwitchInFlight &&
         directSwitchTargetIndex !== null &&
-        postRenderTrackIndex !== directSwitchTargetIndex
+        !postRenderBelongsToTarget
       ) {
         traceRenderer("track-switch-direct-ignore-non-target-postRenderFinished", {
           sessionToken,
@@ -3756,17 +3764,18 @@ export async function createGpRenderer(
       }
       const committedTrackIndex = api.tracks?.[0]?.index ?? confirmedActiveTrackIndex;
       if (
-        pendingDirectSwitchContext &&
+        pendingContext &&
         directSwitchInFlight &&
         directSwitchTargetIndex !== null &&
-        committedTrackIndex === directSwitchTargetIndex &&
-        pendingDirectSwitchContext.targetIndex === directSwitchTargetIndex
+        pendingContext.targetIndex === directSwitchTargetIndex &&
+        postRenderBelongsToTarget
       ) {
-        pendingDirectSwitchContext.postRenderFinished = true;
+        pendingContext.postRenderFinished = true;
         traceRenderer("track-switch-direct-target-postRenderFinished", {
           sessionToken,
           committedTrackIndex,
           directSwitchTargetIndex,
+          targetObservedByLifecycle: targetObservedByLifecycle === true,
         });
         tryFinalizePendingDirectSwitch(api, 0);
       }
@@ -3997,6 +4006,16 @@ export async function createGpRenderer(
     // Treat lifecycle observation as additional commit proof once target post-render completes.
     const targetObservedByLifecycle =
       pendingContext.observedTargetRenderFinished || pendingContext.observedTargetRenderStarted;
+    if (targetObservedByLifecycle && !pendingContext.commitEvidenceLogged) {
+      pendingContext.commitEvidenceLogged = true;
+      traceRenderer("direct-switch-commit-evidence", {
+        targetIndex: pendingContext.targetIndex,
+        attempt,
+        observedTargetRenderStarted: pendingContext.observedTargetRenderStarted,
+        observedTargetRenderFinished: pendingContext.observedTargetRenderFinished,
+        postRenderFinished: pendingContext.postRenderFinished,
+      });
+    }
     const canFinalize =
       activeApi === api &&
       pendingContext.awaitingCommit &&
@@ -4042,6 +4061,13 @@ export async function createGpRenderer(
         confirmedActiveTrackIndex,
         resumeTick: pendingContext.resumeTick,
       });
+      traceRenderer("direct-switch-finalized", {
+        targetIndex: pendingContext.targetIndex,
+        attempt,
+        elapsedMs,
+        targetCommitted,
+        targetObservedByLifecycle,
+      });
       traceRenderer("track-switch-applied", {
         targetIndex: pendingContext.targetIndex,
       });
@@ -4073,18 +4099,19 @@ export async function createGpRenderer(
           // Rollback best effort; continue with controlled error report below.
         }
       }
-      traceRenderer("track-switch-direct-failed", {
+      traceRenderer("direct-switch-timeout-real", {
         nextTrackIndex: pendingContext.targetIndex,
-        reason: "target-track-not-committed-timeout",
         attempt,
         elapsedMs,
+        targetCommitted,
+        targetObservedByLifecycle,
         postRenderFinished: pendingContext.postRenderFinished,
         committedTrackIndex,
       });
       hooks.onRenderError({
         message: "Direct track switch timed out before target commit.",
         details: {
-          stage: "direct-switch-commit-timeout",
+          stage: "direct-switch-commit-timeout-real",
           targetTrackIndex: pendingContext.targetIndex,
           previousTrackIndex,
           elapsedMs,
@@ -4228,6 +4255,7 @@ export async function createGpRenderer(
         awaitingCommit: true,
         observedTargetRenderStarted: false,
         observedTargetRenderFinished: false,
+        commitEvidenceLogged: false,
         postRenderFinished: false,
         startedAtMs: Date.now(),
       };

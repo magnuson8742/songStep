@@ -1062,21 +1062,25 @@ function getActiveManualNavigationTarget(state: AppState): { targetTrackIndex: n
 
 function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLElement): void {
   const arrangementCells = rootElement.querySelectorAll<HTMLElement>("[data-arrangement-bar-index]");
+  let removedPlaybackHighlight = false;
   arrangementCells.forEach((cell) => {
+    if (cell.classList.contains("isPlaybackCurrentBar")) {
+      removedPlaybackHighlight = true;
+    }
     cell.classList.remove("isPlaybackCurrentBar");
   });
-  // Keep playback-only highlight off during idle browsing/selection to avoid
-  // a persistent "bar 1" overlay when users are not actively interacting with playback.
   if (!isPlaybackInteractionActive(state)) {
+    if (removedPlaybackHighlight) {
+      tracePlayback("playback-highlight-suppressed-idle", {
+        playbackCurrentBar: state.playbackCurrentBar,
+        playbackCurrentTick: state.playbackCurrentTick,
+      });
+    }
     return;
   }
 
   const activeTrackIndex = state.gpRenderDebugInfo?.confirmedActiveTrackIndex ?? state.selectedTrackIndex;
-  const activeManualTarget = getActiveManualNavigationTarget(state);
-  let playbackBar = state.playbackCurrentBar;
-  if (state.manualNavigationVisualOverrideActive && activeManualTarget) {
-    playbackBar = activeManualTarget.targetBar;
-  }
+  const playbackBar = state.playbackCurrentBar;
   if (playbackBar === null || playbackBar <= 0) {
     return;
   }
@@ -1708,19 +1712,10 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
     return;
   }
 
-  const activeManualTarget = getActiveManualNavigationTarget(state);
-  let effectiveCurrentBar = state.playbackCurrentBar;
-  let effectiveCurrentTick = state.playbackCurrentTick;
-  let effectiveBarStartTick = state.playbackCurrentBarStartTick;
-  let effectiveBarEndTickExclusive = state.playbackCurrentBarEndTickExclusive;
-  if (state.manualNavigationVisualOverrideActive && activeManualTarget) {
-    effectiveCurrentBar = activeManualTarget.targetBar;
-    effectiveCurrentTick = activeManualTarget.targetTick;
-    const activeManualTargetBarRange = state.gpRenderer?.getBarTickRange(activeManualTarget.targetBar) ?? null;
-    effectiveBarStartTick = activeManualTargetBarRange?.startTick ?? activeManualTarget.targetTick;
-    effectiveBarEndTickExclusive =
-      activeManualTargetBarRange?.endTickExclusive ?? Math.max(activeManualTarget.targetTick + 1, effectiveBarStartTick + 1);
-  }
+  const effectiveCurrentBar = state.playbackCurrentBar;
+  const effectiveCurrentTick = state.playbackCurrentTick;
+  const effectiveBarStartTick = state.playbackCurrentBarStartTick;
+  const effectiveBarEndTickExclusive = state.playbackCurrentBarEndTickExclusive;
 
   if (effectiveCurrentBar === null || effectiveCurrentBar <= 0) {
     hidePlaybackPlayhead(rootElement, state);
@@ -3500,9 +3495,16 @@ export function startApp(rootElement: HTMLElement): void {
             previousTrackIndex: state.selectedTrackIndex,
           });
           const fallbackTrackStartTick = state.gpRenderer?.getBarTickRange(1)?.startTick ?? 0;
-          const preservedTick = state.playbackCurrentTick ?? fallbackTrackStartTick;
+          const hasMeaningfulNavigationSelection =
+            state.selectedNavigationBar !== null && state.selectedNavigationBar > 0 && state.selectedNavigationTick !== null;
+          const preservedTick = hasMeaningfulNavigationSelection
+            ? (state.selectedNavigationTick as number)
+            : (state.playbackCurrentTick ?? fallbackTrackStartTick);
+          const preservedBar = hasMeaningfulNavigationSelection
+            ? (state.selectedNavigationBar as number)
+            : (state.playbackCurrentBar ?? 1);
           state.desiredTrackSwitchTick = preservedTick;
-          state.desiredTrackSwitchBar = state.playbackCurrentBar ?? 1;
+          state.desiredTrackSwitchBar = preservedBar;
           state.desiredTrackSwitchSourceTrackIndex = state.selectedTrackIndex;
           state.requestedTrackIndex = trackIndex;
           state.playerPositionPayloadShape = null;
@@ -3532,6 +3534,12 @@ export function startApp(rootElement: HTMLElement): void {
           const preservedBarForSelection = state.desiredTrackSwitchBar ?? 1;
           applyNavigationSelection(state, rootElement, preservedBarForSelection, preservedTick, trackIndex);
           ensureNavigationSelectionIsValid(state, rootElement, "track-switch-left-list-preserve");
+          traceTrackSwitch("left-track-switch-preserved-selection", {
+            nextTrackIndex: trackIndex,
+            preservedBar: preservedBarForSelection,
+            preservedTick,
+            usedNavigationSelection: hasMeaningfulNavigationSelection,
+          });
           state.manualNavigationVisualOverrideActive = false;
           updateTransportControls(rootElement, state, "track-selection-change");
 
@@ -4718,9 +4726,7 @@ export function startApp(rootElement: HTMLElement): void {
           const isTrackSwitchDirectError =
             errorStage === "selectTrackDirect" ||
             errorStage === "direct-switch-error-rolled-back" ||
-            (state.requestedTrackIndex !== null &&
-              previousTrackIndex !== null &&
-              state.trackSwitchInProgress === false);
+            errorStage === "direct-switch-commit-timeout-real";
           if (
             isTrackSwitchDirectError &&
             previousTrackIndex !== null &&
