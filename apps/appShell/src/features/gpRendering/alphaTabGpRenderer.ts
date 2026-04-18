@@ -3113,7 +3113,11 @@ export async function createGpRenderer(
     };
   };
 
-  const scheduleRenderTimeout = (sessionToken: number, timedOutTrackIndex: number): void => {
+  const scheduleRenderTimeout = (
+    sessionToken: number,
+    timedOutTrackIndex: number,
+    isHotTrackSwitchTimeout: boolean = false,
+  ): void => {
     clearRenderTimeout();
     activeRenderTimeoutId = window.setTimeout(() => {
       if (sessionToken !== activeSessionToken || !rendererBusy) {
@@ -3150,7 +3154,7 @@ export async function createGpRenderer(
         lastRenderFinishedAtIso,
         renderTimeoutHit,
       });
-      if (isHotTrackSwitch) {
+      if (isHotTrackSwitchTimeout) {
         emitRenderLifecycle("switched-track-reload-failed", {
           sessionToken,
           nextTrackIndex: timedOutTrackIndex,
@@ -3981,7 +3985,7 @@ export async function createGpRenderer(
       throw new Error("GP renderer rejected the source data.");
     }
 
-    scheduleRenderTimeout(sessionToken, nextTrackIndex);
+    scheduleRenderTimeout(sessionToken, nextTrackIndex, isHotTrackSwitch);
     traceRenderer("switchTrackByReload-finish", {
       nextTrackIndex,
       sessionToken,
