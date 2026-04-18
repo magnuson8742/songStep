@@ -159,6 +159,9 @@ interface AppState {
   lastTransportUiState: "not-ready" | "idle-ready" | "playing-confirmed" | "paused-confirmed" | null;
   lastTransportControlSnapshot: string | null;
   pendingTransportCommand: "pause" | "stop" | null;
+  pendingPlayDispatch: boolean;
+  pendingPlayDispatchBaseTick: number | null;
+  rendererRuntimeBlocked: boolean;
 }
 
 function triggerJsonDownload(fileName: string, payload: unknown): void {
@@ -397,7 +400,8 @@ function resolveTransportUiState(state: AppState): {
   canStop: boolean;
   playDisabledReason: string | null;
 } {
-  const ready = state.gpRenderer !== null && state.rendererPlayerReady;
+  const runtimeSignalReady = state.rendererPlayerReady || state.rendererFallbackReady || state.rendererRuntimeWarm;
+  const ready = state.gpRenderer !== null && runtimeSignalReady && !state.rendererRuntimeBlocked;
   if (!ready) {
     return {
       uiState: "not-ready",
@@ -408,7 +412,7 @@ function resolveTransportUiState(state: AppState): {
     };
   }
 
-  if (state.playbackIsPlaying === true) {
+  if (state.playbackIsPlaying === true || state.playbackTransportActive) {
     return {
       uiState: "playing-confirmed",
       canPlay: false,
@@ -514,11 +518,27 @@ function updateTransportControls(rootElement: HTMLElement, state: AppState, reas
     const unlockSource = state.requiresSwitchedTrackPlaybackReady
       ? "switched-track-playback-ready"
       : "player-runtime-ready";
+    tracePlayback("transport-ready-source", {
+      reason,
+      unlockSource,
+      rendererPlayerReady: state.rendererPlayerReady,
+      rendererFallbackReady: state.rendererFallbackReady,
+      rendererRuntimeWarm: state.rendererRuntimeWarm,
+      rendererRuntimeBlocked: state.rendererRuntimeBlocked,
+    });
     tracePlayback("play-unlock-source", {
       reason,
       source: unlockSource,
       switchedTrackPlaybackReady: state.switchedTrackPlaybackReady,
     });
+    if (!state.rendererPlayerReady && (state.rendererFallbackReady || state.rendererRuntimeWarm)) {
+      tracePlayback("play-readiness-early-unlock", {
+        reason,
+        rendererPlayerReady: state.rendererPlayerReady,
+        rendererFallbackReady: state.rendererFallbackReady,
+        rendererRuntimeWarm: state.rendererRuntimeWarm,
+      });
+    }
     if (unlockSource === "player-runtime-ready") {
       tracePlayback("cold-load-playback-ready", {
         reason,
@@ -2765,6 +2785,9 @@ export function startApp(rootElement: HTMLElement): void {
     lastTransportUiState: null,
     lastTransportControlSnapshot: null,
     pendingTransportCommand: null,
+    pendingPlayDispatch: false,
+    pendingPlayDispatchBaseTick: null,
+    rendererRuntimeBlocked: false,
   };
 
   const hardCancelPlaybackPipeline = (
@@ -2792,6 +2815,8 @@ export function startApp(rootElement: HTMLElement): void {
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     state.pendingTransportCommand = null;
+    state.pendingPlayDispatch = false;
+    state.pendingPlayDispatchBaseTick = null;
     stopPlaybackMetronome(state);
     state.manualNavigationVisualOverrideActive = false;
     resetPlaybackVisualState(state, rootElement);
@@ -2831,6 +2856,8 @@ export function startApp(rootElement: HTMLElement): void {
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     state.pendingTransportCommand = null;
+    state.pendingPlayDispatch = false;
+    state.pendingPlayDispatchBaseTick = null;
     state.playbackIsPlaying = false;
     cancelCountIn(state, rootElement);
     stopPlaybackMetronome(state);
@@ -2867,6 +2894,8 @@ export function startApp(rootElement: HTMLElement): void {
     state.playbackTransportActive = false;
     state.countInInProgress = false;
     state.pendingTransportCommand = null;
+    state.pendingPlayDispatch = false;
+    state.pendingPlayDispatchBaseTick = null;
     state.playbackIsPlaying = false;
     const pausedTickSnapshot =
       state.playbackCurrentTick ?? state.playbackCurrentBarStartTick ?? state.selectedNavigationTick ?? null;
@@ -2948,6 +2977,8 @@ export function startApp(rootElement: HTMLElement): void {
       hardCancelPlaybackPipeline("renderer-cleanup");
     }
     state.pendingTransportCommand = null;
+    state.pendingPlayDispatch = false;
+    state.pendingPlayDispatchBaseTick = null;
     state.pendingOverviewNavigationBar = null;
     state.pendingOverviewNavigationTrackIndex = null;
     state.pendingOverviewNavigationTick = null;
@@ -2960,6 +2991,7 @@ export function startApp(rootElement: HTMLElement): void {
     state.rendererPlayerReady = false;
     state.rendererFallbackReady = false;
     state.rendererRuntimeWarm = false;
+    state.rendererRuntimeBlocked = false;
     state.requiresSwitchedTrackPlaybackReady = false;
     state.switchedTrackPlaybackReady = false;
     state.pendingTrackSwitchSessionToken = null;
@@ -3548,10 +3580,13 @@ export function startApp(rootElement: HTMLElement): void {
             updateProjectStatusBanner(rootElement, state.projectStatusMessage);
             return;
           }
-          if (!state.rendererPlayerReady) {
+          if (state.rendererRuntimeBlocked || !(state.rendererPlayerReady || state.rendererFallbackReady || state.rendererRuntimeWarm)) {
             tracePlayback("play-rejected-not-ready", {
               selectedTrackIndex: state.selectedTrackIndex,
               rendererPlayerReady: state.rendererPlayerReady,
+              rendererFallbackReady: state.rendererFallbackReady,
+              rendererRuntimeWarm: state.rendererRuntimeWarm,
+              rendererRuntimeBlocked: state.rendererRuntimeBlocked,
             });
             return;
           }
@@ -3569,6 +3604,20 @@ export function startApp(rootElement: HTMLElement): void {
           if (targetTick !== null && (state.playbackCurrentTick === null || Math.abs(state.playbackCurrentTick - targetTick) > 1)) {
             state.gpRenderer.seekToTick(targetTick);
           }
+          state.pendingTransportCommand = null;
+          state.pendingPlayDispatch = true;
+          state.pendingPlayDispatchBaseTick = state.playbackCurrentTick;
+          tracePlayback("play-dispatch", {
+            selectedTrackIndex: state.selectedTrackIndex,
+            targetTick,
+            pendingPlayDispatchBaseTick: state.pendingPlayDispatchBaseTick,
+          });
+          tracePlayback("play-pending", {
+            selectedTrackIndex: state.selectedTrackIndex,
+            rendererPlayerReady: state.rendererPlayerReady,
+            rendererFallbackReady: state.rendererFallbackReady,
+            rendererRuntimeWarm: state.rendererRuntimeWarm,
+          });
           state.gpRenderer.play();
         },
         onPause: () => {
@@ -3801,8 +3850,10 @@ export function startApp(rootElement: HTMLElement): void {
           }
           if (eventType === "score-loaded") {
             state.rendererScoreLoaded = true;
+            state.rendererRuntimeBlocked = false;
           } else if (eventType === "render-start") {
             state.rendererRenderFinished = false;
+            state.rendererRuntimeBlocked = false;
             if (state.requiresSwitchedTrackPlaybackReady) {
               state.switchedTrackPlaybackReady = false;
               state.switchedTrackPlaybackReadySessionToken = null;
@@ -3813,6 +3864,7 @@ export function startApp(rootElement: HTMLElement): void {
           } else if (eventType === "player-ready") {
             state.rendererPlayerReady = true;
             state.rendererRuntimeWarm = true;
+            state.rendererRuntimeBlocked = false;
             tracePlayback("player-runtime-ready", {
               source: "render-lifecycle:player-ready",
               sessionToken: eventSessionToken,
@@ -3821,6 +3873,7 @@ export function startApp(rootElement: HTMLElement): void {
           } else if (eventType === "player-runtime-ready") {
             state.rendererPlayerReady = true;
             state.rendererRuntimeWarm = true;
+            state.rendererRuntimeBlocked = false;
             tracePlayback("player-runtime-ready", {
               source: "render-lifecycle:player-runtime-ready",
               sessionToken: eventSessionToken,
@@ -3829,6 +3882,7 @@ export function startApp(rootElement: HTMLElement): void {
           } else if (eventType === "playback-runtime-ready-fallback") {
             state.rendererFallbackReady = true;
             state.rendererRuntimeWarm = true;
+            state.rendererRuntimeBlocked = false;
           } else if (eventType === "active-track-confirmed") {
             state.trackSwitchInProgress = false;
           } else if (eventType === "switched-track-reload-start") {
@@ -3988,6 +4042,7 @@ export function startApp(rootElement: HTMLElement): void {
               });
             }
           } else if (eventType === "player-runtime-not-ready-worker-missing") {
+            state.rendererRuntimeBlocked = true;
             tracePlayback("player-runtime-not-ready-worker-missing", {
               sessionToken: eventSessionToken,
               selectedTrackIndex: state.selectedTrackIndex,
@@ -4124,6 +4179,38 @@ export function startApp(rootElement: HTMLElement): void {
           if (typeof info.isPlaying === "boolean") {
             state.playbackIsPlaying = info.isPlaying;
           }
+          const playObservedFromRuntime = info.isPlaying === true;
+          const playObservedFromPosition =
+            state.pendingPlayDispatch &&
+            info.isPlaying !== false &&
+            info.currentTick !== null &&
+            (state.pendingPlayDispatchBaseTick === null ||
+              Math.abs(info.currentTick - state.pendingPlayDispatchBaseTick) >= 1);
+          if (playObservedFromRuntime || playObservedFromPosition) {
+            const playUnlockSource = playObservedFromRuntime ? "runtime-isPlaying-true" : "runtime-tick-moved";
+            if (state.pendingPlayDispatch || state.playbackTransportActive !== true) {
+              tracePlayback(playObservedFromRuntime ? "play-observed-from-runtime" : "play-observed-from-position", {
+                selectedTrackIndex: state.selectedTrackIndex,
+                currentTick: info.currentTick,
+                currentBar: info.currentBar,
+                pendingPlayDispatchBaseTick: state.pendingPlayDispatchBaseTick,
+                playUnlockSource,
+              });
+              tracePlayback("play-unlock-source", {
+                reason: "playback-runtime-info",
+                source: playUnlockSource,
+              });
+              tracePlayback("pause-stop-button-enabled", {
+                source: playUnlockSource,
+              });
+            }
+            state.playbackTransportActive = true;
+            state.pendingPlayDispatch = false;
+            state.pendingPlayDispatchBaseTick = null;
+            if (state.metronomeEnabled && !state.countInInProgress) {
+              startPlaybackMetronome(state);
+            }
+          }
           if (info.isPlaying === false) {
             if (state.pendingTransportCommand === "pause") {
               finalizePausedTransportState("runtime-confirmed-pause");
@@ -4137,11 +4224,15 @@ export function startApp(rootElement: HTMLElement): void {
               return;
             } else {
               state.playbackTransportActive = false;
+              state.pendingPlayDispatch = false;
+              state.pendingPlayDispatchBaseTick = null;
               stopPlaybackMetronome(state);
             }
           }
           if (info.isPlaying === true) {
             state.pendingTransportCommand = null;
+            state.pendingPlayDispatch = false;
+            state.pendingPlayDispatchBaseTick = null;
           }
           if (
             state.loopEnabled &&
@@ -4240,6 +4331,8 @@ export function startApp(rootElement: HTMLElement): void {
           state.playbackCurrentBarStartTick = null;
           state.playbackCurrentBarEndTickExclusive = null;
           state.pendingTransportCommand = null;
+          state.pendingPlayDispatch = false;
+          state.pendingPlayDispatchBaseTick = null;
           state.playbackTransportActive = false;
           state.countInInProgress = false;
           cancelCountIn(state, rootElement);
@@ -4406,6 +4499,7 @@ export function startApp(rootElement: HTMLElement): void {
             selectedTrackIndex: state.selectedTrackIndex,
           });
           state.projectStatusMessage = message;
+          state.rendererRuntimeBlocked = true;
           cancelCountIn(state, rootElement);
           stopPlaybackMetronome(state);
           clearLoopState(state);
