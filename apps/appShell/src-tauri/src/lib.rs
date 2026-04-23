@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use serde_json::json;
 use tauri::Manager;
 
 struct SessionDebugState {
@@ -40,6 +41,14 @@ fn append_jsonl_line(file_path: &PathBuf, line: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn build_mobile_debug_file_path(debug_directory: &PathBuf) -> PathBuf {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    debug_directory.join(format!("songstep-mobile-debug-{millis}.jsonl"))
+}
+
 fn resolve_session_debug_directory(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     let path_resolver = app_handle.path();
     let directory_candidates = [
@@ -58,17 +67,58 @@ fn resolve_session_debug_directory(app_handle: &tauri::AppHandle) -> Result<Path
 }
 
 fn initialize_session_debug_state(app_handle: &tauri::AppHandle) -> Result<SessionDebugState, String> {
-    let debug_directory = resolve_session_debug_directory(app_handle)?;
-    create_dir_all(&debug_directory).map_err(|error| format!("create debug directory failed: {error}"))?;
-    let file_path = build_session_debug_file_path(&debug_directory);
-    let startup_events = [
-        r#"{"type":"session-start"}"#,
-        r#"{"type":"backend-ready"}"#,
-    ];
-    for event in startup_events {
-        append_jsonl_line(&file_path, event)?;
+    let mut directory_candidates: Vec<PathBuf> = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        directory_candidates.push(PathBuf::from(r"C:\Programs\songStep\debug"));
     }
-    Ok(SessionDebugState { file_path })
+    let fallback_directory = resolve_session_debug_directory(app_handle)?;
+    if !directory_candidates.iter().any(|candidate| candidate == &fallback_directory) {
+        directory_candidates.push(fallback_directory);
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+    for debug_directory in directory_candidates {
+        if let Err(error) = create_dir_all(&debug_directory) {
+            failures.push(format!(
+                "create debug directory failed for {}: {error}",
+                debug_directory.to_string_lossy()
+            ));
+            continue;
+        }
+
+        let file_path = build_session_debug_file_path(&debug_directory);
+        let startup_events = [
+            json!({ "type": "session-start" }),
+            json!({
+                "type": "session-log-path",
+                "path": file_path.to_string_lossy().to_string(),
+            }),
+            json!({ "type": "backend-ready" }),
+        ];
+
+        let mut startup_write_failed = false;
+        for event in startup_events {
+            if let Err(error) = append_jsonl_line(&file_path, &event.to_string()) {
+                failures.push(format!(
+                    "write startup event failed for {}: {error}",
+                    file_path.to_string_lossy()
+                ));
+                startup_write_failed = true;
+                break;
+            }
+        }
+        if startup_write_failed {
+            continue;
+        }
+
+        return Ok(SessionDebugState { file_path });
+    }
+
+    Err(format!(
+        "session debug logger init failed for all candidates: {}",
+        failures.join(" | ")
+    ))
 }
 
 fn initialize_session_debug_mode(app_handle: &tauri::AppHandle) -> SessionDebugMode {
@@ -131,6 +181,40 @@ fn append_session_debug_event(
     }
 }
 
+#[tauri::command]
+fn create_mobile_debug_log_file(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let path_resolver = app_handle.path();
+    let debug_directory = path_resolver
+        .app_local_data_dir()
+        .map_err(|error| format!("resolve mobile app_local_data_dir failed: {error}"))?
+        .join("debug");
+    create_dir_all(&debug_directory).map_err(|error| format!("create mobile debug directory failed: {error}"))?;
+    let file_path = build_mobile_debug_file_path(&debug_directory);
+    let startup_events = [
+        json!({
+            "type": "mobile-file-log-path",
+            "path": file_path.to_string_lossy().to_string(),
+            "timestamp": SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0)
+        }),
+        json!({
+            "type": "mobile-file-log-canary"
+        }),
+    ];
+    for event in startup_events {
+        append_jsonl_line(&file_path, &event.to_string())?;
+    }
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn append_mobile_debug_event(event_json: String, file_path: String) -> Result<(), String> {
+    let trimmed_event_json = event_json.trim_end_matches('\n');
+    append_jsonl_line(&PathBuf::from(file_path), trimmed_event_json)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -143,7 +227,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_session_debug_log_path,
-            append_session_debug_event
+            append_session_debug_event,
+            create_mobile_debug_log_file,
+            append_mobile_debug_event
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
