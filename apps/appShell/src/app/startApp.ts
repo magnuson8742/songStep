@@ -147,6 +147,8 @@ interface AppState {
   sessionDebugLogger: SessionDebugLogger | null;
   sessionDebugLogPath: string | null;
   sessionDebugBannerShown: boolean;
+  androidDevHostLogPath: string | null;
+  androidDevHostLogBannerShown: boolean;
   rendererScoreLoaded: boolean;
   rendererRenderFinished: boolean;
   rendererPlayerReady: boolean;
@@ -206,8 +208,13 @@ interface SessionDebugLogger {
   filePath: string;
 }
 
+interface AndroidDevHostLogger {
+  filePath: string;
+}
+
 let reportSessionDebugAppendFailure: ((message: string) => void) | null = null;
 let activeSessionDebugLogger: SessionDebugLogger | null = null;
+let activeAndroidDevHostLogger: AndroidDevHostLogger | null = null;
 
 async function createSessionDebugLogger(): Promise<SessionDebugLogger> {
   const filePath = await invoke<string>("get_session_debug_log_path");
@@ -221,7 +228,7 @@ function appendSessionDebugEvent(logger: SessionDebugLogger | null, event: Recor
     return;
   }
   const eventJson = JSON.stringify(event);
-  void invoke("append_session_debug_event", { eventJson }).catch((error) => {
+  void invoke("append_session_debug_event", { eventJson }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error("append_session_debug_event failed", error);
     reportSessionDebugAppendFailure?.(message);
@@ -242,6 +249,14 @@ const highSignalTraceEvents: Record<StructuredTraceChannel, Set<string>> = {
     "transport-ready-evaluated",
     "player-ready",
     "player-runtime-ready",
+    "pause-playhead-hidden",
+    "pause-playhead-restored",
+    "playback-playhead-updated",
+    "playback-highlight-updated",
+    "playback-highlight-suppressed-idle",
+    "play-blocked-pending-track-switch",
+    "navigation-selection-applied",
+    "navigation-selection-cleared",
   ]),
   track: new Set([
     "track-switch-request",
@@ -255,9 +270,14 @@ const highSignalTraceEvents: Record<StructuredTraceChannel, Set<string>> = {
     "cube-navigation-track-switch-confirmed",
     "cube-navigation-seek-dispatched",
     "cube-navigation-selection-applied",
+    "cube-navigation-selection-pending",
+    "cube-navigation-tab-focus-requested",
+    "cube-navigation-tab-focus-complete",
     "ordinary-direct-switch-commit-evidence",
     "ordinary-direct-switch-finalized",
     "ordinary-direct-switch-timeout-real",
+    "ordinary-direct-switch-no-reload",
+    "render-error-rollback-force-reload",
   ]),
   renderer: new Set([
     "render-error",
@@ -289,18 +309,85 @@ const highSignalTraceEvents: Record<StructuredTraceChannel, Set<string>> = {
   ]),
 };
 
+function isAndroidDevSession(): boolean {
+  const isLikelyDevHost =
+    window.location.port === "1420" ||
+    window.location.port === "1421" ||
+    window.location.hostname === "localhost";
+  if (!isLikelyDevHost) {
+    return false;
+  }
+  return /android/i.test(navigator.userAgent);
+}
+
+async function createAndroidDevHostLogger(): Promise<AndroidDevHostLogger | null> {
+  if (!isAndroidDevSession()) {
+    return null;
+  }
+  try {
+    const response = await fetch("/__songstep/dev-log/init", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ mode: "android-dev-host" }),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as { path?: unknown };
+    if (typeof payload.path !== "string" || payload.path.length === 0) {
+      return null;
+    }
+    return {
+      filePath: payload.path,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function appendAndroidDevHostEvent(event: Record<string, unknown>): void {
+  if (!activeAndroidDevHostLogger) {
+    return;
+  }
+  const eventJson = JSON.stringify(event);
+  if (typeof navigator.sendBeacon === "function") {
+    const body = new Blob([eventJson], { type: "application/json" });
+    navigator.sendBeacon("/__songstep/dev-log/append", body);
+    return;
+  }
+  void fetch("/__songstep/dev-log/append", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: eventJson,
+    keepalive: true,
+  }).catch(() => {
+    // Keep logging fire-and-forget: no UI errors, no throw.
+  });
+}
+
 function appendStructuredTrace(channel: StructuredTraceChannel, eventName: string, payload: Record<string, unknown>): void {
   const eventAllowList = highSignalTraceEvents[channel];
   if (!eventAllowList?.has(eventName)) {
     return;
   }
-  appendSessionDebugEvent(activeSessionDebugLogger, {
+  const traceEvent = {
     type: "trace",
     channel,
     event: eventName,
     timestamp: new Date().toISOString(),
     ...payload,
-  });
+  };
+  appendSessionDebugEvent(activeSessionDebugLogger, traceEvent);
+  if (activeAndroidDevHostLogger) {
+    appendAndroidDevHostEvent({
+      ...traceEvent,
+      platform: "android-dev-host",
+    });
+  }
 }
 
 function updateDebugField(rootElement: HTMLElement, fieldName: string, value: string): void {
@@ -1167,6 +1254,12 @@ function updateArrangementPlaybackHighlight(state: AppState, rootElement: HTMLEl
   }
 
   activeTrackCell.classList.add("isPlaybackCurrentBar");
+  tracePlayback("playback-highlight-updated", {
+    trackIndex: activeTrackIndex,
+    barNumber: playbackBar,
+    tick: state.playbackCurrentTick,
+    source: "arrangement-playback",
+  });
 }
 
 function updateArrangementSelectionHighlight(state: AppState, rootElement: HTMLElement): void {
@@ -1287,9 +1380,16 @@ function hidePlaybackPlayhead(rootElement: HTMLElement, state: AppState): void {
 
   state.playbackPlayheadVisible = false;
   state.lastPlaybackVisualBarNumber = null;
+  tracePlayback("pause-playhead-hidden", {
+    selectedTrackIndex: state.selectedTrackIndex,
+    playbackCurrentBar: state.playbackCurrentBar,
+    playbackCurrentTick: state.playbackCurrentTick,
+    playbackTransportActive: state.playbackTransportActive,
+    playbackIsPlaying: state.playbackIsPlaying,
+  });
 }
 
-function hideNavigationSelection(rootElement: HTMLElement): void {
+function hideNavigationSelection(rootElement: HTMLElement, state: AppState, source: string): void {
   const cursor = rootElement.querySelector<HTMLElement>("[data-navigation-cursor='true']");
   if (cursor) {
     cursor.style.display = "none";
@@ -1298,22 +1398,28 @@ function hideNavigationSelection(rootElement: HTMLElement): void {
   if (highlight) {
     highlight.style.display = "none";
   }
+  tracePlayback("navigation-selection-cleared", {
+    trackIndex: state.selectedNavigationTrackIndex,
+    barNumber: state.selectedNavigationBar,
+    tick: state.selectedNavigationTick,
+    source,
+  });
 }
 
 function updateNavigationSelectionVisual(state: AppState, rootElement: HTMLElement): void {
   if (state.playbackIsPlaying === true) {
-    hideNavigationSelection(rootElement);
+    hideNavigationSelection(rootElement, state, "playing");
     return;
   }
 
   if (state.selectedNavigationBar === null || state.selectedNavigationBar <= 0) {
-    hideNavigationSelection(rootElement);
+    hideNavigationSelection(rootElement, state, "no-selected-bar");
     return;
   }
 
   const selectedAnchor = state.playbackBarAnchors.find((anchor) => anchor.barNumber === state.selectedNavigationBar);
   if (!selectedAnchor) {
-    hideNavigationSelection(rootElement);
+    hideNavigationSelection(rootElement, state, "missing-anchor");
     return;
   }
 
@@ -1869,6 +1975,22 @@ function updatePlaybackPlayheadFromRuntime(state: AppState, rootElement: HTMLEle
   playhead.style.top = `${selectedAnchor.y}px`;
   playhead.style.height = `${Math.max(selectedAnchor.height, 28)}px`;
   playhead.style.display = "block";
+  if (!state.playbackPlayheadVisible) {
+    tracePlayback("pause-playhead-restored", {
+      selectedTrackIndex: state.selectedTrackIndex,
+      playbackCurrentBar: state.playbackCurrentBar,
+      playbackCurrentTick: state.playbackCurrentTick,
+      playbackTransportActive: state.playbackTransportActive,
+      playbackIsPlaying: state.playbackIsPlaying,
+    });
+  }
+  tracePlayback("playback-playhead-updated", {
+    selectedTrackIndex: state.selectedTrackIndex,
+    playbackCurrentBar: state.playbackCurrentBar,
+    playbackCurrentTick: state.playbackCurrentTick,
+    playbackTransportActive: state.playbackTransportActive,
+    playbackIsPlaying: state.playbackIsPlaying,
+  });
   state.playbackPlayheadVisible = true;
   state.lastPlaybackVisualBarNumber = selectedAnchorBarNumber;
 }
@@ -2183,6 +2305,12 @@ function applyNavigationSelection(
   state.selectedNavigationTrackIndex = trackIndex;
   state.selectionDivergenceSuppressTicks = 8;
   state.manualNavigationVisualOverrideActive = true;
+  tracePlayback("navigation-selection-applied", {
+    trackIndex,
+    barNumber,
+    tick,
+    source: "applyNavigationSelection",
+  });
   updateArrangementSelectionHighlight(state, rootElement);
   updateNavigationSelectionVisual(state, rootElement);
 }
@@ -2807,15 +2935,19 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
     state.pendingOverviewNavigationTrackIndex = null;
     state.pendingOverviewNavigationTick = null;
     applyNavigationSelection(state, rootElement, targetBarNumber, targetTick, clickedTrackIndex);
+    const fromTrackIndex = confirmedTrackIndex;
+    const toTrackIndex = clickedTrackIndex;
     traceTrackSwitch("cube-navigation-selection-pending", {
-      clickedTrackIndex,
-      targetBarNumber,
-      targetTick,
+      fromTrackIndex,
+      toTrackIndex,
+      barNumber: targetBarNumber,
+      tick: targetTick,
     });
     traceTrackSwitch("cube-navigation-track-switch-request", {
-      clickedTrackIndex,
-      targetBarNumber,
-      targetTick,
+      fromTrackIndex,
+      toTrackIndex,
+      barNumber: targetBarNumber,
+      tick: targetTick,
       source: "arrangement-cross-track",
     });
     traceTrackSwitch("track-switch-request", {
@@ -2828,6 +2960,12 @@ function setupArrangementBarNavigation(rootElement: HTMLElement, state: AppState
     traceTrackSwitch("cube-navigation-direct-switch", {
       clickedTrackIndex,
       targetTick,
+    });
+    traceTrackSwitch("cube-navigation-tab-focus-requested", {
+      fromTrackIndex,
+      toTrackIndex,
+      barNumber: targetBarNumber,
+      tick: targetTick,
     });
     state.gpRenderer.selectTrack(clickedTrackIndex, targetTick, {
       source: "cube-navigation",
@@ -2927,6 +3065,8 @@ export function startApp(rootElement: HTMLElement): void {
     sessionDebugLogger: null,
     sessionDebugLogPath: null,
     sessionDebugBannerShown: false,
+    androidDevHostLogPath: null,
+    androidDevHostLogBannerShown: false,
     rendererScoreLoaded: false,
     rendererRenderFinished: false,
     rendererPlayerReady: false,
@@ -3258,6 +3398,25 @@ export function startApp(rootElement: HTMLElement): void {
       activeSessionDebugLogger = null;
     });
 
+  void createAndroidDevHostLogger()
+    .then((logger) => {
+      if (!logger) {
+        activeAndroidDevHostLogger = null;
+        return;
+      }
+      activeAndroidDevHostLogger = logger;
+      state.androidDevHostLogPath = logger.filePath;
+      appendAndroidDevHostEvent({
+        type: "host-log-path",
+        path: logger.filePath,
+        timestamp: new Date().toISOString(),
+        platform: "android-dev-host",
+      });
+    })
+    .catch(() => {
+      activeAndroidDevHostLogger = null;
+    });
+
   window.addEventListener("error", (event) => {
     appendSessionDebugEvent(state.sessionDebugLogger, {
       type: "window-error",
@@ -3515,7 +3674,10 @@ export function startApp(rootElement: HTMLElement): void {
         action: "render-project-screen",
         selectedTrackIndex: state.selectedTrackIndex,
       });
-      if (state.sessionDebugLogPath && !state.sessionDebugBannerShown) {
+      if (state.androidDevHostLogPath && !state.androidDevHostLogBannerShown) {
+        state.projectStatusMessage = `Android dev host logging active: ${state.androidDevHostLogPath}`;
+        state.androidDevHostLogBannerShown = true;
+      } else if (state.sessionDebugLogPath && !state.sessionDebugBannerShown) {
         state.projectStatusMessage = `Debug logging active: ${state.sessionDebugLogPath}`;
         state.sessionDebugBannerShown = true;
       }
@@ -3696,6 +3858,10 @@ export function startApp(rootElement: HTMLElement): void {
           traceTrackSwitch("ordinary-direct-switch-no-reload", {
             nextTrackIndex: trackIndex,
             preservedTick,
+            selectedTrackIndex: state.selectedTrackIndex,
+            pendingDirectSwitchTrackIndex: state.pendingDirectSwitchTrackIndex,
+            pendingDirectSwitchSource: state.pendingDirectSwitchSource,
+            pendingDirectSwitchTargetTick: state.pendingDirectSwitchTargetTick,
           });
           state.gpRenderer?.selectTrack(trackIndex, preservedTick);
         },
@@ -4431,8 +4597,10 @@ export function startApp(rootElement: HTMLElement): void {
           ) {
             const didSeekPendingCubeTick = state.gpRenderer.seekToTick(state.pendingCubeNavigationTick);
             traceTrackSwitch("cube-navigation-seek-dispatched", {
-              trackIndex,
-              targetTick: state.pendingCubeNavigationTick,
+              fromTrackIndex: state.selectedTrackIndex,
+              toTrackIndex: trackIndex,
+              barNumber: state.pendingCubeNavigationBar,
+              tick: state.pendingCubeNavigationTick,
               didSeekPendingCubeTick,
               source: "onTrackRenderCommitted",
             });
@@ -4507,10 +4675,13 @@ export function startApp(rootElement: HTMLElement): void {
               state.pendingCubeNavigationTick,
               trackIndex,
             );
+            const fromTrackIndex = state.selectedTrackIndex;
+            const toTrackIndex = trackIndex;
             traceTrackSwitch("cube-navigation-selection-applied", {
-              trackIndex,
-              targetBar: state.pendingCubeNavigationBar,
-              targetTick: state.pendingCubeNavigationTick,
+              fromTrackIndex,
+              toTrackIndex,
+              barNumber: state.pendingCubeNavigationBar,
+              tick: state.pendingCubeNavigationTick,
             });
             traceTrackSwitch("cube-navigation-seek", {
               trackIndex,
@@ -4521,6 +4692,12 @@ export function startApp(rootElement: HTMLElement): void {
               source: "cube-navigation",
               nextTrackIndex: trackIndex,
               targetTick: state.pendingCubeNavigationTick,
+            });
+            traceTrackSwitch("cube-navigation-tab-focus-complete", {
+              fromTrackIndex,
+              toTrackIndex,
+              barNumber: state.pendingCubeNavigationBar,
+              tick: state.pendingCubeNavigationTick,
             });
             traceTrackSwitch("cube-navigation-direct-switch-finalized", {
               trackIndex,
@@ -4910,9 +5087,10 @@ export function startApp(rootElement: HTMLElement): void {
             state.playbackCurrentBarStartTick = targetBarRange?.startTick ?? state.pendingCubeNavigationTick;
             state.playbackCurrentBarEndTickExclusive = targetBarRange?.endTickExclusive ?? null;
             traceTrackSwitch("cube-navigation-track-switch-confirmed", {
-              trackIndex,
-              targetBar: state.pendingCubeNavigationBar,
-              targetTick: state.pendingCubeNavigationTick,
+              fromTrackIndex: state.selectedTrackIndex,
+              toTrackIndex: trackIndex,
+              barNumber: state.pendingCubeNavigationBar,
+              tick: state.pendingCubeNavigationTick,
             });
           } else {
             const hasMeaningfulPlaybackTick =
@@ -5012,6 +5190,10 @@ export function startApp(rootElement: HTMLElement): void {
               targetIndex: state.requestedTrackIndex,
               previousTrackIndex,
               errorStage,
+              selectedTrackIndex: state.selectedTrackIndex,
+              pendingDirectSwitchTrackIndex: state.pendingDirectSwitchTrackIndex,
+              pendingDirectSwitchSource: state.pendingDirectSwitchSource,
+              pendingDirectSwitchTargetTick: state.pendingDirectSwitchTargetTick,
             });
             traceTrackSwitch("track-switch-render-error-rollback", {
               targetIndex: state.requestedTrackIndex,
