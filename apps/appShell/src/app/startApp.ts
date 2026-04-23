@@ -149,6 +149,9 @@ interface AppState {
   sessionDebugBannerShown: boolean;
   androidDevHostLogPath: string | null;
   androidDevHostLogBannerShown: boolean;
+  androidDevHostLogInitFailedReason: string | null;
+  mobileDebugLogPath: string | null;
+  mobileDebugLogBannerShown: boolean;
   rendererScoreLoaded: boolean;
   rendererRenderFinished: boolean;
   rendererPlayerReady: boolean;
@@ -212,9 +215,25 @@ interface AndroidDevHostLogger {
   filePath: string;
 }
 
+interface MobileDebugFileLogger {
+  filePath: string;
+}
+
+type AndroidDevHostLoggerInitResult =
+  | {
+      ok: true;
+      filePath: string;
+      status: { active: boolean; path: string | null; platform: string; writable: boolean } | null;
+    }
+  | {
+      ok: false;
+      reason: string;
+    };
+
 let reportSessionDebugAppendFailure: ((message: string) => void) | null = null;
 let activeSessionDebugLogger: SessionDebugLogger | null = null;
 let activeAndroidDevHostLogger: AndroidDevHostLogger | null = null;
+let activeMobileDebugFileLogger: MobileDebugFileLogger | null = null;
 
 async function createSessionDebugLogger(): Promise<SessionDebugLogger> {
   const filePath = await invoke<string>("get_session_debug_log_path");
@@ -299,6 +318,13 @@ const highSignalTraceEvents: Record<StructuredTraceChannel, Set<string>> = {
     "ordinary-direct-switch-timeout-real",
     "track-switch-request",
     "track-switch-applied",
+    "android-host-log-init-start",
+    "android-host-log-status-checked",
+    "android-host-log-init-success",
+    "android-host-log-init-failed",
+    "android-host-log-append-failed",
+    "mobile-file-log-init-success",
+    "mobile-file-log-init-failed",
   ]),
   pipeline: new Set([
     "play-dispatch",
@@ -309,41 +335,82 @@ const highSignalTraceEvents: Record<StructuredTraceChannel, Set<string>> = {
   ]),
 };
 
-function isAndroidDevSession(): boolean {
-  const isLikelyDevHost =
-    window.location.port === "1420" ||
-    window.location.port === "1421" ||
-    window.location.hostname === "localhost";
-  if (!isLikelyDevHost) {
+function isViteDevSession(): boolean {
+  const devFlag = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
+  if (!devFlag) {
     return false;
   }
-  return /android/i.test(navigator.userAgent);
+  return window.location.port === "1420" || window.location.port === "1421";
 }
 
-async function createAndroidDevHostLogger(): Promise<AndroidDevHostLogger | null> {
-  if (!isAndroidDevSession()) {
+async function checkAndroidDevHostLoggerStatus(): Promise<{
+  active: boolean;
+  path: string | null;
+  platform: string;
+  writable: boolean;
+} | null> {
+  try {
+    const response = await fetch("/__songstep/dev-log/status");
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as {
+      active?: unknown;
+      path?: unknown;
+      platform?: unknown;
+      writable?: unknown;
+    };
+    return {
+      active: payload.active === true,
+      path: typeof payload.path === "string" ? payload.path : null,
+      platform: typeof payload.platform === "string" ? payload.platform : "android-dev-host",
+      writable: payload.writable === true,
+    };
+  } catch {
     return null;
   }
+}
+
+async function createAndroidDevHostLogger(): Promise<AndroidDevHostLoggerInitResult> {
+  if (!isViteDevSession()) {
+    return {
+      ok: false,
+      reason: "not-running-from-vite-dev-server",
+    };
+  }
+  const status = await checkAndroidDevHostLoggerStatus();
   try {
     const response = await fetch("/__songstep/dev-log/init", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ mode: "android-dev-host" }),
+      body: JSON.stringify({ mode: "android-dev-host", hint: /android/i.test(navigator.userAgent) ? "android-ua" : "no-android-ua" }),
     });
     if (!response.ok) {
-      return null;
+      const responseBody = await response.text();
+      return {
+        ok: false,
+        reason: `host-init-http-${response.status}${responseBody ? `:${responseBody}` : ""}`,
+      };
     }
     const payload = (await response.json()) as { path?: unknown };
     if (typeof payload.path !== "string" || payload.path.length === 0) {
-      return null;
+      return {
+        ok: false,
+        reason: "host-init-missing-path",
+      };
     }
     return {
+      ok: true,
       filePath: payload.path,
+      status,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `host-init-fetch-failed:${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -354,7 +421,16 @@ function appendAndroidDevHostEvent(event: Record<string, unknown>): void {
   const eventJson = JSON.stringify(event);
   if (typeof navigator.sendBeacon === "function") {
     const body = new Blob([eventJson], { type: "application/json" });
-    navigator.sendBeacon("/__songstep/dev-log/append", body);
+    const sent = navigator.sendBeacon("/__songstep/dev-log/append", body);
+    if (!sent) {
+      appendSessionDebugEvent(activeSessionDebugLogger, {
+        type: "trace",
+        channel: "renderer",
+        event: "android-host-log-append-failed",
+        timestamp: new Date().toISOString(),
+        reason: "sendBeacon-returned-false",
+      });
+    }
     return;
   }
   void fetch("/__songstep/dev-log/append", {
@@ -364,8 +440,51 @@ function appendAndroidDevHostEvent(event: Record<string, unknown>): void {
     },
     body: eventJson,
     keepalive: true,
-  }).catch(() => {
-    // Keep logging fire-and-forget: no UI errors, no throw.
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("android host log append failed", message);
+    appendSessionDebugEvent(activeSessionDebugLogger, {
+      type: "trace",
+      channel: "renderer",
+      event: "android-host-log-append-failed",
+      timestamp: new Date().toISOString(),
+      reason: message,
+    });
+  });
+}
+
+async function createMobileDebugFileLogger(): Promise<{ ok: true; filePath: string } | { ok: false; reason: string }> {
+  try {
+    const filePath = await invoke<string>("create_mobile_debug_log_file");
+    if (!filePath || filePath.length === 0) {
+      return {
+        ok: false,
+        reason: "mobile-file-log-path-empty",
+      };
+    }
+    return {
+      ok: true,
+      filePath,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function appendMobileDebugFileEvent(event: Record<string, unknown>): void {
+  if (!activeMobileDebugFileLogger) {
+    return;
+  }
+  const eventJson = JSON.stringify(event);
+  void invoke("append_mobile_debug_event", {
+    eventJson,
+    filePath: activeMobileDebugFileLogger.filePath,
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("mobile debug file append failed", message);
   });
 }
 
@@ -386,6 +505,12 @@ function appendStructuredTrace(channel: StructuredTraceChannel, eventName: strin
     appendAndroidDevHostEvent({
       ...traceEvent,
       platform: "android-dev-host",
+    });
+  }
+  if (activeMobileDebugFileLogger) {
+    appendMobileDebugFileEvent({
+      ...traceEvent,
+      platform: "mobile-file-fallback",
     });
   }
 }
@@ -3067,6 +3192,9 @@ export function startApp(rootElement: HTMLElement): void {
     sessionDebugBannerShown: false,
     androidDevHostLogPath: null,
     androidDevHostLogBannerShown: false,
+    androidDevHostLogInitFailedReason: null,
+    mobileDebugLogPath: null,
+    mobileDebugLogBannerShown: false,
     rendererScoreLoaded: false,
     rendererRenderFinished: false,
     rendererPlayerReady: false,
@@ -3398,23 +3526,71 @@ export function startApp(rootElement: HTMLElement): void {
       activeSessionDebugLogger = null;
     });
 
+  traceRendererLifecycle("android-host-log-init-start", {
+    href: window.location.href,
+    userAgent: navigator.userAgent,
+  });
+  traceRendererLifecycle("android-host-log-status-checked", {
+    status: "probe-started",
+  });
   void createAndroidDevHostLogger()
-    .then((logger) => {
-      if (!logger) {
+    .then((result) => {
+      if (!result.ok) {
         activeAndroidDevHostLogger = null;
+        state.androidDevHostLogInitFailedReason = result.reason;
+        traceRendererLifecycle("android-host-log-init-failed", {
+          reason: result.reason,
+        });
+        void createMobileDebugFileLogger()
+          .then((mobileResult) => {
+            if (!mobileResult.ok) {
+              traceRendererLifecycle("mobile-file-log-init-failed", {
+                reason: mobileResult.reason,
+              });
+              return;
+            }
+            activeMobileDebugFileLogger = { filePath: mobileResult.filePath };
+            state.mobileDebugLogPath = mobileResult.filePath;
+            traceRendererLifecycle("mobile-file-log-init-success", {
+              filePath: mobileResult.filePath,
+            });
+            appendMobileDebugFileEvent({
+              type: "mobile-file-log-path",
+              path: mobileResult.filePath,
+              timestamp: new Date().toISOString(),
+              platform: "mobile-file-fallback",
+            });
+          })
+          .catch((error) => {
+            traceRendererLifecycle("mobile-file-log-init-failed", {
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          });
         return;
       }
-      activeAndroidDevHostLogger = logger;
-      state.androidDevHostLogPath = logger.filePath;
+      activeAndroidDevHostLogger = { filePath: result.filePath };
+      state.androidDevHostLogPath = result.filePath;
+      state.androidDevHostLogInitFailedReason = null;
+      traceRendererLifecycle("android-host-log-status-checked", {
+        status: result.status,
+      });
+      traceRendererLifecycle("android-host-log-init-success", {
+        filePath: result.filePath,
+      });
       appendAndroidDevHostEvent({
         type: "host-log-path",
-        path: logger.filePath,
+        path: result.filePath,
         timestamp: new Date().toISOString(),
         platform: "android-dev-host",
       });
     })
-    .catch(() => {
+    .catch((error) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      state.androidDevHostLogInitFailedReason = reason;
       activeAndroidDevHostLogger = null;
+      traceRendererLifecycle("android-host-log-init-failed", {
+        reason,
+      });
     });
 
   window.addEventListener("error", (event) => {
@@ -3676,6 +3852,17 @@ export function startApp(rootElement: HTMLElement): void {
       });
       if (state.androidDevHostLogPath && !state.androidDevHostLogBannerShown) {
         state.projectStatusMessage = `Android dev host logging active: ${state.androidDevHostLogPath}`;
+        state.androidDevHostLogBannerShown = true;
+      } else if (state.androidDevHostLogInitFailedReason && state.mobileDebugLogPath && !state.mobileDebugLogBannerShown) {
+        state.projectStatusMessage =
+          `Android dev host logging failed: ${state.androidDevHostLogInitFailedReason}. Mobile file logging active: ${state.mobileDebugLogPath}`;
+        state.mobileDebugLogBannerShown = true;
+      } else if (
+        state.androidDevHostLogInitFailedReason &&
+        !state.mobileDebugLogPath &&
+        !state.androidDevHostLogBannerShown
+      ) {
+        state.projectStatusMessage = `Android dev host logging failed: ${state.androidDevHostLogInitFailedReason}`;
         state.androidDevHostLogBannerShown = true;
       } else if (state.sessionDebugLogPath && !state.sessionDebugBannerShown) {
         state.projectStatusMessage = `Debug logging active: ${state.sessionDebugLogPath}`;

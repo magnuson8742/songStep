@@ -13,6 +13,7 @@ const isAndroid = tauriPlatform === "android";
 
 function songStepAndroidDevHostLogPlugin(): Plugin {
   let activeFilePath: string | null = null;
+  let writable = false;
 
   const buildFilePath = (directory: string): string =>
     path.join(directory, `songstep-android-dev-session-${Date.now()}.jsonl`);
@@ -26,6 +27,7 @@ function songStepAndroidDevHostLogPlugin(): Plugin {
         await mkdir(directory, { recursive: true });
         const filePath = buildFilePath(directory);
         await appendFile(filePath, "");
+        writable = true;
         return filePath;
       } catch {
         // Try next candidate.
@@ -61,6 +63,11 @@ function songStepAndroidDevHostLogPlugin(): Plugin {
                 timestamp: new Date().toISOString(),
                 platform: "android-dev-host",
               });
+              await appendJsonl({
+                type: "host-log-canary",
+                timestamp: new Date().toISOString(),
+                platform: "android-dev-host",
+              });
             }
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ path: activeFilePath }));
@@ -74,6 +81,18 @@ function songStepAndroidDevHostLogPlugin(): Plugin {
             );
           }
         })();
+      });
+
+      server.middlewares.use("/__songstep/dev-log/status", (_req, res) => {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            active: activeFilePath !== null,
+            path: activeFilePath,
+            platform: "android-dev-host",
+            writable,
+          }),
+        );
       });
 
       server.middlewares.use("/__songstep/dev-log/append", (req, res) => {
@@ -94,6 +113,11 @@ function songStepAndroidDevHostLogPlugin(): Plugin {
                 await appendJsonl({
                   type: "host-log-path",
                   path: activeFilePath,
+                  timestamp: new Date().toISOString(),
+                  platform: "android-dev-host",
+                });
+                await appendJsonl({
+                  type: "host-log-canary",
                   timestamp: new Date().toISOString(),
                   platform: "android-dev-host",
                 });

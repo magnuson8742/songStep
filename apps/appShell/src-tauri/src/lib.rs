@@ -41,6 +41,14 @@ fn append_jsonl_line(file_path: &PathBuf, line: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn build_mobile_debug_file_path(debug_directory: &PathBuf) -> PathBuf {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    debug_directory.join(format!("songstep-mobile-debug-{millis}.jsonl"))
+}
+
 fn resolve_session_debug_directory(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     let path_resolver = app_handle.path();
     let directory_candidates = [
@@ -173,6 +181,40 @@ fn append_session_debug_event(
     }
 }
 
+#[tauri::command]
+fn create_mobile_debug_log_file(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let path_resolver = app_handle.path();
+    let debug_directory = path_resolver
+        .app_local_data_dir()
+        .map_err(|error| format!("resolve mobile app_local_data_dir failed: {error}"))?
+        .join("debug");
+    create_dir_all(&debug_directory).map_err(|error| format!("create mobile debug directory failed: {error}"))?;
+    let file_path = build_mobile_debug_file_path(&debug_directory);
+    let startup_events = [
+        json!({
+            "type": "mobile-file-log-path",
+            "path": file_path.to_string_lossy().to_string(),
+            "timestamp": SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0)
+        }),
+        json!({
+            "type": "mobile-file-log-canary"
+        }),
+    ];
+    for event in startup_events {
+        append_jsonl_line(&file_path, &event.to_string())?;
+    }
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn append_mobile_debug_event(event_json: String, file_path: String) -> Result<(), String> {
+    let trimmed_event_json = event_json.trim_end_matches('\n');
+    append_jsonl_line(&PathBuf::from(file_path), trimmed_event_json)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -185,7 +227,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_session_debug_log_path,
-            append_session_debug_event
+            append_session_debug_event,
+            create_mobile_debug_log_file,
+            append_mobile_debug_event
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
